@@ -6,7 +6,7 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile
-    container_name: saas_api
+    # container_name: saas_api  <-- ELIMINADO
     ports:
       - "8000:8000"
     environment:
@@ -28,7 +28,7 @@ services:
     build:
       context: ./frontend
       dockerfile: Dockerfile
-    # container_name: saas_frontend
+    # container_name: saas_frontend <-- ELIMINADO
     ports:
       - "5173:5173"
     volumes:
@@ -42,7 +42,7 @@ services:
     build:
       context: ./ai_engine
       dockerfile: Dockerfile
-    container_name: saas_ai_worker
+    # container_name: saas_ai_worker <-- ELIMINADO
     command: python src/worker_manager.py
     environment:
       - REDIS_HOST=redis
@@ -58,15 +58,15 @@ services:
   # --- INFRAESTRUCTURA ---
   redis:
     image: redis:alpine
-    container_name: saas_redis
+    # container_name: saas_redis <-- ELIMINADO
     ports:
-      - "6380:6379" # <--- CAMBIO: 6380 afuera, 6379 adentro
+      - "6380:6379"
     networks:
       - saas_net
 
   db:
     image: mysql:8.0
-    container_name: saas_db
+    # container_name: saas_db <-- ELIMINADO
     environment:
       MYSQL_DATABASE: saas_video
       MYSQL_ROOT_PASSWORD: secret
