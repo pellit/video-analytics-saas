@@ -33,5 +33,5 @@ services:
     environment:
       PYTHONUNBUFFERED: 1
     # Opcional: Si usas Label Studio en dev, déjalo aquí
-    ports:
-      - "8081:8080"
+    # ports:
+      # - "8081:8080"
