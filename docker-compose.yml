@@ -28,7 +28,7 @@ services:
     build:
       context: ./frontend
       dockerfile: Dockerfile
-    container_name: saas_frontend
+    # container_name: saas_frontend
     ports:
       - "5173:5173"
     volumes:
