@@ -1,36 +1,37 @@
 version: '3.8'
 
 services:
-  # --- BACKEND DEV ---
+  # --- BACKEND ---
   api:
-    # Sobrescribimos el comando para usar el servidor de desarrollo
+    # MANTENEMOS: El comando de desarrollo (para que escuche en puerto 8000)
     command: php artisan serve --host=0.0.0.0 --port=8000
-    volumes:
-      - ./backend:/var/www/html       # <--- Espejo de tu código (NECESARIO)
-      # TRUCO: Esto evita que tu carpeta local borre el vendor del contenedor
-      # (Aunque en PHP lo ideal es correr 'composer install' localmente también)
-      
+    
+    # MANTENEMOS: Variables de entorno de dev
     environment:
       APP_ENV: local
       APP_DEBUG: true
+    
+    # ELIMINAMOS/COMENTAMOS: Los volúmenes de código fuente
+    # volumes:
+    #   - ./backend:/var/www/html
 
-  # --- FRONTEND DEV ---
+  # --- FRONTEND ---
   frontend:
+    # MANTENEMOS: Vite en modo desarrollo
     command: npm run dev -- --host
-    volumes:
-      - ./frontend:/app               # <--- Espejo de tu código (NECESARIO)
-      - /app/node_modules             # <--- TRUCO DE MAGIA: Esto protege la carpeta interna
-    environment:
-      - CHOKIDAR_USEPOLLING=true      # Ayuda con el hot-reload en Windows/WSL
+    
+    # ELIMINAMOS/COMENTAMOS: Los volúmenes de código
+    # volumes:
+    #   - ./frontend:/app
+    #   - /app/node_modules
 
-  # --- AI WORKER DEV ---
+  # --- AI WORKER ---
   ai_worker:
-    command: python src/worker_manager.py # O usar watchdog para auto-reload
-    volumes:
-      - ./ai_engine:/app              # <--- Espejo de tu código
+    # ELIMINAMOS/COMENTAMOS: Volúmenes de código
+    # volumes:
+    #   - ./ai_engine:/app
     environment:
       PYTHONUNBUFFERED: 1
-
-
-
-    
+    # Opcional: Si usas Label Studio en dev, déjalo aquí
+    ports:
+      - "8081:8080"
