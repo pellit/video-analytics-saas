@@ -42,21 +42,21 @@ services:
 
   # --- AI WORKER ---
   ai_worker:
-    build:
-      context: ./ai_engine
-      dockerfile: Dockerfile
-    # container_name: ELIMINADO
-    command: python -u src/worker_manager.py
-    environment:
-      - REDIS_HOST=redis
-      - PYTHONUNBUFFERED=1
-    # -----------------------------------------------------
-    # ¡VOLUMES ELIMINADOS!
-    # -----------------------------------------------------
-    depends_on:
-      - redis
-    networks:
-      - saas_net
+      build:
+        context: ./ai_engine
+        dockerfile: Dockerfile
+      # container_name: ELIMINADO
+      # CAMBIO: Cambiamos el comando para que corra uvicorn (servidor web)
+      command: uvicorn src.worker_manager:app --host 0.0.0.0 --port 5000
+      environment:
+        - REDIS_HOST=redis
+        - PYTHONUNBUFFERED=1
+      ports:
+        - "5000:5000"  # <--- ¡NUEVO PUERTO PARA VIDEO!
+      depends_on:
+        - redis
+      networks:
+        - saas_net
 
   # --- INFRAESTRUCTURA (Estos SÍ llevan volúmenes para guardar datos) ---
   redis:

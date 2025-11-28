@@ -5,3 +5,6 @@ vosk
 numpy
 sentence-transformers
 requests
+fastapi
+uvicorn
+yt-dlp
