@@ -21,7 +21,7 @@ services:
   label_studio:
     image: heartexlabs/label-studio:latest
     ports:
-      - "8080:8080"
+      - "8081:8080"
 
 
 
