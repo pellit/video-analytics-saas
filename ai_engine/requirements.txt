@@ -1,0 +1,7 @@
+redis
+opencv-python-headless
+ultralytics
+vosk
+numpy
+sentence-transformers
+requests

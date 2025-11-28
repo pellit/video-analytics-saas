@@ -1,0 +1,83 @@
+version: '3.8'
+
+services:
+  # --- BACKEND (LARAVEL) ---
+  api:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: saas_api
+    ports:
+      - "8000:8000"
+    environment:
+      - DB_HOST=db
+      - REDIS_HOST=redis
+      - DB_DATABASE=saas_video
+      - DB_USERNAME=root
+      - DB_PASSWORD=secret
+    depends_on:
+      - db
+      - redis
+    volumes:
+      - ./backend:/var/www/html
+    networks:
+      - saas_net
+
+  # --- FRONTEND (VUE) ---
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: saas_frontend
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    networks:
+      - saas_net
+
+  # --- AI WORKER (PYTHON) ---
+  ai_worker:
+    build:
+      context: ./ai_engine
+      dockerfile: Dockerfile
+    container_name: saas_ai_worker
+    command: python src/worker_manager.py
+    environment:
+      - REDIS_HOST=redis
+      - PYTHONUNBUFFERED=1
+    volumes:
+      - ./ai_engine/src:/app/src
+      - ./ai_engine/models:/app/models
+    depends_on:
+      - redis
+    networks:
+      - saas_net
+
+  # --- INFRAESTRUCTURA ---
+  redis:
+    image: redis:alpine
+    container_name: saas_redis
+    ports:
+      - "6380:6379" # <--- CAMBIO: 6380 afuera, 6379 adentro
+    networks:
+      - saas_net
+
+  db:
+    image: mysql:8.0
+    container_name: saas_db
+    environment:
+      MYSQL_DATABASE: saas_video
+      MYSQL_ROOT_PASSWORD: secret
+    volumes:
+      - db_data:/var/lib/mysql
+    networks:
+      - saas_net
+
+networks:
+  saas_net:
+    driver: bridge
+
+volumes:
+  db_data:

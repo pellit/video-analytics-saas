@@ -1,0 +1,9 @@
+/backend/vendor
+/backend/.env
+/frontend/node_modules
+/frontend/dist
+/ai_engine/__pycache__
+/ai_engine/models/*
+.DS_Store
+.idea
+.vscode
