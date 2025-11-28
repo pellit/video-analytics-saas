@@ -1,12 +1,12 @@
 version: '3.8'
 
 services:
-  # --- BACKEND (LARAVEL) ---
+  # --- BACKEND ---
   api:
     build:
       context: ./backend
       dockerfile: Dockerfile
-    # container_name: saas_api  <-- ELIMINADO
+    # container_name: saas_api (BORRADO)
     ports:
       - "8000:8000"
     environment:
@@ -18,47 +18,56 @@ services:
     depends_on:
       - db
       - redis
-    volumes:
-      - ./backend:/var/www/html
+    # -------------------------------------------------------
+    # ¡BORRA O COMENTA ESTO!
+    # volumes:
+    #   - ./backend:/var/www/html  <-- ESTO OCULTABA EL VENDOR
+    # -------------------------------------------------------
     networks:
       - saas_net
 
-  # --- FRONTEND (VUE) ---
+  # --- FRONTEND ---
   frontend:
     build:
       context: ./frontend
       dockerfile: Dockerfile
-    # container_name: saas_frontend <-- ELIMINADO
+    # container_name: saas_frontend (BORRADO)
     ports:
       - "5173:5173"
-    volumes:
-      - ./frontend:/app
-      - /app/node_modules
+    # -------------------------------------------------------
+    # ¡BORRA O COMENTA ESTO TAMBIÉN!
+    # volumes:
+    #   - ./frontend:/app         <-- ESTO OCULTABA NODE_MODULES
+    #   - /app/node_modules
+    # -------------------------------------------------------
     networks:
       - saas_net
 
-  # --- AI WORKER (PYTHON) ---
+  # --- AI WORKER ---
   ai_worker:
     build:
       context: ./ai_engine
       dockerfile: Dockerfile
-    # container_name: saas_ai_worker <-- ELIMINADO
-    command: python src/worker_manager.py
+    # container_name: saas_ai_worker (BORRADO)
+    command: python -u src/worker_manager.py
     environment:
       - REDIS_HOST=redis
       - PYTHONUNBUFFERED=1
-    volumes:
-      - ./ai_engine/src:/app/src
-      - ./ai_engine/models:/app/models
+    # -------------------------------------------------------
+    # ¡BORRA O COMENTA ESTO!
+    # volumes:
+    #   - ./ai_engine/src:/app/src  <-- USAMOS EL CÓDIGO DE LA IMAGEN
+    #   - ./ai_engine/models:/app/models
+    # -------------------------------------------------------
     depends_on:
       - redis
     networks:
       - saas_net
 
-  # --- INFRAESTRUCTURA ---
+  # --- INFRA (REDIS, DB, LABEL STUDIO) ---
+  # Estos SÍ llevan volumen porque guardan datos, no código.
   redis:
     image: redis:alpine
-    # container_name: saas_redis <-- ELIMINADO
     ports:
       - "6380:6379"
     networks:
@@ -66,12 +75,20 @@ services:
 
   db:
     image: mysql:8.0
-    # container_name: saas_db <-- ELIMINADO
     environment:
       MYSQL_DATABASE: saas_video
       MYSQL_ROOT_PASSWORD: secret
     volumes:
-      - db_data:/var/lib/mysql
+      - db_data:/var/lib/mysql  # ESTE SÍ SE QUEDA
+    networks:
+      - saas_net
+
+  label_studio:
+    image: heartexlabs/label-studio:latest
+    ports:
+      - "8081:8080"
+    volumes:
+      - label_studio_data:/label-studio/data # ESTE SÍ SE QUEDA
     networks:
       - saas_net
 
@@ -81,3 +98,4 @@ networks:
 
 volumes:
   db_data:
+  label_studio_data:
