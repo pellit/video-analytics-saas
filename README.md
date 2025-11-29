@@ -260,3 +260,8 @@ Tu configuración: command: npm run dev -- --host ✅ (Correcto)
 Backend (Laravel): Por defecto, artisan serve solo escucha en local. Necesita --host=0.0.0.0.
 
 Tu configuración: command: php artisan serve --host=0.0.0.0 ... ✅ (Correcto)
+
+
+
+Correr comando dentro de contenedor Docker
+docker exec -it code-api-1 php artisan optimize:clear
