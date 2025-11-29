@@ -7,90 +7,109 @@ import redis
 import numpy as np
 from fastapi import FastAPI
 from fastapi.responses import StreamingResponse
+from fastapi.middleware.cors import CORSMiddleware
 from ultralytics import YOLO
+from yt_dlp import YoutubeDL
 
-# Configuración
 app = FastAPI()
+
+# Permitir CORS para que el Frontend pueda ver el video
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 REDIS_HOST = os.environ.get('REDIS_HOST', 'localhost')
 r = redis.Redis(host=REDIS_HOST, port=6379, decode_responses=True)
 
-# Estado Global (Compartido entre hilos)
 global_state = {
     "active": False,
     "camera_id": None,
     "url": None,
-    "current_frame": None, # Aquí guardamos la imagen procesada
+    "current_frame": None,
     "lock": threading.Lock()
 }
 
-# Cargar modelo una sola vez al inicio
 print("⏳ Cargando modelo YOLO...")
 model = YOLO('yolov8n.pt')
 print("✅ Modelo cargado.")
 
+def get_stream_url(youtube_url):
+    """Convierte URL de YouTube en URL de stream directo (.m3u8)"""
+    try:
+        ydl_opts = {'format': 'best', 'quiet': True}
+        with YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(youtube_url, download=False)
+            return info['url']
+    except Exception as e:
+        print(f"❌ Error extrayendo URL de YouTube: {e}")
+        return youtube_url
+
 def video_processing_loop():
-    """Bucle infinito que procesa video si hay una cámara activa"""
     print("🚀 Hilo de procesamiento iniciado")
-    
     cap = None
     
     while True:
-        # 1. Verificar si debemos trabajar
         if not global_state["active"]:
             if cap:
                 cap.release()
                 cap = None
-            time.sleep(1)
+            time.sleep(0.5)
             continue
 
-        # 2. Inicializar video si es necesario
         if cap is None:
-            print(f"Opening stream: {global_state['url']}")
-            cap = cv2.VideoCapture(global_state['url'])
+            # AQUÍ ESTÁ LA MAGIA: Convertimos la URL antes de abrirla
+            raw_url = global_state['url']
+            print(f"🔍 Procesando URL: {raw_url}")
+            
+            if "youtube.com" in raw_url or "youtu.be" in raw_url:
+                real_url = get_stream_url(raw_url)
+                print("✅ URL de stream extraída correctamente")
+            else:
+                real_url = raw_url
+
+            cap = cv2.VideoCapture(real_url)
         
-        # 3. Leer Frame
         success, frame = cap.read()
         if not success:
-            print("Error leyendo frame o fin del stream. Reintentando...")
+            print("⚠️ Error leyendo frame. Reintentando en 2s...")
             cap.release()
             cap = None
-            time.sleep(1)
+            time.sleep(2)
             continue
 
-        # 4. Inferencia IA (YOLO)
+        # Inferencia
         results = model(frame, verbose=False)
         annotated_frame = results[0].plot()
 
-        # 5. Guardar en variable global para el streaming
         with global_state["lock"]:
             global_state["current_frame"] = annotated_frame.copy()
 
-        # 6. (Opcional) Enviar métricas a Redis cada 30 frames
-        # ... lógica de conteo aquí ...
-
 def redis_listener_loop():
-    """Escucha órdenes de Laravel para cambiar de cámara"""
     print("👂 Escuchando Redis 'video_control'...")
     pubsub = r.pubsub()
     pubsub.subscribe('video_control')
 
     for message in pubsub.listen():
         if message['type'] == 'message':
-            data = json.loads(message['data'])
-            action = data.get('action')
-            
-            if action == 'START':
-                print(f"▶ START cámara {data.get('camera_id')}")
-                global_state["active"] = True
-                global_state["camera_id"] = data.get('camera_id')
-                global_state["url"] = data.get('url') # URL de YouTube
-            
-            elif action == 'STOP':
-                print("⏹ STOP recibido")
-                global_state["active"] = False
+            try:
+                # Laravel a veces manda el mensaje como string JSON puro
+                data = json.loads(message['data'])
+                print(f"📩 Mensaje recibido: {data}")
+                
+                action = data.get('action')
+                if action == 'START':
+                    global_state["url"] = data.get('url')
+                    global_state["camera_id"] = data.get('camera_id')
+                    global_state["active"] = True
+                elif action == 'STOP':
+                    global_state["active"] = False
+            except Exception as e:
+                print(f"Error procesando mensaje Redis: {e}")
 
 def generate_mjpeg():
-    """Generador para el endpoint de video"""
     while True:
         frame = None
         with global_state["lock"]:
@@ -98,33 +117,21 @@ def generate_mjpeg():
                 frame = global_state["current_frame"]
         
         if frame is None:
-            # Si no hay frame, enviamos imagen negra o esperamos
             time.sleep(0.1)
             continue
 
-        # Convertir a JPEG
         (flag, encodedImage) = cv2.imencode(".jpg", frame)
-        if not flag:
-            continue
+        if not flag: continue
             
         yield (b'--frame\r\n'
                b'Content-Type: image/jpeg\r\n\r\n' + bytearray(encodedImage) + b'\r\n')
-        
-        time.sleep(0.03) # Limitamos a ~30 FPS
-
-# --- API ENDPOINTS ---
-
-@app.get("/")
-def health():
-    return {"status": "running", "active": global_state["active"]}
+        time.sleep(0.04)
 
 @app.get("/video_feed")
 def video_feed():
     return StreamingResponse(generate_mjpeg(), media_type="multipart/x-mixed-replace; boundary=frame")
 
-# --- ARRANQUE DE HILOS ---
 @app.on_event("startup")
 def startup_event():
-    # Lanzamos los hilos en background
     threading.Thread(target=redis_listener_loop, daemon=True).start()
     threading.Thread(target=video_processing_loop, daemon=True).start()
