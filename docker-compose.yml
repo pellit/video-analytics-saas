@@ -21,6 +21,10 @@ services:
         - redis
       networks:
         - saas_net
+      depends_on:
+      - redis
+      links:        # <--- Agrega esto para reforzar la conexión DNS
+        - redis
 
   # --- FRONTEND ---
   frontend:
@@ -56,11 +60,14 @@ services:
 
   # --- INFRAESTRUCTURA (Estos SÍ llevan volúmenes para guardar datos) ---
   redis:
-    image: redis:alpine
-    ports:
-      - "6380:6379"
-    networks:
-      - saas_net
+      image: redis:alpine
+      # container_name: ELIMINADO (Ya lo habíamos quitado, bien)
+      ports:
+        - "6380:6379"
+      networks:
+        - saas_net
+      # AGREGAR ESTO: Comando para asegurar que escuche en todas las interfaces
+      command: redis-server --bind 0.0.0.0
 
   db:
     image: mysql:8.0
