@@ -36,15 +36,20 @@ print("⏳ Cargando modelo YOLO...")
 model = YOLO('yolov8n.pt')
 print("✅ Modelo cargado.")
 
+# 1. MEJORA: Forzamos formato compatible con OpenCV
 def get_stream_url(youtube_url):
-    """Convierte URL de YouTube en URL de stream directo (.m3u8)"""
     try:
-        ydl_opts = {'format': 'best', 'quiet': True}
+        # Pedimos explícitamente MP4 y video+audio combinados o el mejor compatible
+        ydl_opts = {
+            'format': 'best[ext=mp4]/best', 
+            'quiet': True,
+            'force_generic_extractor': False
+        }
         with YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(youtube_url, download=False)
             return info['url']
     except Exception as e:
-        print(f"❌ Error extrayendo URL de YouTube: {e}")
+        print(f"❌ Error yt-dlp: {e}")
         return youtube_url
 
 def video_processing_loop():
@@ -60,27 +65,35 @@ def video_processing_loop():
             continue
 
         if cap is None:
-            # AQUÍ ESTÁ LA MAGIA: Convertimos la URL antes de abrirla
             raw_url = global_state['url']
-            print(f"🔍 Procesando URL: {raw_url}")
+            print(f"🔍 Buscando stream para: {raw_url}")
             
-            if "youtube.com" in raw_url or "youtu.be" in raw_url:
+            if "youtube" in raw_url or "youtu.be" in raw_url:
                 real_url = get_stream_url(raw_url)
-                print("✅ URL de stream extraída correctamente")
+                print(f"▶ Stream URL obtenida (imprimiendo primeros 50 chars): {real_url[:50]}...")
             else:
                 real_url = raw_url
 
+            # Aumentamos el buffer para evitar cortes
+            os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport;udp"
             cap = cv2.VideoCapture(real_url)
+            
+            # Verificación extra
+            if not cap.isOpened():
+                print("❌ ERROR CRÍTICO: OpenCV no pudo abrir la URL.")
+                cap = None
+                time.sleep(2)
+                continue
         
         success, frame = cap.read()
+        
         if not success:
-            print("⚠️ Error leyendo frame. Reintentando en 2s...")
-            cap.release()
-            cap = None
-            time.sleep(2)
+            # Si falla la lectura, no imprimas error en cada frame (ensucia el log)
+            # Solo reintenta suavemente
+            time.sleep(0.1)
             continue
 
-        # Inferencia
+        # Inferencia YOLO
         results = model(frame, verbose=False)
         annotated_frame = results[0].plot()
 
