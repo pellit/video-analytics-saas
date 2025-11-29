@@ -64,7 +64,7 @@ services:
         - saas_net
       # AGREGAR ESTO: Comando para asegurar que escuche en todas las interfaces
       command: redis-server --bind 0.0.0.0
-
+  # --- BASE DE DATOS ---
   db:
     image: mysql:8.0
     environment:
@@ -83,6 +83,15 @@ services:
       - label_studio_data:/label-studio/data
     networks:
       - saas_net
+
+  # --- EMAIL SERVICE (Opcional, para enviar correos) ---
+  mailpit:
+      image: axllent/mailpit
+      ports:
+        - "8025:8025" # Interfaz web para ver emails
+        - "1025:1025" # Puerto SMTP
+      networks:
+        - saas_net
 
 networks:
   saas_net:

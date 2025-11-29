@@ -49,4 +49,8 @@ class User extends Authenticatable
     public function cameras() {
         return $this->hasMany(Camera::class);
     }
+
+    protected $fillable = [
+        'name', 'email', 'password', 'role', 'last_login_at'
+    ];
 }

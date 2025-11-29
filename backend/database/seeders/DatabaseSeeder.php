@@ -21,5 +21,16 @@ class DatabaseSeeder extends Seeder
             'name' => 'Test User',
             'email' => 'test@example.com',
         ]);
+
+        // Crear SuperAdmin si no existe
+        User::firstOrCreate(
+            ['email' => 'admin@video-saas.com'],
+            [
+                'name' => 'Super Admin',
+                'password' => Hash::make('admin123'), // Contraseña de respaldo
+                'role' => 'superadmin',
+                'email_verified_at' => now(),
+            ]
+        );
     }
 }

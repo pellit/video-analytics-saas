@@ -1,96 +1,208 @@
 <script setup>
 import { ref, onMounted } from 'vue'
 
+// --- CONFIGURACIÓN ---
 const API_URL = 'http://192.168.0.38:8000/api'
 const STREAM_URL = 'http://192.168.0.38:5000/video_feed'
 
-// Estado Auth
+// --- ESTADO ---
+// Auth
 const token = ref(localStorage.getItem('token'))
-const user = ref(null)
+const user = ref(JSON.parse(localStorage.getItem('user') || 'null'))
 const email = ref('')
 const password = ref('')
-const isRegistering = ref(false)
 const name = ref('')
+const isRegistering = ref(false) // Para alternar entre Login/Registro manual
 
-// Estado App
+// App
 const cameras = ref([])
 const activeCamera = ref(null)
 const newCameraName = ref('')
 const newCameraUrl = ref('')
 const showAddModal = ref(false)
 const isProcessing = ref(false)
+const logs = ref([])
+const adminStats = ref(null) // Para el panel de SuperAdmin
 
-// --- AUTH ---
+// --- FUNCIONES DE AUTH ---
+
+// 1. Login Tradicional (Email + Contraseña)
 const login = async () => {
   try {
     const endpoint = isRegistering.value ? '/register' : '/login'
-    const payload = isRegistering.value ? { name: name.value, email: email.value, password: password.value } : { email: email.value, password: password.value }
+    const payload = isRegistering.value 
+      ? { name: name.value, email: email.value, password: password.value } 
+      : { email: email.value, password: password.value }
     
     const res = await fetch(`${API_URL}${endpoint}`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
       body: JSON.stringify(payload)
     })
     
     const data = await res.json()
-    if (!res.ok) throw new Error(data.message)
+    if (!res.ok) throw new Error(data.message || 'Error en autenticación')
     
-    token.value = data.token
-    localStorage.setItem('token', data.token)
-    await fetchCameras()
+    // Guardar sesión
+    saveSession(data.token, data.user)
   } catch (e) {
     alert(e.message)
   }
 }
 
-const logout = () => {
-  token.value = null
-  localStorage.removeItem('token')
-  activeCamera.value = null
+// 2. Login con Magic Link (Sin Contraseña)
+const sendMagicLink = async () => {
+  if (!email.value) return alert('Escribe tu email primero')
+  
+  try {
+    logs.value.unshift(`📧 Enviando enlace mágico a ${email.value}...`)
+    const res = await fetch(`${API_URL}/auth/magic-link`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+      body: JSON.stringify({ email: email.value })
+    })
+    
+    const data = await res.json()
+    if (!res.ok) throw new Error(data.message)
+    
+    alert(`¡Listo! Revisa tu correo ${email.value} para entrar.`)
+    logs.value.unshift(`✅ Enlace enviado. Revisa http://192.168.0.38:8025`)
+  } catch (e) {
+    alert(e.message)
+  }
 }
 
-// --- CAMERAS ---
-const fetchCameras = async () => {
-  const res = await fetch(`${API_URL}/cameras`, {
-    headers: { 'Authorization': `Bearer ${token.value}`, 'Accept': 'application/json' }
-  })
-  cameras.value = await res.json()
-  if (cameras.value.length > 0) activeCamera.value = cameras.value[0]
-}
-
-const addCamera = async () => {
-  await fetch(`${API_URL}/cameras`, {
-    method: 'POST',
-    headers: { 'Authorization': `Bearer ${token.value}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name: newCameraName.value, url: newCameraUrl.value })
-  })
-  showAddModal.value = false
-  newCameraName.value = ''
-  newCameraUrl.value = ''
+// Helper para guardar sesión
+const saveSession = async (newToken, newUser) => {
+  token.value = newToken
+  user.value = newUser
+  localStorage.setItem('token', newToken)
+  localStorage.setItem('user', JSON.stringify(newUser))
+  
+  // Si es SuperAdmin, cargamos stats
+  if (newUser.role === 'superadmin') {
+    fetchAdminStats()
+  }
+  
   await fetchCameras()
 }
 
+const logout = () => {
+  token.value = null
+  user.value = null
+  localStorage.removeItem('token')
+  localStorage.removeItem('user')
+  activeCamera.value = null
+}
+
+// --- FUNCIONES DE CÁMARA (CRUD) ---
+
+const fetchCameras = async () => {
+  try {
+    const res = await fetch(`${API_URL}/cameras`, {
+      headers: { 'Authorization': `Bearer ${token.value}`, 'Accept': 'application/json' }
+    })
+    if (res.ok) {
+      cameras.value = await res.json()
+      if (cameras.value.length > 0 && !activeCamera.value) {
+        activeCamera.value = cameras.value[0]
+      }
+    }
+  } catch (e) { console.error(e) }
+}
+
+const addCamera = async () => {
+  try {
+    const res = await fetch(`${API_URL}/cameras`, {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${token.value}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: newCameraName.value, url: newCameraUrl.value })
+    })
+    if (res.ok) {
+      showAddModal.value = false
+      newCameraName.value = ''
+      newCameraUrl.value = ''
+      await fetchCameras()
+    }
+  } catch (e) { alert('Error al guardar') }
+}
+
+// --- CONTROL DE ANÁLISIS ---
+
 const startAnalysis = async () => {
   if(!activeCamera.value) return;
-  await fetch(`${API_URL}/camera/start`, {
-    method: 'POST',
-    headers: { 'Authorization': `Bearer ${token.value}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ id: activeCamera.value.id, url: activeCamera.value.url })
-  })
-  isProcessing.value = true
+  logs.value.unshift(`🚀 Iniciando: ${activeCamera.value.name}`)
+  
+  try {
+    const res = await fetch(`${API_URL}/camera/start`, {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${token.value}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: activeCamera.value.id, url: activeCamera.value.url })
+    })
+    if(res.ok) isProcessing.value = true
+  } catch(e) { logs.value.unshift('Error al iniciar') }
 }
 
 const stopAnalysis = async () => {
-  await fetch(`${API_URL}/camera/stop`, {
-    method: 'POST',
-    headers: { 'Authorization': `Bearer ${token.value}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ id: activeCamera.value.id })
-  })
-  isProcessing.value = false
+  if(!activeCamera.value) return;
+  try {
+    await fetch(`${API_URL}/camera/stop`, {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${token.value}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: activeCamera.value.id })
+    })
+    isProcessing.value = false
+    logs.value.unshift('🛑 Análisis detenido')
+  } catch(e) { console.error(e) }
 }
 
-onMounted(() => {
-  if (token.value) fetchCameras()
+// --- SUPERADMIN ---
+const fetchAdminStats = async () => {
+  try {
+    const res = await fetch(`${API_URL}/admin/stats`, {
+       headers: { 'Authorization': `Bearer ${token.value}` }
+    })
+    if(res.ok) adminStats.value = await res.json()
+  } catch(e) {}
+}
+
+// --- CICLO DE VIDA (Manejo del Magic Link) ---
+onMounted(async () => {
+  // 1. Verificar si venimos de un Magic Link (URL tiene ?signature=...)
+  const urlParams = new URLSearchParams(window.location.search)
+  if (urlParams.has('signature') && urlParams.has('id')) {
+    
+    const verifyUrl = `${API_URL}/auth/verify/${urlParams.get('id')}?${urlParams.toString()}`.replace('/auth/callback', '')
+    
+    // Corregimos la URL porque el frontend recibe los params pero debemos mandarlos a la API
+    // La forma más fácil es reconstruir la llamada a la API:
+    // API espera: http://api:8000/api/auth/verify/{id}?signature=...
+    
+    try {
+        // Hacemos la llamada de verificación a la API
+        const apiCallUrl = `${API_URL}/auth/verify/${urlParams.get('id')}?expires=${urlParams.get('expires')}&signature=${urlParams.get('signature')}`
+        
+        const res = await fetch(apiCallUrl)
+        const data = await res.json()
+        
+        if (res.ok) {
+            saveSession(data.token, data.user)
+            // Limpiamos la URL para que no se vea fea
+            window.history.replaceState({}, document.title, "/")
+            alert('¡Login Mágico Exitoso!')
+        } else {
+            alert('El enlace expiró o no es válido.')
+        }
+    } catch (e) {
+        console.error('Error verificando magic link', e)
+    }
+  } 
+  
+  // 2. Si ya teníamos sesión guardada
+  else if (token.value) {
+    await fetchCameras()
+    if (user.value?.role === 'superadmin') fetchAdminStats()
+  }
 })
 </script>
 
@@ -98,17 +210,35 @@ onMounted(() => {
   <div v-if="!token" class="auth-container">
     <div class="auth-card">
       <h2>{{ isRegistering ? 'Crear Cuenta' : 'Iniciar Sesión' }}</h2>
+      
       <input v-if="isRegistering" v-model="name" placeholder="Nombre" />
       <input v-model="email" placeholder="Email" />
-      <input v-model="password" type="password" placeholder="Contraseña" />
-      <button @click="login" class="btn-primary">{{ isRegistering ? 'Registrarse' : 'Entrar' }}</button>
+      <input v-model="password" type="password" placeholder="Contraseña (Opcional si usas Magic Link)" />
+
+      <div class="auth-actions">
+          <button @click="login" class="btn-primary">
+            {{ isRegistering ? 'Registrarse' : 'Entrar con Clave' }}
+          </button>
+          
+          <button @click="sendMagicLink" class="btn-magic" v-if="!isRegistering">
+            ✨ Entrar sin contraseña
+          </button>
+      </div>
+
       <p @click="isRegistering = !isRegistering" class="toggle-link">
-        {{ isRegistering ? '¿Ya tienes cuenta? Entra' : '¿No tienes cuenta? Regístrate' }}
+        {{ isRegistering ? '¿Ya tienes cuenta?' : 'Crear cuenta nueva' }}
       </p>
     </div>
   </div>
 
   <div v-else class="dashboard">
+      <div v-if="user?.role === 'superadmin'" class="admin-panel">
+    <h3>⚡ SuperAdmin</h3>
+    <div class="stats">
+      <p>Usuarios Totales: {{ adminStats.users }}</p>
+      <p>Cámaras Activas: {{ adminStats.cameras }}</p>
+    </div>
+  </div>
     <aside class="sidebar">
       <div class="user-info">
         <h3>Video SaaS</h3>
