@@ -8,6 +8,7 @@ import AdminDashboard from './components/AdminDashboard.vue'
 const token = ref(localStorage.getItem('token'))
 const user = ref(JSON.parse(localStorage.getItem('user') || 'null'))
 const currentView = ref('dashboard') // 'dashboard' o 'admin'
+const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000/api'
 
 // Función para iniciar sesión (se pasa a AuthLogin)
 const handleLoginSuccess = (data) => {
@@ -32,7 +33,7 @@ onMounted(async () => {
   if (urlParams.has('signature') && urlParams.has('id')) {
     // Lógica rápida de verificación para limpiar la URL
     try {
-        const verifyUrl = `http://192.168.0.38:8000/api/auth/verify/${urlParams.get('id')}?expires=${urlParams.get('expires')}&signature=${urlParams.get('signature')}`
+        const verifyUrl = `${API_URL}/auth/verify/${urlParams.get('id')}?expires=${urlParams.get('expires')}&signature=${urlParams.get('signature')}`
         const res = await fetch(verifyUrl)
         const data = await res.json()
         if (res.ok) {

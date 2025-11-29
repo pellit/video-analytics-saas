@@ -2,7 +2,7 @@
 import { ref } from 'vue'
 const emit = defineEmits(['success'])
 
-const API_URL = 'http://192.168.0.38:8000/api'
+const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000/api'
 const email = ref('')
 const password = ref('')
 const name = ref('')

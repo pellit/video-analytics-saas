@@ -2,8 +2,8 @@
 import { ref, onMounted } from 'vue'
 const props = defineProps(['token'])
 
-const API_URL = 'http://192.168.0.38:8000/api'
-const STREAM_URL = 'http://192.168.0.38:5000/video_feed'
+const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000/api'
+const STREAM_URL = import.meta.env.VITE_API_URL ? import.meta.env.VITE_API_URL.replace('/api', ':5000/video_feed') : 'http://192.168.0.38:5000/video_feed'
 
 const cameras = ref([])
 const activeCamera = ref(null)

@@ -2,9 +2,10 @@
 import { ref, onMounted } from 'vue'
 const props = defineProps(['token'])
 const stats = ref(null)
+const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000/api'
 
 onMounted(async () => {
-  const res = await fetch('http://192.168.0.38:8000/api/admin/stats', {
+  const res = await fetch(`${API_URL}/admin/stats`, {
     headers: { 'Authorization': `Bearer ${props.token}`, 'Accept': 'application/json' }
   })
   if (res.ok) stats.value = await res.json()
