@@ -61,4 +61,22 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('/camera/start', [CameraController::class, 'start']);
     Route::post('/camera/stop', [CameraController::class, 'stop']);
 
+
+
+    // --- ZONA SUPERADMIN ---
+    Route::prefix('admin')->group(function () {
+        
+        // Middleware casero: Si no es superadmin, error 403 (Prohibido)
+        Route::middleware(function ($request, $next) {
+            if ($request->user()->role !== 'superadmin') {
+                return response()->json(['message' => 'Acceso denegado'], 403);
+            }
+            return $next($request);
+        })->group(function () {
+            
+            // Aquí van todas las rutas de administración
+            Route::get('/stats', [AdminController::class, 'stats']);
+            
+        });
+    });
 });

@@ -204,6 +204,39 @@ onMounted(async () => {
     if (user.value?.role === 'superadmin') fetchAdminStats()
   }
 })
+
+
+// Nuevo Estado para Admin
+const currentView = ref('dashboard') // 'dashboard' o 'admin'
+const adminData = ref({ metrics: { users: 0, cameras: 0, active: 0 }, recent_users: [] })
+
+// Función para cargar datos de admin
+const loadAdminDashboard = async () => {
+  currentView.value = 'admin'
+  try {
+    const res = await fetch(`${API_URL}/admin/stats`, {
+      headers: { 
+        'Authorization': `Bearer ${token.value}`,
+        'Accept': 'application/json'
+      }
+    })
+    if (res.ok) {
+      adminData.value = await res.json()
+    }
+  } catch (e) {
+    console.error("Error cargando admin stats", e)
+  }
+}
+
+// Modifica la función logout para resetear la vista
+const logout = () => {
+  token.value = null
+  user.value = null
+  localStorage.removeItem('token')
+  localStorage.removeItem('user')
+  activeCamera.value = null
+  currentView.value = 'dashboard' // Reset
+}
 </script>
 
 <template>
@@ -242,52 +275,105 @@ onMounted(async () => {
     <aside class="sidebar">
       <div class="user-info">
         <h3>Video SaaS</h3>
-        <small>Hola, Usuario</small>
+        <small>Rol: {{ user?.role }}</small>
       </div>
       
-      <div class="camera-header">
-        <h4>Mis Cámaras</h4>
-        <button @click="showAddModal = true" class="btn-sm">+</button>
-      </div>
-
-      <div class="camera-list">
-        <div 
-          v-for="cam in cameras" :key="cam.id"
-          class="camera-item"
-          :class="{ active: activeCamera?.id === cam.id }"
-          @click="activeCamera = cam; isProcessing = false"
+      <nav class="nav-menu">
+        <button 
+          @click="currentView = 'dashboard'" 
+          :class="{ active: currentView === 'dashboard' }"
         >
-          {{ cam.name }}
-        </div>
+          📹 Mis Cámaras
+        </button>
+        
+        <button 
+          v-if="user?.role === 'superadmin'" 
+          @click="loadAdminDashboard"
+          :class="{ active: currentView === 'admin' }"
+          class="btn-admin"
+        >
+          ⚡ SuperAdmin
+        </button>
+      </nav>
+
+      <div v-if="currentView === 'dashboard'" class="camera-list-container">
+          <div class="camera-header">
+            <h4>Mis Dispositivos</h4>
+            <button @click="showAddModal = true" class="btn-sm">+</button>
+          </div>
+          <div class="camera-list">
+            <div 
+              v-for="cam in cameras" :key="cam.id"
+              class="camera-item"
+              :class="{ active: activeCamera?.id === cam.id }"
+              @click="activeCamera = cam; isProcessing = false"
+            >
+              {{ cam.name }}
+            </div>
+          </div>
       </div>
       
-      <button @click="logout" class="btn-logout">Salir</button>
+      <button @click="logout" class="btn-logout">Cerrar Sesión</button>
     </aside>
 
     <main class="content">
-      <div v-if="showAddModal" class="modal">
-        <div class="modal-content">
-          <h3>Nueva Cámara</h3>
-          <input v-model="newCameraName" placeholder="Nombre (Ej: Oficina)" />
-          <input v-model="newCameraUrl" placeholder="URL YouTube o RTSP" />
-          <div class="modal-actions">
-            <button @click="addCamera">Guardar</button>
-            <button @click="showAddModal = false" class="btn-cancel">Cancelar</button>
-          </div>
-        </div>
+      <div v-if="currentView === 'dashboard'">
+         <header v-if="activeCamera">
+            <h1>{{ activeCamera.name }}</h1>
+            <div>
+              <button v-if="!isProcessing" @click="startAnalysis" class="btn-start">▶ Iniciar</button>
+              <button v-else @click="stopAnalysis" class="btn-stop">⏹ Detener</button>
+            </div>
+         </header>
+         <div class="video-grid">
+            <div class="video-card">
+               <img v-if="isProcessing" :src="STREAM_URL" class="live-stream" />
+               <div v-else class="placeholder">Selecciona una cámara</div>
+            </div>
+            </div>
       </div>
 
-      <header v-if="activeCamera">
-        <h1>{{ activeCamera.name }}</h1>
-        <div>
-          <button v-if="!isProcessing" @click="startAnalysis" class="btn-start">▶ Iniciar</button>
-          <button v-else @click="stopAnalysis" class="btn-stop">⏹ Detener</button>
+      <div v-else-if="currentView === 'admin'" class="admin-dashboard">
+        <h1>Panel de Control Global</h1>
+        
+        <div class="stats-grid">
+          <div class="stat-card purple">
+            <h3>Usuarios Totales</h3>
+            <span class="number">{{ adminData.metrics.users }}</span>
+          </div>
+          <div class="stat-card blue">
+            <h3>Cámaras Registradas</h3>
+            <span class="number">{{ adminData.metrics.cameras }}</span>
+          </div>
+          <div class="stat-card green">
+            <h3>Streams Activos</h3>
+            <span class="number">{{ adminData.metrics.active }}</span>
+          </div>
         </div>
-      </header>
 
-      <div class="video-container">
-        <img v-if="isProcessing" :src="STREAM_URL" class="live-stream" />
-        <div v-else class="placeholder">Selecciona una cámara e inicia el análisis</div>
+        <div class="users-table-card">
+          <h3>Usuarios Registrados Recientemente</h3>
+          <table>
+            <thead>
+              <tr>
+                <th>ID</th>
+                <th>Nombre</th>
+                <th>Email</th>
+                <th>Rol</th>
+                <th>Fecha</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="u in adminData.recent_users" :key="u.id">
+                <td>#{{ u.id }}</td>
+                <td>{{ u.name }}</td>
+                <td>{{ u.email }}</td>
+                <td><span class="badge">{{ u.role }}</span></td>
+                <td>{{ new Date(u.created_at).toLocaleDateString() }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
       </div>
     </main>
   </div>
@@ -295,6 +381,27 @@ onMounted(async () => {
 
 <style scoped>
 /* Estilos básicos agregados para Auth y Modal */
+/* Navegación Sidebar */
+.nav-menu { display: flex; flex-direction: column; gap: 10px; margin-bottom: 20px; border-bottom: 1px solid #3b3b52; padding-bottom: 20px; }
+.nav-menu button { background: transparent; color: #ccc; border: none; text-align: left; padding: 10px; cursor: pointer; font-size: 1rem; border-radius: 5px; transition: 0.3s; }
+.nav-menu button:hover { background: #2b2b40; color: white; }
+.nav-menu button.active { background: #3b3b52; color: #fff; font-weight: bold; border-left: 4px solid #7367f0; }
+.btn-admin { color: #ff9f43 !important; }
+
+/* Dashboard Admin */
+.stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 20px; margin-bottom: 30px; }
+.stat-card { padding: 25px; border-radius: 12px; color: white; box-shadow: 0 4px 15px rgba(0,0,0,0.1); }
+.stat-card h3 { margin: 0 0 10px 0; font-size: 1rem; opacity: 0.9; }
+.stat-card .number { font-size: 2.5rem; font-weight: bold; }
+.purple { background: linear-gradient(135deg, #7367f0, #9e95f5); }
+.blue { background: linear-gradient(135deg, #00cfe8, #66e4f3); }
+.green { background: linear-gradient(135deg, #28c76f, #5dd794); }
+
+.users-table-card { background: white; padding: 20px; border-radius: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.05); }
+table { width: 100%; border-collapse: collapse; margin-top: 15px; }
+th { text-align: left; color: #666; font-size: 0.85rem; padding: 10px; border-bottom: 2px solid #f0f0f0; }
+td { padding: 12px 10px; border-bottom: 1px solid #f0f0f0; font-size: 0.9rem; color: #333; }
+.badge { background: #eee; padding: 4px 8px; border-radius: 4px; font-size: 0.75rem; text-transform: uppercase; font-weight: bold; }
 .auth-container { display: flex; justify-content: center; align-items: center; height: 100vh; background: #1e1e2d; }
 .auth-card { background: white; padding: 30px; border-radius: 10px; width: 300px; display: flex; flex-direction: column; gap: 10px; }
 .dashboard { display: flex; height: 100vh; font-family: sans-serif; }
