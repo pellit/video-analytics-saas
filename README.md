@@ -168,7 +168,7 @@ Así es como trabajarás día a día:
 A. En tu Computadora (Local Development)
 Estás en la rama development. Para trabajar, necesitas fusionar el archivo base con el de desarrollo. No uses docker-compose up a secas. Usa este comando:
 
-Bash
+Bash+
 
 # Levanta usando ambos archivos
 docker-compose -f docker-compose.yml -f docker-compose.dev.yml up
