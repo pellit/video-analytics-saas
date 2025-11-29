@@ -19,8 +19,6 @@ services:
         - redis
       networks:
         - saas_net
-      depends_on:
-      - redis
       links:        # <--- Agrega esto para reforzar la conexión DNS
         - redis
 
