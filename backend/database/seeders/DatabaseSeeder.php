@@ -38,5 +38,14 @@ class DatabaseSeeder extends Seeder
                 'email_verified_at' => now(),
             ]
         );
+
+        // Crear una cámara por defecto para el SuperAdmin si no existe
+        $admin = User::where('email', 'admin@video-saas.com')->first();
+        if ($admin) {
+            $admin->cameras()->firstOrCreate(
+                ['name' => 'Cámara por defecto'],
+                ['url' => 'rtsp://default/stream', 'status' => 'offline']
+            );
+        }
     }
 }

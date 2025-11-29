@@ -25,5 +25,10 @@ class Camera extends Model
     {
         return $this->belongsTo(User::class);
     }
+
+    public function detections()
+    {
+        return $this->hasMany(Detection::class);
+    }
 }
 

@@ -24,3 +24,7 @@ Route::post('/cameras', [CameraController::class, 'store']);     // Crear
 // Control de Video (Redis)
 Route::post('/camera/start', [CameraController::class, 'start']); // Iniciar stream
 Route::post('/camera/stop', [CameraController::class, 'stop']);   // Detener stream
+
+// Detecciones
+Route::get('/cameras/{id}/detections', [\App\Http\Controllers\DetectionController::class, 'index']);
+Route::post('/cameras/{id}/detections', [\App\Http\Controllers\DetectionController::class, 'store']);
