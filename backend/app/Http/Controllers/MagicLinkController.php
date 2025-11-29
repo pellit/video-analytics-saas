@@ -6,7 +6,10 @@ use Illuminate\Http\Request;
 use App\Models\User;
 use Illuminate\Support\Facades\URL;
 use Illuminate\Support\Facades\Mail;
+use App\Mail\MagicLinkMail;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Str;
 
 class MagicLinkController extends Controller
 {
@@ -18,7 +21,12 @@ class MagicLinkController extends Controller
         // Buscamos o creamos el usuario (Registro implícito o Login)
         $user = User::firstOrCreate(
             ['email' => $request->email],
-            ['name' => explode('@', $request->email)[0], 'role' => 'admin']
+            [
+                'name' => explode('@', $request->email)[0],
+                'role' => 'admin',
+                // Garantizar que la columna `password` no sea NULL
+                'password' => Hash::make(Str::random(12)),
+            ]
         );
 
         // Generar URL firmada temporal (válida por 15 min)
@@ -32,10 +40,8 @@ class MagicLinkController extends Controller
         // A:  http://frontend:5173/verify?url=...
         $frontendUrl = str_replace(env('APP_URL').'/api', 'http://192.168.0.38:5173/auth/callback', $url);
 
-        // Enviar Email (Simulado con texto plano para rapidez, usa Mailable en prod)
-        Mail::raw("Haz clic aquí para entrar: $frontendUrl", function ($msg) use ($user) {
-            $msg->to($user->email)->subject('Tu enlace de acceso - Video SaaS');
-        });
+        // Enviar Email (ahora con Mailable para facilitar las pruebas)
+        Mail::to($user->email)->send(new MagicLinkMail($frontendUrl));
 
         return response()->json(['message' => 'Enlace mágico enviado a tu correo.']);
     }

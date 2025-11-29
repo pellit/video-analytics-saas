@@ -12,18 +12,39 @@ const showAdd = ref(false)
 const newCam = ref({ name: '', url: '' })
 
 const fetchCameras = async () => {
-  const res = await fetch(`${API_URL}/cameras`, { headers: { 'Authorization': `Bearer ${props.token}`, 'Accept': 'application/json' } })
-  if (res.ok) {
-      cameras.value = await res.json()
-      if (cameras.value.length > 0) activeCamera.value = cameras.value[0]
+  try {
+    const res = await fetch(`${API_URL}/cameras`, { headers: { 'Authorization': `Bearer ${props.token}`, 'Accept': 'application/json' } })
+    if (res.ok) {
+        cameras.value = await res.json()
+        if (cameras.value.length > 0) activeCamera.value = cameras.value[0]
+    } else {
+        const body = await res.json().catch(() => null)
+        console.error('Error fetching cameras', res.status, body)
+        alert(body?.message || 'No se pudieron cargar las cámaras')
+    }
+  } catch (e) {
+    console.error(e)
+    alert('Error de red al cargar cámaras')
   }
 }
 
 const addCamera = async () => {
-  await fetch(`${API_URL}/cameras`, {
-    method: 'POST', headers: { 'Authorization': `Bearer ${props.token}`, 'Content-Type': 'application/json' }, body: JSON.stringify(newCam.value)
-  })
-  showAdd.value = false; fetchCameras()
+  try {
+    const res = await fetch(`${API_URL}/cameras`, {
+      method: 'POST', headers: { 'Authorization': `Bearer ${props.token}`, 'Content-Type': 'application/json' }, body: JSON.stringify(newCam.value)
+    })
+    const data = await res.json().catch(() => null)
+    if (!res.ok) {
+      console.error('Create camera failed', res.status, data)
+      alert(data?.message || 'No se pudo crear la cámara')
+      return
+    }
+    alert('Cámara creada correctamente')
+    showAdd.value = false; newCam.value = { name: '', url: '' }; fetchCameras()
+  } catch (e) {
+    console.error(e)
+    alert('Error de red al crear la cámara')
+  }
 }
 
 const toggleAnalysis = async (start) => {

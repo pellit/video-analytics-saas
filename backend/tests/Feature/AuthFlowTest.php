@@ -62,8 +62,7 @@ class AuthFlowTest extends TestCase
         $this->assertDatabaseHas('users', ['email' => 'magic@video.com']);
 
         // 3. Verificar que se "envió" el email
-        // Como usamos Mail::raw, verificamos que se haya enviado algo
-        Mail::assertSent(function ($mail) {
+        Mail::assertSent(\App\Mail\MagicLinkMail::class, function (\App\Mail\MagicLinkMail $mail) {
             return $mail->hasTo('magic@video.com');
         });
     }

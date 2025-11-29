@@ -4,36 +4,44 @@ namespace App\Http\Controllers;
 
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Redis;
+use Illuminate\Support\Facades\Auth;
+
+use App\Models\Camera;
 
 class CameraController extends Controller
 {
 
 // Listar cámaras del usuario
     public function index() {
-        return Auth::user()->cameras;
+        $cameras = Auth::user()->cameras()->get();
+        return response()->json($cameras);
     }
 
     // Guardar nueva cámara
     public function store(Request $request) {
-        $request->validate(['name' => 'required', 'url' => 'required']);
+        $validated = $request->validate(['name' => 'required', 'url' => 'required']);
 
+        // Crear la cámara asociada al usuario autenticado
         $camera = Auth::user()->cameras()->create([
-            'name' => $request->name,
-            'url' => $request->url
+            'name' => $validated['name'],
+            'url' => $validated['url']
         ]);
 
-        return $camera;
+        return response()->json($camera, 201);
     }
 
     // Iniciar Análisis (Tu código anterior, mejorado)
     public function start(Request $request) {
-        // ... validaciones ...
+        $request->validate(['id' => 'required|integer']);
 
-        // Publicar en Redis (Igual que antes)
+        // Verificar que la cámara pertenezca al usuario autenticado
+        $camera = Auth::user()->cameras()->findOrFail($request->id);
+
+        // Publicar en Redis
         $message = json_encode([
             'action' => 'START',
-            'camera_id' => $request->id,
-            'url' => $request->url
+            'camera_id' => $camera->id,
+            'url' => $camera->url
         ]);
         Redis::publish('video_control', $message);
 
@@ -42,9 +50,12 @@ class CameraController extends Controller
 
     public function stop(Request $request)
     {
+        $request->validate(['id' => 'required|integer']);
+        $camera = Auth::user()->cameras()->findOrFail($request->id);
+
         $message = json_encode([
             'action' => 'STOP',
-            'camera_id' => $request->id ?? 1
+            'camera_id' => $camera->id
         ]);
 
         Redis::publish('video_control', $message);
