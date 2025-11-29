@@ -269,6 +269,32 @@ docker exec -it code-api-1 php artisan optimize:clear
 ## Correr tests dentro de contenedor Docker
 docker exec -it code-api-1 php artisan test
 
+> ⚠️ Nota: este proyecto requiere PHP 8.2 para instalar las dependencias de Composer.
+> - Recomendado (modo seguro): ejecuta `composer install` dentro del contenedor Docker (usa `docker-compose run --rm api composer install` o `docker-compose exec api composer install` si el contenedor ya está levantado).
+> - Alternativa (si no usas Docker): instala PHP 8.2 en tu máquina local (o usa una herramienta como phpenv/containers) antes de ejecutar `composer install`.
+> - Evitar: `composer install --ignore-platform-reqs` solamente como último recurso de emergencia — puede que el código no funcione en PHP 8.1.
+
+### Ejecutar Composer dentro del contenedor (recomendado)
+
+Si montas la carpeta `backend` desde el host dentro del contenedor (p. ej. con `-v $(pwd)/backend:/var/www/html`) y el `vendor/` local no existe o está incompleto, el `entrypoint` podría lanzarse y ejecutar `php artisan` (migraciones/seeders) antes de instalar dependencias, provocando errores como "Trait Laravel\\Sanctum\\HasApiTokens not found".
+
+Formas seguras de ejecutar Composer dentro del contenedor:
+
+- Si el servicio `api` está corriendo (entrada por defecto ejecuta `entrypoint.sh`):
+```bash
+docker compose exec api composer install --no-interaction --optimize-autoloader --prefer-dist
+```
+- Si no está corriendo, o si prefieres un comando puntual que no ejecute `entrypoint.sh`, puedes saltar el entrypoint y ejecutar composer así:
+```bash
+docker compose run --rm --entrypoint "" -v $(pwd)/backend:/var/www/html api composer install --no-interaction --optimize-autoloader --prefer-dist
+```
+- Alternativa: exportar una variable para que `entrypoint.sh` no ejecute migraciones ni seeders (se puede usar si `entrypoint.sh` lo implementa):
+```bash
+ENTRYPOINT_RUN_MIGRATIONS=false docker compose run --rm -v $(pwd)/backend:/var/www/html api composer install
+```
+
+Esto permitirá que `composer` instale dependencias correctamente (p. ej. `laravel/sanctum`) sin arrancar de forma automática las migraciones que dependen de dependencias aún no instaladas.
+
 ## URL's Permitidas CORS
 dev.pellit.com.ar 
 api-dev.pellit.com.ar 
