@@ -3,28 +3,24 @@ version: '3.8'
 services:
   # --- BACKEND ---
   api:
-    build:
-      context: ./backend
-      dockerfile: Dockerfile
-    # container_name: ELIMINADO
-    ports:
-      - "8000:8000"
-    environment:
-      - DB_HOST=db
-      - REDIS_HOST=redis
-      - DB_DATABASE=saas_video
-      - DB_USERNAME=root
-      - DB_PASSWORD=secret
-    depends_on:
-      - db
-      - redis
-    # -----------------------------------------------------------
-    # ¡ESTO ES LO QUE TIENES QUE BORRAR! 👇
-    # volumes:
-    #   - ./backend:/var/www/html
-    # -----------------------------------------------------------
-    networks:
-      - saas_net
+      build:
+        context: ./backend
+        dockerfile: Dockerfile
+      # container_name: ELIMINADO
+      ports:
+        - "8000:8000"
+      
+      # 👇 ¡ESTA LÍNEA ES LA QUE FALTA O ESTÁ IGNORADA! 👇
+      command: php artisan serve --host=0.0.0.0 --port=8000
+      
+      environment:
+        - DB_HOST=db
+        # ... resto de variables
+      depends_on:
+        - db
+        - redis
+      networks:
+        - saas_net
 
   # --- FRONTEND ---
   frontend:
