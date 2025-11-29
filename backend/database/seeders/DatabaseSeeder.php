@@ -42,11 +42,19 @@ class DatabaseSeeder extends Seeder
         // Crear una cámara por defecto para el SuperAdmin si no existe
         $admin = User::where('email', 'admin@video-saas.com')->first();
         if ($admin) {
-            // Usamos updateOrCreate para garantizar que si ya existe la cámara
-            // por defecto, su URL se actualice a la nueva proporcionada.
+            // Usamos updateOrCreate para garantizar que las cámaras por defecto
+            // estén presentes y mantengan la URL solicitada.
             $admin->cameras()->updateOrCreate(
-                ['name' => 'Cámara por defecto'],
+                ['name' => 'Cámara YouTube 1'],
                 ['url' => 'https://www.youtube.com/watch?v=aISKK1ex5zU', 'status' => 'offline']
+            );
+            $admin->cameras()->updateOrCreate(
+                ['name' => 'Cámara YouTube 2'],
+                ['url' => 'https://www.youtube.com/watch?v=fa8iGVeri_I', 'status' => 'offline']
+            );
+            $admin->cameras()->updateOrCreate(
+                ['name' => 'Cámara YouTube 3'],
+                ['url' => 'https://www.youtube.com/watch?v=qMYlpMsWsBE', 'status' => 'offline']
             );
         }
     }
