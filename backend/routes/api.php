@@ -4,11 +4,10 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
 use App\Http\Controllers\CameraController;
 
-// Ruta de prueba para ver si la API responde
-Route::get('/test', function () {
-    return response()->json(['status' => 'API Working']);
-});
+Route::get('/user', function (Request $request) {
+    return $request->user();
+})->middleware('auth:sanctum');
 
-// --- TUS RUTAS DE CÁMARA ---
+// Tus rutas
 Route::post('/camera/start', [CameraController::class, 'start']);
 Route::post('/camera/stop', [CameraController::class, 'stop']);
