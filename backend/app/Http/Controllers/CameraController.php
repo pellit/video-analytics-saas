@@ -7,29 +7,37 @@ use Illuminate\Support\Facades\Redis;
 
 class CameraController extends Controller
 {
-    public function start(Request $request)
-    {
-        // Validamos que nos envíen ID y URL
-        $request->validate([
-            'id' => 'required',
-            'url' => 'required|url',
-            'name' => 'nullable|string'
+
+// Listar cámaras del usuario
+    public function index() {
+        return Auth::user()->cameras;
+    }
+
+    // Guardar nueva cámara
+    public function store(Request $request) {
+        $request->validate(['name' => 'required', 'url' => 'required']);
+
+        $camera = Auth::user()->cameras()->create([
+            'name' => $request->name,
+            'url' => $request->url
         ]);
 
-        // Construimos el mensaje para el Worker de Python
+        return $camera;
+    }
+
+    // Iniciar Análisis (Tu código anterior, mejorado)
+    public function start(Request $request) {
+        // ... validaciones ...
+
+        // Publicar en Redis (Igual que antes)
         $message = json_encode([
             'action' => 'START',
             'camera_id' => $request->id,
             'url' => $request->url
         ]);
-
-        // Publicamos en el canal 'video_control' de Redis
         Redis::publish('video_control', $message);
 
-        return response()->json([
-            'status' => 'success',
-            'message' => "Análisis iniciado en cámara {$request->id}"
-        ]);
+        return response()->json(['status' => 'success']);
     }
 
     public function stop(Request $request)

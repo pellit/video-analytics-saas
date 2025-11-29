@@ -45,4 +45,8 @@ class User extends Authenticatable
             'password' => 'hashed',
         ];
     }
+
+    public function cameras() {
+        return $this->hasMany(Camera::class);
+    }
 }
