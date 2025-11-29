@@ -263,5 +263,16 @@ Tu configuración: command: php artisan serve --host=0.0.0.0 ... ✅ (Correcto)
 
 
 
-Correr comando dentro de contenedor Docker
+## Correr comando dentro de contenedor Docker
 docker exec -it code-api-1 php artisan optimize:clear
+
+## Correr tests dentro de contenedor Docker
+docker exec -it code-api-1 php artisan test
+
+## URL's Permitidas CORS
+dev.pellit.com.ar 
+api-dev.pellit.com.ar 
+video-dev.pellit.com.ar 
+cv.pellit.com.ar 
+api-cv.pellit.com.ar 
+video.pellit.com.ar;
