@@ -22,7 +22,20 @@ app.add_middleware(
 )
 
 REDIS_HOST = os.environ.get('REDIS_HOST', 'localhost')
-r = redis.Redis(host=REDIS_HOST, port=6379, decode_responses=True)
+
+# --- MEJORA: Bucle de conexión robusto ---
+r = None
+while True:
+    try:
+        print(f"⏳ Intentando conectar a Redis en: {REDIS_HOST}...")
+        r = redis.Redis(host=REDIS_HOST, port=6379, decode_responses=True)
+        r.ping() # Ping para verificar conexión real
+        print("✅ Conexión exitosa a Redis.")
+        break
+    except Exception as e:
+        print(f"⚠️ Redis no está listo ({e}). Reintentando en 2s...")
+        time.sleep(2)
+# -----------------------------------------
 
 global_state = {
     "active": False,
