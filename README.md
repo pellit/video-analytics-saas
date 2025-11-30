@@ -116,6 +116,8 @@ MYSQL_ROOT_PASSWORD=secret_secure_password
 # Redis
 REDIS_HOST=redis
 REDIS_PORT=6379
+  
+Note: Avoid exposing internal services like Redis on the host in production/Dokploy. We intentionally don't publish the Redis host port in `docker-compose.yml` to prevent port collisions with other system services. Configure the host side mapping only in dev (docker-compose.dev.yml) if you need host access.
 
 # Laravel
 APP_ENV=production
