@@ -175,7 +175,9 @@ Estás en la rama development. Para trabajar, necesitas fusionar el archivo base
 Bash+
 
 # Levanta usando ambos archivos
-docker-compose -f docker-compose.yml -f docker-compose.dev.yml up
+COMPOSE_PROFILES=dev docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build
+
+Nota: En vez de usar `docker compose -f docker-compose.yml -f docker-compose.dev.yml up`, ejecuta el comando con `COMPOSE_PROFILES=dev` para que los overrides (puertos y volúmenes orientados a dev) solo se apliquen cuando los quieras usar. Esto evita que servicios de dev expongan puertos en hosts compartidos como Dokploy.
 Tip: Crea un alias en tu terminal o un archivo Makefile para no escribir eso siempre. Por ejemplo, make dev.
 
 B. En Dockploy (Entorno de Staging / Pruebas)
