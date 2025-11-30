@@ -21,3 +21,4 @@
 .vscode
 docker-compose.override.yml
 **/*.log
+.env
