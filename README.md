@@ -122,6 +122,8 @@ APP_ENV=production
 APP_KEY=base64:TU_CLAVE_GENERADA_AQUI
 APP_DEBUG=false
 APP_URL=https://tu-dominio.com
+VITE_API_URL=https://tu-dominio.com/api
+WORKER_API_KEY=your_worker_api_key_here
 ```
 
 -----

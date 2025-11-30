@@ -20,6 +20,7 @@ Route::get('/user', function (Request $request) {
 // CRUD de Cámaras
 Route::get('/cameras', [CameraController::class, 'index']);      // Listar
 Route::post('/cameras', [CameraController::class, 'store']);     // Crear
+Route::patch('/cameras/{id}', [CameraController::class, 'update']);  // Actualizar cámara
 
 // Control de Video (Redis)
 Route::post('/camera/start', [CameraController::class, 'start']); // Iniciar stream
@@ -28,3 +29,10 @@ Route::post('/camera/stop', [CameraController::class, 'stop']);   // Detener str
 // Detecciones
 Route::get('/cameras/{id}/detections', [\App\Http\Controllers\DetectionController::class, 'index']);
 Route::post('/cameras/{id}/detections', [\App\Http\Controllers\DetectionController::class, 'store']);
+
+// Alert Rules (user-specific)
+Route::get('/alerts', [\App\Http\Controllers\AlertController::class, 'index']);
+Route::post('/alerts', [\App\Http\Controllers\AlertController::class, 'store']);
+Route::put('/alerts/{alert}', [\App\Http\Controllers\AlertController::class, 'update']);
+Route::delete('/alerts/{alert}', [\App\Http\Controllers\AlertController::class, 'destroy']);
+Route::get('/alerts/recent', [\App\Http\Controllers\AlertController::class, 'recent']);

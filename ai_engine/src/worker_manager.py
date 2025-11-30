@@ -113,6 +113,34 @@ def video_processing_loop():
         with global_state["lock"]:
             global_state["current_frame"] = annotated_frame.copy()
 
+        # Publicar detecciones en Redis y al Backend
+        try:
+            detections = results[0].boxes
+            for box in detections:
+                try:
+                    # label and score extraction
+                    label = results[0].names.get(int(box.cls), str(int(box.cls))) if results[0].names else str(int(box.cls))
+                    score = float(box.conf)
+                    bbox = box.xyxy.tolist()
+                    payload = { 'label': label, 'score': score, 'bbox': bbox }
+                    event_obj = { 'camera_id': int(global_state['camera_id']), 'event': label, 'payload': payload }
+                    # Publish on Redis channel
+                    r.publish('detections', json.dumps(event_obj))
+                    # Send to backend worker endpoint
+                    backend_url = os.environ.get('BACKEND_API_URL', 'http://localhost:8000')
+                    worker_key = os.environ.get('WORKER_API_KEY')
+                    if worker_key:
+                        try:
+                            import requests
+                            headers = {'X-WORKER-KEY': worker_key, 'Content-Type': 'application/json'}
+                            requests.post(f"{backend_url}/api/worker/detections", json=event_obj, headers=headers, timeout=2)
+                        except Exception as e:
+                            print(f"⚠️ Error enviando deteccion al backend: {e}")
+                except Exception as e:
+                    print(f"⚠️ Error procesando box: {e}")
+        except Exception as e:
+            print(f"⚠️ Error generando detecciones: {e}")
+
 def redis_listener_loop():
     print("👂 Escuchando Redis 'video_control'...")
     pubsub = r.pubsub()
@@ -129,6 +157,15 @@ def redis_listener_loop():
                 if action == 'START':
                     global_state["url"] = data.get('url')
                     global_state["camera_id"] = data.get('camera_id')
+                    # Allow workers to send a model name (eg. 'yolov8n' or 'yolov8n.pt')
+                    model_name = data.get('model')
+                    if model_name:
+                        try:
+                            print(f"⚙️ Loading model requested: {model_name}")
+                            global model
+                            model = YOLO(f"{model_name}.pt") if not model_name.endswith('.pt') else YOLO(model_name)
+                        except Exception as e:
+                            print(f"⚠️ Error loading {model_name}: {e}")
                     global_state["active"] = True
                 elif action == 'STOP':
                     global_state["active"] = False

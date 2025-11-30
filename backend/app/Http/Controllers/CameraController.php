@@ -30,6 +30,20 @@ class CameraController extends Controller
         return response()->json($camera, 201);
     }
 
+    // Update camera settings (name/url/detection options)
+    public function update(Request $request, $id) {
+        $camera = Auth::user()->cameras()->findOrFail($id);
+        $validated = $request->validate([
+            'name' => 'sometimes|string',
+            'url' => 'sometimes|string',
+            'detection_enabled' => 'sometimes|boolean',
+            'detection_model' => 'sometimes|string|nullable',
+            'tracking' => 'sometimes|boolean',
+        ]);
+        $camera->update($validated);
+        return response()->json($camera);
+    }
+
     // Iniciar Análisis (Tu código anterior, mejorado)
     public function start(Request $request) {
         $request->validate(['id' => 'required|integer']);

@@ -10,6 +10,8 @@ services:
     environment:
       APP_ENV: local
       APP_DEBUG: true
+      WORKER_API_KEY: ${WORKER_API_KEY}
+      APP_KEY: ${APP_KEY:-}
     
     # ELIMINAMOS/COMENTAMOS: Los volúmenes de código fuente
     # volumes:
@@ -24,6 +26,9 @@ services:
     # volumes:
     #   - ./frontend:/app
     #   - /app/node_modules
+    environment:
+      VITE_API_URL: ${VITE_API_URL:-http://localhost:8000/api}
+    #   - /app/node_modules
 
   # --- AI WORKER ---
   ai_worker:
@@ -32,6 +37,9 @@ services:
     #   - ./ai_engine:/app
     environment:
       PYTHONUNBUFFERED: 1
+      REDIS_HOST: ${REDIS_HOST:-redis}
+      BACKEND_API_URL: ${BACKEND_API_URL:-http://api:8000}
+      WORKER_API_KEY: ${WORKER_API_KEY}
     # Opcional: Si usas Label Studio en dev, déjalo aquí
     # ports:
       # - "8081:8080"

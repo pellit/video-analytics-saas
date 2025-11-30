@@ -12,6 +12,10 @@ use Illuminate\Support\Facades\Route;
 // 1. Cargar Rutas Públicas (Auth)
 require __DIR__ . '/api/auth.php';
 
+// Worker endpoints (simple API key based)
+use App\Http\Controllers\WorkerController;
+Route::post('/worker/detections', [WorkerController::class, 'postDetection']);
+
 
 // 2. Cargar Rutas Protegidas de Usuario
 // Aplicamos el middleware de autenticación a todo este grupo

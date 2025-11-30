@@ -30,5 +30,10 @@ class Camera extends Model
     {
         return $this->hasMany(Detection::class);
     }
+
+    public function alerts()
+    {
+        return $this->hasMany(Alert::class);
+    }
 }
 

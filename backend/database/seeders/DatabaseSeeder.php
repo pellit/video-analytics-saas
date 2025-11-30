@@ -46,15 +46,15 @@ class DatabaseSeeder extends Seeder
             // estén presentes y mantengan la URL solicitada.
             $admin->cameras()->updateOrCreate(
                 ['name' => 'Cámara YouTube 1'],
-                ['url' => 'https://www.youtube.com/watch?v=aISKK1ex5zU', 'status' => 'offline']
+                ['url' => 'https://www.youtube.com/watch?v=aISKK1ex5zU', 'status' => 'offline', 'detection_enabled' => true, 'detection_model' => 'yolov8n']
             );
             $admin->cameras()->updateOrCreate(
                 ['name' => 'Cámara YouTube 2'],
-                ['url' => 'https://www.youtube.com/watch?v=fa8iGVeri_I', 'status' => 'offline']
+                ['url' => 'https://www.youtube.com/watch?v=fa8iGVeri_I', 'status' => 'offline', 'detection_enabled' => true, 'detection_model' => 'yolov8n']
             );
             $admin->cameras()->updateOrCreate(
                 ['name' => 'Cámara YouTube 3'],
-                ['url' => 'https://www.youtube.com/watch?v=qMYlpMsWsBE', 'status' => 'offline']
+                ['url' => 'https://www.youtube.com/watch?v=qMYlpMsWsBE', 'status' => 'offline', 'detection_enabled' => true, 'detection_model' => 'yolov8n']
             );
         }
     }

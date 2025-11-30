@@ -12,6 +12,7 @@ services:
       command: ["php", "artisan", "serve", "--host=0.0.0.0", "--port=8000"]
       environment:
         - DB_HOST=db
+        - APP_KEY=${APP_KEY:-}
         # ... resto de variables
       depends_on:
         - db
@@ -29,6 +30,8 @@ services:
     # container_name: ELIMINADO
     ports:
       - "5173:5173"
+    environment:
+      - VITE_API_URL=${VITE_API_URL:-http://localhost:8000/api}
     # -----------------------------------------------------
     # ¡VOLUMES ELIMINADOS! (Esto soluciona el error de node_modules)
     # -----------------------------------------------------
@@ -46,6 +49,8 @@ services:
       environment:
         - REDIS_HOST=redis
         - PYTHONUNBUFFERED=1
+        - BACKEND_API_URL=http://api:8000
+        - WORKER_API_KEY=${WORKER_API_KEY}
       ports:
         - "5000:5000"  # <--- ¡NUEVO PUERTO PARA VIDEO!
       depends_on:

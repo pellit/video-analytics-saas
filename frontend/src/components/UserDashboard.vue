@@ -58,6 +58,45 @@ const addCamera = async () => {
   }
 }
 
+// New alert form state
+const newAlertName = ref('Auto Alert')
+const newAlertEvent = ref('person_detected')
+const newAlertThreshold = ref(0.5)
+
+const updateCameraSettings = async (camera) => {
+  try {
+    const res = await fetch(`${API_URL}/cameras/${camera.id}`, {
+      method: 'PATCH', headers: { 'Authorization': `Bearer ${props.token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ detection_enabled: camera.detection_enabled, detection_model: camera.detection_model, tracking: camera.tracking })
+    })
+    if (!res.ok) {
+      const body = await res.json().catch(() => null)
+      alert('No se pudo actualizar configuración: ' + (body?.message || res.status))
+    } else {
+      alert('Configuración actualizada')
+    }
+  } catch (e) { console.error(e); alert('Error red al actualizar cámara') }
+}
+
+const createAlert = async (camera, name, event, threshold) => {
+  try {
+    const res = await fetch(`${API_URL}/alerts`, {
+      method: 'POST', headers: { 'Authorization': `Bearer ${props.token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ camera_id: camera.id, name, event, threshold })
+    })
+    if (res.ok) { alert('Alerta creada') } else { alert('Error creando alerta') }
+  } catch (e) { console.error(e); alert('Error de red al crear alerta') }
+}
+
+const alerts = ref([])
+const fetchAlerts = async () => {
+  try {
+    const res = await fetch(`${API_URL}/alerts/recent`, { headers: { 'Authorization': `Bearer ${props.token}`, 'Accept': 'application/json' } })
+    if (res.ok) alerts.value = await res.json()
+  } catch (e) { console.error(e) }
+}
+setInterval(fetchAlerts, 5000)
+
 const toggleAnalysis = async (start) => {
   const endpoint = start ? 'start' : 'stop'
   await fetch(`${API_URL}/camera/${endpoint}`, {
@@ -130,14 +169,42 @@ onMounted(fetchCameras)
     <div v-if="activeCamera" class="video-section">
         <header>
             <h2>{{ activeCamera.name }}</h2>
-            <button v-if="!isProcessing" @click="toggleAnalysis(true)" class="btn-start">▶ Iniciar</button>
+            <div class="header-actions">
+              <button v-if="!isProcessing" @click="toggleAnalysis(true)" class="btn-start">▶ Iniciar</button>
             <button v-else @click="toggleAnalysis(false)" class="btn-stop">⏹ Detener</button>
+              <div v-if="user?.role === 'superadmin'" class="camera-settings">
+                  <label><input type="checkbox" v-model="activeCamera.detection_enabled" /> Detección</label>
+                  <select v-model="activeCamera.detection_model">
+                      <option value="yolov8n">yolov8n</option>
+                      <option value="yolov8s">yolov8s</option>
+                      <option value="yolov8m">yolov8m</option>
+                      <option value="yolov8l">yolov8l</option>
+                  </select>
+                  <label><input type="checkbox" v-model="activeCamera.tracking" /> Seguimiento</label>
+                  <button @click="updateCameraSettings(activeCamera)">Guardar Config</button>
+              </div>
+            </div>
         </header>
+        <div v-if="user?.role === 'superadmin'" class="alert-creator">
+          <input v-model="newAlertName" placeholder="Nombre alerta" />
+          <select v-model="newAlertEvent">
+            <option value="person_detected">person_detected</option>
+            <option value="car_detected">car_detected</option>
+          </select>
+          <input v-model.number="newAlertThreshold" placeholder="Umbral (0-1)" type="number" min="0" max="1" step="0.01" />
+          <button @click="createAlert(activeCamera, newAlertName, newAlertEvent, newAlertThreshold)">Crear Alerta</button>
+        </div>
         <div class="video-box">
             <iframe v-if="isProcessing && isYouTube" :src="activeStreamUrl" frameborder="0" allow="autoplay; encrypted-media; picture-in-picture" allowfullscreen class="stream"></iframe>
             <img v-else-if="isProcessing" :src="activeStreamUrl" class="stream" />
           <div v-else class="placeholder">Stream Inactivo</div>
         </div>
+    </div>
+    <div class="alerts-panel">
+      <h3>Alertas recientes</h3>
+      <ul>
+        <li v-for="a in alerts" :key="a.id">{{ new Date(a.created_at).toLocaleTimeString() }} - {{ a.event }} en cam {{ a.camera_id }} ({{ a.payload?.label }}:{{ a.payload?.score }})</li>
+      </ul>
     </div>
   </div>
 </template>
