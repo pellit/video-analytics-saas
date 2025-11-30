@@ -1,5 +1,5 @@
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, computed } from 'vue'
 const props = defineProps(['token'])
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000/api'
@@ -55,6 +55,43 @@ const toggleAnalysis = async (start) => {
   isProcessing.value = start
 }
 
+// Utilities to detect YouTube and build embed URL
+const getYouTubeEmbedUrl = (url) => {
+  if (!url) return null
+  try {
+    const u = new URL(url)
+    // youtu.be short link
+    if (u.hostname === 'youtu.be') {
+      const id = u.pathname.replace('/', '')
+      return `https://www.youtube-nocookie.com/embed/${id}?autoplay=1`
+    }
+    // youtube.com watch?v=ID
+    if (u.hostname.includes('youtube.com')) {
+      const id = u.searchParams.get('v')
+      if (id) return `https://www.youtube-nocookie.com/embed/${id}?autoplay=1`
+      // Handle embed URL directly
+      if (u.pathname.includes('/embed/')) {
+        return url
+      }
+    }
+  } catch (e) {
+    return null
+  }
+  return null
+}
+
+const activeStreamUrl = computed(() => {
+  if (!activeCamera.value) return null
+  // If the camera has a YouTube URL, return its embed URL
+  const embed = getYouTubeEmbedUrl(activeCamera.value.url)
+  if (embed) return embed
+  // otherwise return the configured STREAM_URL for the service
+  return STREAM_URL
+})
+const isYouTube = computed(() => {
+  return !!activeStreamUrl.value && activeStreamUrl.value.includes('youtube')
+})
+
 onMounted(fetchCameras)
 </script>
 
@@ -86,8 +123,9 @@ onMounted(fetchCameras)
             <button v-else @click="toggleAnalysis(false)" class="btn-stop">⏹ Detener</button>
         </header>
         <div class="video-box">
-            <img v-if="isProcessing" :src="STREAM_URL" class="stream" />
-            <div v-else class="placeholder">Stream Inactivo</div>
+            <iframe v-if="isProcessing && isYouTube" :src="activeStreamUrl" frameborder="0" allow="autoplay; encrypted-media; picture-in-picture" allowfullscreen class="stream"></iframe>
+            <img v-else-if="isProcessing" :src="activeStreamUrl" class="stream" />
+          <div v-else class="placeholder">Stream Inactivo</div>
         </div>
     </div>
   </div>
