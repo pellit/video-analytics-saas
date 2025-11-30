@@ -24,5 +24,19 @@ test.describe('Authentication flow', () => {
 
     // 5) Admin button visible after login
     await expect(page.locator('button.btn-admin')).toBeVisible();
+
+    // 6) La lista de cámaras debe contener al menos 3 cámaras (las seeded)
+    await page.waitForSelector('.cam-chip')
+    await expect(page.locator('.cam-chip')).toHaveCount(3)
+
+    // 7) Comprobar que al seleccionar la primera cámara se puede ver el vídeo (embed o stream)
+    await page.click('.cam-chip')
+    // Hacer click en Iniciar si existe
+    const startButton = page.locator('button.btn-start')
+    if (await startButton.count() > 0) {
+      await startButton.click()
+    }
+    // Comprobar que hay iframe (YouTube embed) o imagen de stream
+    await expect(page.locator('iframe, img.stream')).toBeVisible()
   });
 });

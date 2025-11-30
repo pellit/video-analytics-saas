@@ -28,6 +28,17 @@ const fetchCameras = async () => {
   }
 }
 
+const isYouTubeUrl = (url) => {
+  if (!url) return false
+  return url.includes('youtube.com') || url.includes('youtu.be')
+}
+
+const getYoutubeEmbedUrl = (url) => {
+  if (!url) return ''
+  const idMatch = url.match(/(?:v=|youtu\.be\/)([a-zA-Z0-9_-]+)/)
+  return idMatch ? `https://www.youtube.com/embed/${idMatch[1]}` : ''
+}
+
 const addCamera = async () => {
   try {
     const res = await fetch(`${API_URL}/cameras`, {

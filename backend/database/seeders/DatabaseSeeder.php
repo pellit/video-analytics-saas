@@ -60,4 +60,3 @@ class DatabaseSeeder extends Seeder
     }
 }
 
-// agrega a la app opcines de ver con modelo de profundidad y seguimiento agregando rutinas de ultralitics simpre que podamos elegir y ademas un sistema de alertas en tiempo real configurable, luego de todo eso haz un push 
