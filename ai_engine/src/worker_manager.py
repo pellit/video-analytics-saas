@@ -38,10 +38,7 @@ while True:
 # -----------------------------------------
 
 global_state = {
-    "active": False,
-    "camera_id": None,
-    "url": None,
-    "current_frame": None,
+    "streams": {},  # camera_id => { active, url, current_frame, lock, thread }
     "lock": threading.Lock()
 }
 
@@ -65,23 +62,21 @@ def get_stream_url(youtube_url):
         print(f"❌ Error yt-dlp: {e}")
         return youtube_url
 
-def video_processing_loop():
-    print("🚀 Hilo de procesamiento iniciado")
+def stream_thread(camera_id, url):
+    print(f"🚀 Iniciando stream thread para camera {camera_id}")
     cap = None
-    
     while True:
-        if not global_state["active"]:
-            if cap:
-                cap.release()
-                cap = None
-            time.sleep(0.5)
-            continue
-
-        if cap is None:
-            raw_url = global_state['url']
+        with global_state['lock']:
+            stream = global_state['streams'].get(str(camera_id))
+            if not stream or not stream.get('active'):
+                if cap:
+                    cap.release(); cap = None
+                time.sleep(0.5)
+                continue
+            raw_url = stream.get('url')
             print(f"🔍 Buscando stream para: {raw_url}")
             
-            if "youtube" in raw_url or "youtu.be" in raw_url:
+        if "youtube" in raw_url or "youtu.be" in raw_url:
                 real_url = get_stream_url(raw_url)
                 print(f"▶ Stream URL obtenida (imprimiendo primeros 50 chars): {real_url[:50]}...")
             else:
@@ -110,8 +105,10 @@ def video_processing_loop():
         results = model(frame, verbose=False)
         annotated_frame = results[0].plot()
 
-        with global_state["lock"]:
-            global_state["current_frame"] = annotated_frame.copy()
+        with global_state['lock']:
+            stream = global_state['streams'].get(str(camera_id))
+            if stream is not None:
+                stream['current_frame'] = annotated_frame.copy()
 
         # Publicar detecciones en Redis y al Backend
         try:
@@ -123,7 +120,7 @@ def video_processing_loop():
                     score = float(box.conf)
                     bbox = box.xyxy.tolist()
                     payload = { 'label': label, 'score': score, 'bbox': bbox }
-                    event_obj = { 'camera_id': int(global_state['camera_id']), 'event': label, 'payload': payload }
+                    event_obj = { 'camera_id': int(camera_id), 'event': label, 'payload': payload }
                     # Publish on Redis channel
                     r.publish('detections', json.dumps(event_obj))
                     # Send to backend worker endpoint
@@ -155,8 +152,19 @@ def redis_listener_loop():
                 
                 action = data.get('action')
                 if action == 'START':
-                    global_state["url"] = data.get('url')
-                    global_state["camera_id"] = data.get('camera_id')
+                    cam_id = str(data.get('camera_id'))
+                    url = data.get('url')
+                    with global_state['lock']:
+                        if cam_id not in global_state['streams']:
+                            global_state['streams'][cam_id] = { 'active': True, 'url': url, 'current_frame': None, 'lock': threading.Lock(), 'thread': None }
+                        else:
+                            global_state['streams'][cam_id]['active'] = True
+                            global_state['streams'][cam_id]['url'] = url
+                        # Launch thread if missing
+                        if not global_state['streams'][cam_id].get('thread'):
+                            t = threading.Thread(target=stream_thread, args=(cam_id, url), daemon=True)
+                            global_state['streams'][cam_id]['thread'] = t
+                            t.start()
                     # Allow workers to send a model name (eg. 'yolov8n' or 'yolov8n.pt')
                     model_name = data.get('model')
                     if model_name:
@@ -168,7 +176,10 @@ def redis_listener_loop():
                             print(f"⚠️ Error loading {model_name}: {e}")
                     global_state["active"] = True
                 elif action == 'STOP':
-                    global_state["active"] = False
+                    cam_id = str(data.get('camera_id'))
+                    with global_state['lock']:
+                        if cam_id in global_state['streams']:
+                            global_state['streams'][cam_id]['active'] = False
             except Exception as e:
                 print(f"Error procesando mensaje Redis: {e}")
 
@@ -191,8 +202,28 @@ def generate_mjpeg():
         time.sleep(0.04)
 
 @app.get("/video_feed")
-def video_feed():
-    return StreamingResponse(generate_mjpeg(), media_type="multipart/x-mixed-replace; boundary=frame")
+def video_feed(camera_id: str = None):
+    # stream a specific camera_id if provided, otherwise default to first active stream
+    def generator():
+        while True:
+            frame = None
+            with global_state['lock']:
+                if camera_id:
+                    stream = global_state['streams'].get(str(camera_id))
+                    if stream and stream.get('current_frame') is not None:
+                        frame = stream['current_frame']
+                else:
+                    # pick first active stream
+                    for s in global_state['streams'].values():
+                        if s.get('current_frame') is not None:
+                            frame = s['current_frame']; break
+            if frame is None:
+                time.sleep(0.1); continue
+            (flag, encodedImage) = cv2.imencode('.jpg', frame)
+            if not flag: continue
+            yield (b'--frame\r\n' b'Content-Type: image/jpeg\r\n\r\n' + bytearray(encodedImage) + b'\r\n')
+            time.sleep(0.04)
+    return StreamingResponse(generator(), media_type='multipart/x-mixed-replace; boundary=frame')
 
 @app.on_event("startup")
 def startup_event():

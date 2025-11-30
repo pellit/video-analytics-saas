@@ -147,9 +147,9 @@ const drawDetections = () => {
   }
   const ctx = canvas.getContext('2d')
   // scale to displayed size
-  const rect = img.getBoundingClientRect()
-  const scaleX = canvas.width / rect.width
-  const scaleY = canvas.height / rect.height
+  // Use natural pixel coordinates since canvas matches natural size
+  const scaleX = 1
+  const scaleY = 1
   ctx.clearRect(0,0,canvas.width, canvas.height)
   ctx.strokeStyle = 'lime'
   ctx.lineWidth = 3
@@ -233,6 +233,33 @@ watch([activeCamera, isProcessing], ([newCam, processing]) => {
   if (processing && newCam?.detection_enabled) startPollingDetections()
   else stopPollingDetections()
 })
+
+// SSE subscription for real-time events (detections/alerts)
+let eventSource = null
+const initSSE = () => {
+  if (!props.token) return
+  // We pass the token as a query param since EventSource doesn't support Authorization header
+  const url = `${API_URL.replace('/api', '')}/api/sse/stream?token=${encodeURIComponent(props.token)}`
+  eventSource = new EventSource(url + '&_t=' + Math.random())
+  eventSource.addEventListener('detections', (e) => {
+    try {
+      const data = JSON.parse(e.data)
+      if (activeCamera.value && data.camera_id === activeCamera.value.id) {
+        // push to detections
+        detections.value.unshift(data)
+        // limit length
+        if (detections.value.length > 20) detections.value.pop()
+      }
+    } catch (e) {}
+  })
+  eventSource.addEventListener('alerts', (e) => {
+    try { const payload = JSON.parse(e.data); alerts.value.unshift(payload); if (alerts.value.length>20) alerts.value.pop() } catch(e){}
+  })
+  eventSource.onopen = () => console.log('SSE connected')
+  eventSource.onerror = (err) => { console.warn('SSE error', err); }
+}
+onMounted(() => { initSSE() })
+onUnmounted(() => { if (eventSource) eventSource.close() })
 </script>
 
 <template>

@@ -36,3 +36,5 @@ Route::post('/alerts', [\App\Http\Controllers\AlertController::class, 'store']);
 Route::put('/alerts/{alert}', [\App\Http\Controllers\AlertController::class, 'update']);
 Route::delete('/alerts/{alert}', [\App\Http\Controllers\AlertController::class, 'destroy']);
 Route::get('/alerts/recent', [\App\Http\Controllers\AlertController::class, 'recent']);
+// SSE stream for real-time detections and alerts
+Route::get('/sse/stream', [\App\Http\Controllers\SseController::class, 'stream']);
