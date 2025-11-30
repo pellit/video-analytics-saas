@@ -28,8 +28,7 @@ services:
       context: ./frontend
       dockerfile: Dockerfile
     # container_name: ELIMINADO
-    ports:
-      - "5173:5173"
+    # NOTE: not publishing `frontend` port in base compose to avoid host port conflicts in multi-tenant hosts (e.g. Dokploy)
     environment:
       - VITE_API_URL=${VITE_API_URL:-http://localhost:8000/api}
     # -----------------------------------------------------
@@ -51,8 +50,7 @@ services:
         - PYTHONUNBUFFERED=1
         - BACKEND_API_URL=http://api:8000
         - WORKER_API_KEY=${WORKER_API_KEY}
-      ports:
-        - "5000:5000"  # <--- ¡NUEVO PUERTO PARA VIDEO!
+      # Worker is internal by default in production - do not publish to avoid host port conflicts
       depends_on:
         - redis
       networks:
