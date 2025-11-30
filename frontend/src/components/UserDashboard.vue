@@ -1,5 +1,6 @@
 <script setup>
 import { ref, onMounted, computed } from 'vue'
+import { watch } from 'vue'
 const props = defineProps(['token'])
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000/api'
@@ -97,12 +98,34 @@ const fetchAlerts = async () => {
 }
 setInterval(fetchAlerts, 5000)
 
+// Detections polling
+const detections = ref([])
+const fetchDetections = async () => {
+  if (!activeCamera.value) return
+  try {
+    const res = await fetch(`${API_URL}/cameras/${activeCamera.value.id}/detections`, { headers: { 'Authorization': `Bearer ${props.token}` } })
+    if (res.ok) detections.value = await res.json()
+  } catch (e) { console.error('fetchDetections error', e) }
+}
+let detectionsInterval = null
+const startPollingDetections = () => {
+  fetchDetections()
+  detectionsInterval = setInterval(fetchDetections, 2000)
+}
+const stopPollingDetections = () => {
+  if (detectionsInterval) clearInterval(detectionsInterval)
+  detections.value = []
+}
+
 const toggleAnalysis = async (start) => {
   const endpoint = start ? 'start' : 'stop'
   await fetch(`${API_URL}/camera/${endpoint}`, {
     method: 'POST', headers: { 'Authorization': `Bearer ${props.token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ id: activeCamera.value.id, url: activeCamera.value.url })
   })
   isProcessing.value = start
+  // start/stop detections polling only when this camera is processing and detection is enabled
+  if (start && activeCamera.value?.detection_enabled) startPollingDetections()
+  else stopPollingDetections()
 }
 
 // Utilities to detect YouTube and build embed URL
@@ -132,7 +155,13 @@ const getYouTubeEmbedUrl = (url) => {
 
 const activeStreamUrl = computed(() => {
   if (!activeCamera.value) return null
-  // If the camera has a YouTube URL, return its embed URL
+  // If the camera has a YouTube URL, return its embed URL, unless detection is enabled
+  // When detection is enabled, show the worker MJPEG annotated stream instead
+  if (activeCamera.value.detection_enabled && isProcessing.value) {
+    // By default, the worker exposes MJPEG at STREAM_URL, but we allow `camera_id` param just for clarity
+    return `${STREAM_URL}?camera_id=${activeCamera.value.id}`
+  }
+  // If not detection-enabled, show the source (embed or static stream)
   const embed = getYouTubeEmbedUrl(activeCamera.value.url)
   if (embed) return embed
   // otherwise return the configured STREAM_URL for the service
@@ -143,6 +172,13 @@ const isYouTube = computed(() => {
 })
 
 onMounted(fetchCameras)
+
+// Watchers to start/stop detection polling when camera changes or processing toggles
+watch([activeCamera, isProcessing], ([newCam, processing]) => {
+  if (!newCam) { stopPollingDetections(); return }
+  if (processing && newCam?.detection_enabled) startPollingDetections()
+  else stopPollingDetections()
+})
 </script>
 
 <template>
@@ -206,6 +242,12 @@ onMounted(fetchCameras)
         <li v-for="a in alerts" :key="a.id">{{ new Date(a.created_at).toLocaleTimeString() }} - {{ a.event }} en cam {{ a.camera_id }} ({{ a.payload?.label }}:{{ a.payload?.score }})</li>
       </ul>
     </div>
+        <div class="detections-panel" v-if="detections.length > 0">
+          <h3>Detections (últimos)</h3>
+          <ul>
+            <li v-for="d in detections" :key="d.id">{{ new Date(d.created_at).toLocaleTimeString() }} - {{ d.event }} - {{ d.payload?.label }} ({{ d.payload?.score }})</li>
+          </ul>
+        </div>
   </div>
 </template>
 
