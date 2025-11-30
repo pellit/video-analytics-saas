@@ -1,5 +1,5 @@
 <script setup>
-import { ref, onMounted, computed } from 'vue'
+import { ref, onMounted, computed, watch, nextTick } from 'vue'
 import { watch } from 'vue'
 const props = defineProps(['token'])
 
@@ -117,6 +117,60 @@ const stopPollingDetections = () => {
   detections.value = []
 }
 
+// Canvas overlay drawing
+const streamImg = ref(null)
+const overlayCanvas = ref(null)
+let imgNaturalW = 0
+let imgNaturalH = 0
+
+const onStreamLoad = (e) => {
+  imgNaturalW = e.target.naturalWidth
+  imgNaturalH = e.target.naturalHeight
+  // set canvas size to actual image pixel size for correct scaling
+  const canvas = overlayCanvas.value
+  if (canvas) {
+    canvas.width = imgNaturalW
+    canvas.height = imgNaturalH
+    drawDetections()
+  }
+}
+
+const drawDetections = () => {
+  const canvas = overlayCanvas.value
+  const img = streamImg.value
+  if (!canvas || !img || detections.value.length === 0) {
+    if (canvas) {
+      const ctx = canvas.getContext('2d')
+      ctx.clearRect(0,0,canvas.width, canvas.height)
+    }
+    return
+  }
+  const ctx = canvas.getContext('2d')
+  // scale to displayed size
+  const rect = img.getBoundingClientRect()
+  const scaleX = canvas.width / rect.width
+  const scaleY = canvas.height / rect.height
+  ctx.clearRect(0,0,canvas.width, canvas.height)
+  ctx.strokeStyle = 'lime'
+  ctx.lineWidth = 3
+  ctx.font = '18px Arial'
+  ctx.fillStyle = 'lime'
+  for (const d of detections.value) {
+    const bbox = d.payload?.bbox || d.payload?.bbox || []
+    if (!bbox || bbox.length < 4) continue
+    const [x1, y1, x2, y2] = bbox
+    const w = (x2 - x1)
+    const h = (y2 - y1)
+    ctx.strokeRect(x1, y1, w, h)
+    ctx.fillText(`${d.payload?.label || d.event} (${Math.round((d.payload?.score||0)*100)}%)`, x1 + 5, y1 + 20)
+  }
+}
+
+watch(detections, () => {
+  // redraw overlay when detections change
+  nextTick(() => drawDetections())
+})
+
 const toggleAnalysis = async (start) => {
   const endpoint = start ? 'start' : 'stop'
   await fetch(`${API_URL}/camera/${endpoint}`, {
@@ -232,8 +286,11 @@ watch([activeCamera, isProcessing], ([newCam, processing]) => {
         </div>
         <div class="video-box">
             <iframe v-if="isProcessing && isYouTube" :src="activeStreamUrl" frameborder="0" allow="autoplay; encrypted-media; picture-in-picture" allowfullscreen class="stream"></iframe>
-            <img v-else-if="isProcessing" :src="activeStreamUrl" class="stream" />
-          <div v-else class="placeholder">Stream Inactivo</div>
+            <div v-else-if="isProcessing" class="stream" style="position: relative; width: 100%; height: 100%;">
+              <img ref="streamImg" :src="activeStreamUrl" class="stream" @load="onStreamLoad" style="position: absolute; left:0; top:0; width:100%; height:100%; object-fit: contain;" />
+              <canvas ref="overlayCanvas" class="overlay-canvas" style="position: absolute; left:0; top:0; width:100%; height:100%; pointer-events: none;"></canvas>
+            </div>
+            <div v-else class="placeholder">Stream Inactivo</div>
         </div>
     </div>
     <div class="alerts-panel">
