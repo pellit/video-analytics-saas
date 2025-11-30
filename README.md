@@ -181,6 +181,9 @@ Tip: Crea un alias en tu terminal o un archivo Makefile para no escribir eso sie
 B. En Dockploy (Entorno de Staging / Pruebas)
 Aquí quieres ver cómo se comporta la rama development en un servidor real.
 
+⚠️ Nota importante: **No** incluyas `docker-compose.dev.yml` en el comando de despliegue dentro de Dockploy o tu CI/CD. El archivo `docker-compose.dev.yml` contiene ajustes para el entorno local (puertos publicados, volúmenes espejo, debug). Si lo incluyes en la ejecución del compose dentro de Dokploy, podrías provocar conflictos de puertos (por ejemplo el `api` intentando publicar 8000) o exponer servicios internos innecesarios.
+Si necesitas exponer puertos específicos o usar overrides en Dockploy, hazlo mediante variables de entorno o mediante un `docker-compose.prod.yml` exclusivo de producción que use puertos/proxies adecuados.
+
 En Dockploy, crea un Nuevo Proyecto (ej: video-saas-staging).
 
 Conéctalo a tu repo GitHub.
@@ -189,7 +192,9 @@ Branch: Selecciona development.
 
 Despliega.
 
-¿Qué pasa aquí? Como Dockploy ejecuta docker-compose up estándar, ignorará el archivo docker-compose.dev.yml.
+¿Qué pasa aquí? Como Dockploy ejecuta docker-compose up estándar, *debería* ignorar el archivo `docker-compose.dev.yml`.
+⚠️ Nota importante: **No** incluyas `docker-compose.dev.yml` en el comando de despliegue dentro de Dockploy o tu CI/CD. El archivo `docker-compose.dev.yml` contiene ajustes para el entorno local (puertos publicados, volúmenes espejo, debug). Si lo incluyes en la ejecución del compose dentro de Dokploy, podrías provocar conflictos de puertos (por ejemplo el `api` intentando publicar 8000) o exponer servicios internos innecesarios.
+Si necesitas exponer puertos específicos o usar overrides en Dockploy, hazlo mediante variables de entorno o mediante un `docker-compose.prod.yml` exclusivo de producción que use puertos/proxies adecuados.
 
 Resultado: Se desplegará la versión de desarrollo, pero usando contenedores construidos (build) igual que en producción. ¡Perfecto para probar antes de pasar a Main!
 

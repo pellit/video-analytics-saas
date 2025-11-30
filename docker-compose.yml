@@ -7,8 +7,7 @@ services:
         context: ./backend
         dockerfile: Dockerfile
       # container_name: ELIMINADO
-      ports:
-        - "8000:8000"
+      # `api` is internal by default in production. Do not publish a host port here to avoid port conflicts on shared/managed hosts.
       command: ["php", "artisan", "serve", "--host=0.0.0.0", "--port=8000"]
       environment:
         - DB_HOST=db

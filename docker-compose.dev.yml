@@ -16,6 +16,8 @@ services:
     # ELIMINAMOS/COMENTAMOS: Los volúmenes de código fuente
     # volumes:
     #   - ./backend:/var/www/html
+    ports:
+      - "8000:8000"
 
   # --- FRONTEND ---
   frontend:
