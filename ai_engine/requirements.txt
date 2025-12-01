@@ -8,3 +8,6 @@ requests
 fastapi
 uvicorn
 yt-dlp
+transformers
+torch
+torchvision

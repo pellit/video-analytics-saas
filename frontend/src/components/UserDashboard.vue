@@ -1,6 +1,7 @@
 <script setup>
 import { ref, onMounted, computed, watch, nextTick, onUnmounted } from 'vue'
 const props = defineProps(['token', 'user'])
+const emit = defineEmits(['logout'])
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000/api'
 // Prefer explicit stream URL; fallback to computed from API URL to be compatible with existing setups
@@ -19,6 +20,11 @@ const fetchCameras = async () => {
         cameras.value = await res.json()
         if (cameras.value.length > 0) activeCamera.value = cameras.value[0]
     } else {
+        if (res.status === 401) {
+            alert('Sesión expirada. Por favor inicie sesión nuevamente.')
+            emit('logout')
+            return
+        }
         const body = await res.json().catch(() => null)
         console.error('Error fetching cameras', res.status, body)
         alert(body?.message || 'No se pudieron cargar las cámaras')
@@ -67,11 +73,33 @@ const newAlertEvent = ref('person_detected')
 const newAlertThreshold = ref(0.5)
 const runInBackground = ref(true) // Default: Keep running in background
 
+// COCO Classes for Multi-select
+const availableClasses = [
+  'person', 'bicycle', 'car', 'motorcycle', 'airplane', 'bus', 'train', 'truck', 'boat', 
+  'traffic light', 'fire hydrant', 'stop sign', 'parking meter', 'bench', 'bird', 'cat', 
+  'dog', 'horse', 'sheep', 'cow', 'elephant', 'bear', 'zebra', 'giraffe', 'backpack', 
+  'umbrella', 'handbag', 'tie', 'suitcase', 'frisbee', 'skis', 'snowboard', 'sports ball', 
+  'kite', 'baseball bat', 'baseball glove', 'skateboard', 'surfboard', 'tennis racket', 
+  'bottle', 'wine glass', 'cup', 'fork', 'knife', 'spoon', 'bowl', 'banana', 'apple', 
+  'sandwich', 'orange', 'broccoli', 'carrot', 'hot dog', 'pizza', 'donut', 'cake', 'chair', 
+  'couch', 'potted plant', 'bed', 'dining table', 'toilet', 'tv', 'laptop', 'mouse', 
+  'remote', 'keyboard', 'cell phone', 'microwave', 'oven', 'toaster', 'sink', 'refrigerator', 
+  'book', 'clock', 'vase', 'scissors', 'teddy bear', 'hair drier', 'toothbrush'
+]
+
 const updateCameraSettings = async (camera) => {
   try {
     const res = await fetch(`${API_URL}/cameras/${camera.id}`, {
       method: 'PATCH', headers: { 'Authorization': `Bearer ${props.token}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ detection_enabled: camera.detection_enabled, detection_model: camera.detection_model, tracking: camera.tracking })
+      body: JSON.stringify({ 
+        detection_enabled: camera.detection_enabled, 
+        detection_model: camera.detection_model, 
+        detection_classes: camera.detection_classes, // Send selected classes
+        face_recognition_enabled: camera.face_recognition_enabled, // Send face recognition setting
+        depth_enabled: camera.depth_enabled,
+        bev_enabled: camera.bev_enabled,
+        tracking: camera.tracking 
+      })
     })
     if (!res.ok) {
       const body = await res.json().catch(() => null)
@@ -82,98 +110,60 @@ const updateCameraSettings = async (camera) => {
   } catch (e) { console.error(e); alert('Error red al actualizar cámara') }
 }
 
+const activeWorkerStreams = ref([])
+const WORKER_URL = STREAM_URL.replace('/video_feed', '')
+
+const fetchWorkerStatus = async () => {
+    try {
+        const res = await fetch(`${WORKER_URL}/health`)
+        if (res.ok) {
+            const data = await res.json()
+            activeWorkerStreams.value = data.active_streams || []
+        }
+    } catch (e) {
+        // Silent fail, worker might be down or unreachable
+    }
+}
+
+// Poll worker status every 5 seconds
+setInterval(fetchWorkerStatus, 5000)
+onMounted(fetchWorkerStatus)
+
+const isCameraRunning = (id) => activeWorkerStreams.value.includes(String(id))
+
 // Watch for camera changes to handle background processing preference
 watch(activeCamera, async (newCam, oldCam) => {
-    if (oldCam && isProcessing.value && !runInBackground.value) {
-        console.log(`Stopping camera ${oldCam.id} (Background disabled)`)
-        try {
-            await fetch(`${API_URL}/camera/stop`, {
-                method: 'POST', 
-                headers: { 'Authorization': `Bearer ${props.token}`, 'Content-Type': 'application/json' }, 
-                body: JSON.stringify({ id: oldCam.id })
-            })
-        } catch(e) { console.error("Error stopping camera", e) }
+    // Sync local state with worker state
+    if (newCam) {
+        const running = isCameraRunning(newCam.id)
+        // If running in background, we can choose to show it or not.
+        // For now, let's assume if it's running, we show it as processing but maybe hidden video?
+        // Let's just sync isProcessing to true if running, so user sees it immediately.
+        if (running) {
+            isProcessing.value = true
+        } else {
+            isProcessing.value = false
+        }
     }
-    // Reset UI state for new camera (we assume stopped initially or user manually starts)
-    isProcessing.value = false 
 })
 
-const createAlert = async (camera, name, event, threshold) => {
-  try {
-    const res = await fetch(`${API_URL}/alerts`, {
-      method: 'POST', headers: { 'Authorization': `Bearer ${props.token}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ camera_id: camera.id, name, event, threshold })
-    })
-    if (res.ok) { alert('Alerta creada') } else { alert('Error creando alerta') }
-  } catch (e) { console.error(e); alert('Error de red al crear alerta') }
-}
-
-const alerts = ref([])
-const fetchAlerts = async () => {
-  try {
-    const res = await fetch(`${API_URL}/alerts/recent`, { headers: { 'Authorization': `Bearer ${props.token}`, 'Accept': 'application/json' } })
-    if (res.ok) alerts.value = await res.json()
-  } catch (e) { console.error(e) }
-}
-setInterval(fetchAlerts, 5000)
-
-// Detections polling
-const detections = ref([])
-const fetchDetections = async () => {
-  if (!activeCamera.value) return
-  try {
-    const res = await fetch(`${API_URL}/cameras/${activeCamera.value.id}/detections`, { headers: { 'Authorization': `Bearer ${props.token}` } })
-    if (res.ok) detections.value = await res.json()
-  } catch (e) { console.error('fetchDetections error', e) }
-}
-let detectionsInterval = null
-const startPollingDetections = () => {
-  fetchDetections()
-  detectionsInterval = setInterval(fetchDetections, 2000)
-}
-const stopPollingDetections = () => {
-  if (detectionsInterval) clearInterval(detectionsInterval)
-  detections.value = []
-}
-
-// Canvas overlay drawing removed since backend sends annotated frames
-const streamLoadError = ref(false)
-const streamErrorUrl = ref('')
-
-const onStreamLoad = () => {
-  streamLoadError.value = false
-}
-
-const onStreamError = (e) => {
-  console.error('Stream load error', e)
-  streamLoadError.value = true
-  streamErrorUrl.value = activeStreamUrl.value
-}
-
-// Detections polling (Keep for list, but not for drawing)
-const detections = ref([])
-const fetchDetections = async () => {
-  if (!activeCamera.value) return
-  try {
-    const res = await fetch(`${API_URL}/cameras/${activeCamera.value.id}/detections`, { headers: { 'Authorization': `Bearer ${props.token}` } })
-    if (res.ok) detections.value = await res.json()
-  } catch (e) { console.error('fetchDetections error', e) }
-}
-let detectionsInterval = null
-const startPollingDetections = () => {
-  fetchDetections()
-  detectionsInterval = setInterval(fetchDetections, 2000)
-}
-const stopPollingDetections = () => {
-  if (detectionsInterval) clearInterval(detectionsInterval)
-  detections.value = []
-}
-
-watch(detections, () => {
-  // No drawing needed
+// Watch activeWorkerStreams to update UI if external start/stop happens
+watch(activeWorkerStreams, (streams) => {
+    if (activeCamera.value) {
+        const running = streams.includes(String(activeCamera.value.id))
+        if (running && !isProcessing.value) {
+             // It started externally (or we just loaded), update UI
+             isProcessing.value = true
+        } else if (!running && isProcessing.value) {
+             // It stopped externally
+             isProcessing.value = false
+        }
+    }
 })
 
-const toggleAnalysis = async (start) => {
+const showVideo = ref(true)
+
+const toggleAnalysis = async (start, backgroundOnly = false) => {
   const endpoint = start ? 'start' : 'stop'
   
   // If starting, ensure detection is enabled locally so we view the stream instead of embed
@@ -183,10 +173,33 @@ const toggleAnalysis = async (start) => {
       updateCameraSettings(activeCamera.value)
   }
 
-  await fetch(`${API_URL}/camera/${endpoint}`, {
+  const res = await fetch(`${API_URL}/camera/${endpoint}`, {
     method: 'POST', headers: { 'Authorization': `Bearer ${props.token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ id: activeCamera.value.id, url: activeCamera.value.url })
   })
-  isProcessing.value = start
+  
+  if (res.status === 401) {
+      alert('Sesión expirada. Por favor inicie sesión nuevamente.')
+      emit('logout')
+      return
+  }
+
+  if (!res.ok) {
+      const body = await res.json().catch(() => null)
+      alert('Error al cambiar estado: ' + (body?.message || res.status))
+      return
+  }
+
+  // Update local state immediately for responsiveness
+  if (start) {
+      isProcessing.value = true
+      showVideo.value = !backgroundOnly
+      // Force fetch status to confirm
+      setTimeout(fetchWorkerStatus, 1000)
+  } else {
+      isProcessing.value = false
+      showVideo.value = true // Reset for next time
+  }
+
   // start/stop detections polling only when this camera is processing and detection is enabled
   if (start && activeCamera.value?.detection_enabled) startPollingDetections()
   else stopPollingDetections()
@@ -286,92 +299,425 @@ onUnmounted(async () => {
 </script>
 
 <template>
-  <div class="dashboard-user">
-    <div class="cam-bar">
+  <div class="dashboard-user control-center">
+    <!-- Sidebar / Camera List -->
+    <div class="sidebar">
+      <div class="sidebar-header">
+        <h3>Cámaras</h3>
+        <button @click="showAdd = true" class="btn-icon" title="Añadir Cámara">+</button>
+      </div>
+      <div class="cam-list">
         <div v-for="cam in cameras" :key="cam.id" 
-             class="cam-chip" :class="{active: activeCamera?.id === cam.id}"
-             @click="activeCamera = cam; isProcessing = false">
+             class="cam-item" :class="{active: activeCamera?.id === cam.id}"
+             @click="activeCamera = cam">
+             <span class="status-dot" :class="{online: isCameraRunning(cam.id)}"></span>
              {{ cam.name }}
         </div>
-        <button @click="showAdd = true" class="btn-add">+</button>
+      </div>
     </div>
 
-    <div v-if="showAdd" class="modal">
-        <div class="modal-content">
-            <h3>Nueva Cámara</h3>
-            <input v-model="newCam.name" placeholder="Nombre">
-            <input v-model="newCam.url" placeholder="URL">
-            <button @click="addCamera">Guardar</button>
-            <button @click="showAdd = false">Cancelar</button>
+    <!-- Main Content -->
+    <div class="main-content" v-if="activeCamera">
+      <header class="control-header">
+        <div class="header-left">
+          <h2>{{ activeCamera.name }}</h2>
+          <span class="badge" :class="isProcessing ? 'badge-success' : 'badge-secondary'">
+            {{ isProcessing ? (showVideo ? 'EN VIVO' : 'EN 2DO PLANO') : 'DETENIDO' }}
+          </span>
         </div>
-    </div>
+        <div class="header-actions">
+          <template v-if="!isProcessing">
+            <button @click="toggleAnalysis(true, false)" class="btn-start">
+              <i class="icon">▶</i> Iniciar
+            </button>
+            <button @click="toggleAnalysis(true, true)" class="btn-secondary" title="Iniciar sin video">
+              <i class="icon">⚡</i> 2do Plano
+            </button>
+          </template>
+          <template v-else>
+             <button @click="showVideo = !showVideo" class="btn-secondary">
+              {{ showVideo ? 'Ocultar Video' : 'Ver Video' }}
+            </button>
+            <button @click="toggleAnalysis(false)" class="btn-stop">
+              <i class="icon">⏹</i> Detener
+            </button>
+          </template>
+        </div>
+      </header>
 
-    <div v-if="activeCamera" class="video-section">
-        <header>
-            <h2>{{ activeCamera.name }}</h2>
-            <div class="header-actions">
-              <button v-if="!isProcessing" @click="toggleAnalysis(true)" class="btn-start">▶ Iniciar</button>
-            <button v-else @click="toggleAnalysis(false)" class="btn-stop">⏹ Detener</button>
-              <div v-if="user?.role === 'superadmin'" class="camera-settings">
-                  <label><input type="checkbox" v-model="activeCamera.detection_enabled" /> Detección</label>
-                  <select v-model="activeCamera.detection_model">
-                      <option value="yolov8n">yolov8n</option>
-                      <option value="yolov8s">yolov8s</option>
-                      <option value="yolov8m">yolov8m</option>
-                      <option value="yolov8l">yolov8l</option>
-                  </select>
-                  <label><input type="checkbox" v-model="activeCamera.tracking" /> Seguimiento</label>
-                  <label title="Si está desactivado, el análisis se detendrá al cambiar de cámara o salir"><input type="checkbox" v-model="runInBackground" /> Background</label>
-                  <button @click="updateCameraSettings(activeCamera)">Guardar Config</button>
-              </div>
-            </div>
-        </header>
-        <div v-if="user?.role === 'superadmin'" class="alert-creator">
-          <input v-model="newAlertName" placeholder="Nombre alerta" />
-          <select v-model="newAlertEvent">
-            <option value="person_detected">person_detected</option>
-            <option value="car_detected">car_detected</option>
-          </select>
-          <input v-model.number="newAlertThreshold" placeholder="Umbral (0-1)" type="number" min="0" max="1" step="0.01" />
-          <button @click="createAlert(activeCamera, newAlertName, newAlertEvent, newAlertThreshold)">Crear Alerta</button>
-        </div>
+      <div class="video-grid">
+        <!-- Video Feed -->
         <div class="video-box">
-            <iframe v-if="isProcessing && isYouTube" :src="activeStreamUrl" frameborder="0" allow="autoplay; encrypted-media; picture-in-picture" allowfullscreen class="stream"></iframe>
-            <div v-else-if="isProcessing" class="stream" style="position: relative; width: 100%; height: 100%;">
-              <img :src="activeStreamUrl" class="stream" @load="onStreamLoad" @error="onStreamError" style="position: absolute; left:0; top:0; width:100%; height:100%; object-fit: contain;" />
+            <iframe v-if="isProcessing && isYouTube && showVideo" :src="activeStreamUrl" frameborder="0" allow="autoplay; encrypted-media; picture-in-picture" allowfullscreen class="stream"></iframe>
+            <div v-else-if="isProcessing && showVideo" class="stream-wrapper">
+              <img :src="activeStreamUrl" class="stream" @load="onStreamLoad" @error="onStreamError" />
               <div v-if="streamLoadError" class="stream-error">
                 <p>No se pudo cargar el stream.</p>
                 <small>{{ streamErrorUrl }}</small>
               </div>
             </div>
-            <div v-else class="placeholder">Stream Inactivo</div>
+            <div v-else class="placeholder">
+              <div class="placeholder-content">
+                <i class="icon-camera-off"></i>
+                <p>{{ isProcessing ? 'Ejecutando en Segundo Plano' : 'Análisis Detenido' }}</p>
+              </div>
+            </div>
         </div>
-    </div>
-    <div class="alerts-panel">
-      <h3>Alertas recientes</h3>
-      <ul>
-        <li v-for="a in alerts" :key="a.id">{{ new Date(a.created_at).toLocaleTimeString() }} - {{ a.event }} en cam {{ a.camera_id }} ({{ a.payload?.label }}:{{ a.payload?.score }})</li>
-      </ul>
-    </div>
-        <div class="detections-panel" v-if="detections.length > 0">
-          <h3>Detections (últimos)</h3>
-          <ul>
-            <li v-for="d in detections" :key="d.id">{{ new Date(d.created_at).toLocaleTimeString() }} - {{ d.event }} - {{ d.payload?.label }} ({{ d.payload?.score }})</li>
+
+        <!-- Control Panel (Right Side) -->
+        <div class="control-panel">
+          
+          <!-- Settings Tab -->
+          <div class="panel-section" v-if="user?.role === 'superadmin'">
+            <h3>Configuración AI</h3>
+            
+            <div class="setting-group">
+              <label class="switch">
+                <input type="checkbox" v-model="activeCamera.detection_enabled">
+                <span class="slider round"></span>
+                <span class="label-text">Detección de Objetos</span>
+              </label>
+            </div>
+
+            <div class="setting-group" v-if="activeCamera.detection_enabled">
+              <label>Modelo</label>
+              <select v-model="activeCamera.detection_model" class="dark-select">
+                  <option value="yolov8n">YOLOv8 Nano (Rápido)</option>
+                  <option value="yolov8s">YOLOv8 Small</option>
+                  <option value="yolov8m">YOLOv8 Medium</option>
+                  <option value="yolov8l">YOLOv8 Large (Preciso)</option>
+                  <option value="yolo11n">YOLO11 Nano (Nuevo)</option>
+                  <option value="yolo11s">YOLO11 Small</option>
+                  <option value="yolo11m">YOLO11 Medium</option>
+              </select>
+            </div>
+
+            <div class="setting-group" v-if="activeCamera.detection_enabled">
+              <label>Clases a Detectar</label>
+              <div class="multi-select-box">
+                <label v-for="cls in availableClasses" :key="cls" class="checkbox-item">
+                  <input type="checkbox" :value="cls" v-model="activeCamera.detection_classes">
+                  {{ cls }}
+                </label>
+              </div>
+            </div>
+
+            <div class="setting-group">
+              <label class="switch">
+                <input type="checkbox" v-model="activeCamera.face_recognition_enabled">
+                <span class="slider round"></span>
+                <span class="label-text">Reconocimiento Facial (YuNet/SFace)</span>
+              </label>
+            </div>
+
+            <div class="setting-group">
+              <label class="switch">
+                <input type="checkbox" v-model="activeCamera.depth_enabled">
+                <span class="slider round"></span>
+                <span class="label-text">Estimación de Profundidad (Depth Anything v2)</span>
+              </label>
+            </div>
+
+            <div class="setting-group" v-if="activeCamera.depth_enabled">
+              <label class="switch">
+                <input type="checkbox" v-model="activeCamera.bev_enabled">
+                <span class="slider round"></span>
+                <span class="label-text">Vista de Pájaro (BEV)</span>
+              </label>
+            </div>
+
+            <div class="setting-group">
+              <label class="switch">
+                <input type="checkbox" v-model="activeCamera.tracking">
+                <span class="slider round"></span>
+                <span class="label-text">Seguimiento (Tracking)</span>
+              </label>
+            </div>
+
+             <div class="setting-group">
+              <label class="switch">
+                <input type="checkbox" v-model="runInBackground">
+                <span class="slider round"></span>
+                <span class="label-text">Ejecutar en 2do plano</span>
+              </label>
+            </div>
+
+            <button @click="updateCameraSettings(activeCamera)" class="btn-save">Guardar Cambios</button>
+          </div>
+
+          <!-- Alerts Creator -->
+          <div class="panel-section" v-if="user?.role === 'superadmin'">
+            <h3>Crear Regla</h3>
+            <div class="form-row">
+              <input v-model="newAlertName" placeholder="Nombre" class="dark-input" />
+              <input v-model.number="newAlertThreshold" placeholder="Umbral" type="number" step="0.1" class="dark-input small" />
+            </div>
+            <select v-model="newAlertEvent" class="dark-select">
+              <option value="person_detected">Persona Detectada</option>
+              <option value="car_detected">Vehículo Detectado</option>
+              <option value="intrusion">Intrusión en Zona</option>
+            </select>
+            <button @click="createAlert(activeCamera, newAlertName, newAlertEvent, newAlertThreshold)" class="btn-action">Crear Alerta</button>
+          </div>
+
+        </div>
+      </div>
+
+      <!-- Bottom Panel: Logs & Alerts -->
+      <div class="bottom-panel">
+        <div class="panel-col">
+          <h3>Alertas Recientes</h3>
+          <ul class="log-list">
+            <li v-for="a in alerts" :key="a.id" class="log-item alert">
+              <span class="time">{{ new Date(a.created_at).toLocaleTimeString() }}</span>
+              <span class="event">{{ a.event }}</span>
+              <span class="details">{{ a.payload?.label }} ({{ (a.payload?.score * 100).toFixed(0) }}%)</span>
+            </li>
           </ul>
         </div>
+        <div class="panel-col">
+          <h3>Detecciones en Vivo</h3>
+          <ul class="log-list">
+            <li v-for="d in detections" :key="d.id" class="log-item detection">
+              <span class="time">{{ new Date(d.created_at).toLocaleTimeString() }}</span>
+              <span class="event">{{ d.event }}</span>
+              <span class="details">{{ d.payload?.label }}</span>
+            </li>
+          </ul>
+        </div>
+      </div>
+
+    </div>
+    
+    <!-- Empty State -->
+    <div v-else class="empty-state">
+      <p>Seleccione una cámara para comenzar</p>
+    </div>
+
+    <!-- Add Camera Modal -->
+    <div v-if="showAdd" class="modal-overlay">
+        <div class="modal-box">
+            <h3>Nueva Cámara</h3>
+            <input v-model="newCam.name" placeholder="Nombre de la cámara" class="dark-input">
+            <input v-model="newCam.url" placeholder="RTSP / HTTP / YouTube URL" class="dark-input">
+            <div class="modal-actions">
+              <button @click="showAdd = false" class="btn-cancel">Cancelar</button>
+              <button @click="addCamera" class="btn-confirm">Guardar</button>
+            </div>
+        </div>
+    </div>
+
   </div>
 </template>
 
 <style scoped>
-.cam-bar { display: flex; gap: 10px; padding-bottom: 20px; overflow-x: auto; }
-.cam-chip { background: white; padding: 8px 15px; border-radius: 20px; cursor: pointer; border: 1px solid #ddd; }
-.cam-chip.active { background: #7367f0; color: white; border-color: #7367f0; }
-.video-box { background: black; height: 400px; display: flex; justify-content: center; align-items: center; color: white; border-radius: 10px; overflow: hidden; }
-.stream { height: 100%; width: 100%; object-fit: contain; }
-.stream-error { position:absolute; left:0; top:0; right:0; bottom:0; display:flex; justify-content:center; align-items:center; background:rgba(0,0,0,0.6); color:#fff; z-index:10; }
-.btn-start { background: #28c76f; color: white; padding: 8px 20px; border: none; border-radius: 5px; cursor: pointer; }
-.btn-stop { background: #ea5455; color: white; padding: 8px 20px; border: none; border-radius: 5px; cursor: pointer; }
-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
-.modal { position: fixed; top:0; left:0; width:100%; height:100%; background: rgba(0,0,0,0.5); display: flex; justify-content: center; align-items: center; }
-.modal-content { background: white; padding: 20px; display: flex; flex-direction: column; gap: 10px; border-radius: 8px; }
+/* Control Center Theme */
+.control-center {
+  display: flex;
+  height: 100vh;
+  background-color: #1a1a1a;
+  color: #e0e0e0;
+  font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  overflow: hidden;
+}
+
+/* Sidebar */
+.sidebar {
+  width: 250px;
+  background-color: #252526;
+  border-right: 1px solid #333;
+  display: flex;
+  flex-direction: column;
+}
+.sidebar-header {
+  padding: 15px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  border-bottom: 1px solid #333;
+}
+.btn-icon {
+  background: #333;
+  border: none;
+  color: white;
+  width: 30px;
+  height: 30px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.cam-list {
+  flex: 1;
+  overflow-y: auto;
+}
+.cam-item {
+  padding: 12px 15px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  border-bottom: 1px solid #2d2d2d;
+  transition: background 0.2s;
+}
+.cam-item:hover { background-color: #2d2d2d; }
+.cam-item.active { background-color: #37373d; border-left: 3px solid #007acc; }
+.status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background-color: #666;
+}
+.status-dot.online { background-color: #4caf50; }
+
+/* Main Content */
+.main-content {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+}
+.control-header {
+  padding: 15px 20px;
+  background-color: #1e1e1e;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  border-bottom: 1px solid #333;
+}
+.header-left { display: flex; align-items: center; gap: 15px; }
+.badge { padding: 4px 8px; border-radius: 4px; font-size: 0.8em; font-weight: bold; }
+.badge-success { background-color: #1b5e20; color: #a5d6a7; }
+.badge-secondary { background-color: #424242; color: #bdbdbd; }
+
+.video-grid {
+  display: grid;
+  grid-template-columns: 1fr 300px;
+  gap: 1px;
+  background-color: #333;
+  height: 60vh;
+}
+.video-box {
+  background-color: #000;
+  position: relative;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+}
+.stream-wrapper { width: 100%; height: 100%; position: relative; }
+.stream { width: 100%; height: 100%; object-fit: contain; }
+.placeholder { color: #666; text-align: center; }
+
+/* Control Panel */
+.control-panel {
+  background-color: #252526;
+  padding: 15px;
+  overflow-y: auto;
+  border-left: 1px solid #333;
+}
+.panel-section { margin-bottom: 25px; }
+.panel-section h3 { font-size: 0.9rem; text-transform: uppercase; color: #888; margin-bottom: 10px; border-bottom: 1px solid #333; padding-bottom: 5px; }
+
+.setting-group { margin-bottom: 15px; }
+.setting-group label { display: block; margin-bottom: 5px; font-size: 0.9rem; }
+
+/* Form Elements */
+.dark-select, .dark-input {
+  width: 100%;
+  background-color: #3c3c3c;
+  border: 1px solid #555;
+  color: white;
+  padding: 8px;
+  border-radius: 4px;
+}
+.multi-select-box {
+  height: 150px;
+  overflow-y: auto;
+  background-color: #1e1e1e;
+  border: 1px solid #333;
+  padding: 5px;
+  border-radius: 4px;
+}
+.checkbox-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px;
+  font-size: 0.9rem;
+  cursor: pointer;
+}
+.checkbox-item:hover { background-color: #333; }
+
+/* Switch */
+.switch {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  cursor: pointer;
+}
+.switch input { opacity: 0; width: 0; height: 0; }
+.slider {
+  position: relative;
+  display: inline-block;
+  width: 34px;
+  height: 20px;
+  background-color: #ccc;
+  transition: .4s;
+  border-radius: 34px;
+}
+.slider:before {
+  position: absolute;
+  content: "";
+  height: 14px;
+  width: 14px;
+  left: 3px;
+  bottom: 3px;
+  background-color: white;
+  transition: .4s;
+  border-radius: 50%;
+}
+input:checked + .slider { background-color: #2196F3; }
+input:checked + .slider:before { transform: translateX(14px); }
+.label-text { font-size: 0.9rem; }
+
+/* Buttons */
+.btn-save { width: 100%; background-color: #007acc; color: white; border: none; padding: 10px; border-radius: 4px; cursor: pointer; margin-top: 10px; }
+.btn-save:hover { background-color: #005999; }
+.btn-action { width: 100%; background-color: #444; color: white; border: none; padding: 8px; border-radius: 4px; cursor: pointer; margin-top: 10px; }
+.btn-start { background-color: #2e7d32; color: white; border: none; padding: 8px 15px; border-radius: 4px; cursor: pointer; display: flex; align-items: center; gap: 5px; }
+.btn-stop { background-color: #c62828; color: white; border: none; padding: 8px 15px; border-radius: 4px; cursor: pointer; display: flex; align-items: center; gap: 5px; }
+
+/* Bottom Panel */
+.bottom-panel {
+  flex: 1;
+  background-color: #1e1e1e;
+  border-top: 1px solid #333;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  overflow: hidden;
+}
+.panel-col {
+  padding: 15px;
+  overflow-y: auto;
+  border-right: 1px solid #333;
+}
+.log-list { list-style: none; padding: 0; margin: 0; }
+.log-item {
+  padding: 8px;
+  border-bottom: 1px solid #333;
+  font-size: 0.9rem;
+  display: flex;
+  gap: 10px;
+}
+.log-item .time { color: #888; font-family: monospace; }
+.log-item .event { color: #4fc3f7; font-weight: bold; }
+.log-item.alert .event { color: #ffb74d; }
+
+/* Modal */
+.modal-overlay { position: fixed; top:0; left:0; width:100%; height:100%; background: rgba(0,0,0,0.7); display: flex; justify-content: center; align-items: center; z-index: 1000; }
+.modal-box { background: #252526; padding: 25px; border-radius: 8px; width: 400px; display: flex; flex-direction: column; gap: 15px; border: 1px solid #444; }
+.modal-actions { display: flex; justify-content: flex-end; gap: 10px; }
+.btn-confirm { background: #007acc; color: white; border: none; padding: 8px 15px; border-radius: 4px; cursor: pointer; }
+.btn-cancel { background: transparent; color: #ccc; border: 1px solid #555; padding: 8px 15px; border-radius: 4px; cursor: pointer; }
+
+.empty-state { display: flex; justify-content: center; align-items: center; height: 100%; color: #666; }
 </style>

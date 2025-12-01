@@ -5,13 +5,47 @@ import threading
 import cv2
 import redis
 import numpy as np
+import requests
 from fastapi import FastAPI
 from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from ultralytics import YOLO
 from yt_dlp import YoutubeDL
+from .depth_service import DepthService
 
 app = FastAPI()
+
+# --- Model Management ---
+MODELS_DIR = os.path.join(os.path.dirname(__file__), "../models")
+os.makedirs(MODELS_DIR, exist_ok=True)
+
+YUNET_PATH = os.path.join(MODELS_DIR, "face_detection_yunet_2023mar.onnx")
+SFACE_PATH = os.path.join(MODELS_DIR, "face_recognition_sface_2021dec.onnx")
+
+# Initialize Services
+depth_service = DepthService()
+
+def download_file(url, dest):
+    if os.path.exists(dest): return
+    print(f"⬇️ Downloading {os.path.basename(dest)}...")
+    try:
+        r = requests.get(url, stream=True)
+        r.raise_for_status()
+        with open(dest, 'wb') as f:
+            for chunk in r.iter_content(chunk_size=8192):
+                f.write(chunk)
+        print(f"✅ Downloaded {os.path.basename(dest)}")
+    except Exception as e:
+        print(f"❌ Failed to download {dest}: {e}")
+
+# Download models on import/startup
+download_file("https://github.com/opencv/opencv_zoo/raw/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx", YUNET_PATH)
+download_file("https://github.com/opencv/opencv_zoo/raw/main/models/face_recognition_sface/face_recognition_sface_2021dec.onnx", SFACE_PATH)
+
+# Initialize Face Models (Lazy load or global?)
+# We'll initialize detector per thread/frame size, or global if size is fixed. 
+# YuNet requires input size. We'll handle it in the loop.
+face_recognizer = cv2.FaceRecognizerSF.create(SFACE_PATH, "")
 
 # Permitir CORS para que el Frontend pueda ver el video
 app.add_middleware(
@@ -112,9 +146,96 @@ def stream_thread(camera_id, url):
             time.sleep(0.1)
             continue
 
+        # Get config
+        detection_classes = []
+        face_enabled = False
+        depth_enabled = False
+        bev_enabled = False
+        with global_state['lock']:
+            stream = global_state['streams'].get(str(camera_id))
+            if stream:
+                detection_classes = stream.get('detection_classes', [])
+                face_enabled = stream.get('face_enabled', False)
+                depth_enabled = stream.get('depth_enabled', False)
+                bev_enabled = stream.get('bev_enabled', False)
+
         # Inferencia YOLO
-        results = model(frame, verbose=False)
+        classes_indices = []
+        if detection_classes and hasattr(model, 'names'):
+            # Map class names to indices
+            for idx, cls_name in model.names.items():
+                if cls_name in detection_classes:
+                    classes_indices.append(idx)
+        
+        if classes_indices:
+            results = model(frame, classes=classes_indices, verbose=False)
+        else:
+            # If classes list is provided but empty/invalid, we might want to detect nothing or everything?
+            # Logic: if detection_classes is not empty but no match found, detect nothing.
+            # If detection_classes is empty (default), detect everything.
+            if detection_classes and not classes_indices:
+                results = model(frame, classes=[], verbose=False) # Detect nothing
+            else:
+                results = model(frame, verbose=False)
+
         annotated_frame = results[0].plot()
+
+        # Depth / 3D Logic
+        if depth_enabled:
+            try:
+                # Collect detections for Depth Service
+                detections_list = []
+                for box in results[0].boxes:
+                     label = results[0].names.get(int(box.cls), str(int(box.cls))) if results[0].names else str(int(box.cls))
+                     detections_list.append({
+                         'label': label,
+                         'bbox': box.xyxy[0].tolist(),
+                         'score': float(box.conf)
+                     })
+                
+                annotated_frame, bev_map = depth_service.process_3d_view(annotated_frame, detections_list, enable_bev=bev_enabled)
+                
+                if bev_enabled and bev_map is not None:
+                     # Stitch BEV to the right
+                     h, w = annotated_frame.shape[:2]
+                     bh, bw = bev_map.shape[:2]
+                     # Resize BEV to match frame height
+                     if bh > 0:
+                        scale = h / bh
+                        new_bw = int(bw * scale)
+                        bev_resized = cv2.resize(bev_map, (new_bw, h))
+                        annotated_frame = np.hstack((annotated_frame, bev_resized))
+            except Exception as e:
+                print(f"⚠️ Depth error: {e}")
+
+        # Face Recognition Logic
+        if face_enabled:
+            try:
+                h, w, _ = frame.shape
+                # Instantiate detector for current frame size
+                face_detector = cv2.FaceDetectorYN.create(YUNET_PATH, "", (w, h))
+                
+                # Detect
+                retval, faces = face_detector.detect(frame)
+                if faces is not None:
+                    for face in faces:
+                        # Face format: x1, y1, w, h, x_re, y_re, x_le, y_le, x_nt, y_nt, x_rcm, y_rcm, x_lcm, y_lcm, score
+                        box = face[0:4].astype(np.int32)
+                        score = face[-1]
+                        
+                        # Draw
+                        cv2.rectangle(annotated_frame, (box[0], box[1]), (box[0]+box[2], box[1]+box[3]), (255, 0, 0), 2)
+                        cv2.putText(annotated_frame, f"Face {score:.2f}", (box[0], box[1]-10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 2)
+                        
+                        # Publish Face Event
+                        event_obj = { 
+                            'camera_id': int(camera_id), 
+                            'event': 'face_detected', 
+                            'payload': { 'label': 'Face', 'score': float(score), 'bbox': box.tolist() } 
+                        }
+                        r.publish('detections', json.dumps(event_obj))
+            except Exception as e:
+                print(f"⚠️ Face detection error: {e}")
 
         with global_state['lock']:
             stream = global_state['streams'].get(str(camera_id))
@@ -165,12 +286,32 @@ def redis_listener_loop():
                 if action == 'START':
                     cam_id = str(data.get('camera_id'))
                     url = data.get('url')
+                    detection_classes = data.get('detection_classes', []) # List of class names
+                    face_enabled = data.get('face_recognition_enabled', False)
+                    depth_enabled = data.get('depth_enabled', False)
+                    bev_enabled = data.get('bev_enabled', False)
+                    
                     with global_state['lock']:
                         if cam_id not in global_state['streams']:
-                            global_state['streams'][cam_id] = { 'active': True, 'url': url, 'current_frame': None, 'lock': threading.Lock(), 'thread': None }
+                            global_state['streams'][cam_id] = { 
+                                'active': True, 
+                                'url': url, 
+                                'current_frame': None, 
+                                'lock': threading.Lock(), 
+                                'thread': None,
+                                'detection_classes': detection_classes,
+                                'face_enabled': face_enabled,
+                                'depth_enabled': depth_enabled,
+                                'bev_enabled': bev_enabled
+                            }
                         else:
                             global_state['streams'][cam_id]['active'] = True
                             global_state['streams'][cam_id]['url'] = url
+                            global_state['streams'][cam_id]['detection_classes'] = detection_classes
+                            global_state['streams'][cam_id]['face_enabled'] = face_enabled
+                            global_state['streams'][cam_id]['depth_enabled'] = depth_enabled
+                            global_state['streams'][cam_id]['bev_enabled'] = bev_enabled
+                        
                         # Launch thread if missing
                         if not global_state['streams'][cam_id].get('thread'):
                             t = threading.Thread(target=stream_thread, args=(cam_id, url), daemon=True)
