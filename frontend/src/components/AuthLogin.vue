@@ -1,5 +1,5 @@
 <script setup>
-import { ref } from 'vue'
+import { ref, onMounted } from 'vue'
 const emit = defineEmits(['success'])
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000/api'
@@ -7,6 +7,15 @@ const email = ref('')
 const password = ref('')
 const name = ref('')
 const isRegistering = ref(false)
+const rememberMe = ref(false)
+
+onMounted(() => {
+  const savedEmail = localStorage.getItem('saved_email')
+  if (savedEmail) {
+    email.value = savedEmail
+    rememberMe.value = true
+  }
+})
 
 const login = async () => {
   try {
@@ -19,6 +28,12 @@ const login = async () => {
     const data = await res.json()
     if (!res.ok) throw new Error(data.message)
     
+    if (rememberMe.value) {
+      localStorage.setItem('saved_email', email.value)
+    } else {
+      localStorage.removeItem('saved_email')
+    }
+
     emit('success', data) // Avisar al padre
   } catch (e) { alert(e.message) }
 }
@@ -40,6 +55,13 @@ const sendMagicLink = async () => {
       <input v-if="isRegistering" v-model="name" placeholder="Nombre" />
       <input v-model="email" placeholder="Email" />
       <input v-model="password" type="password" placeholder="Contraseña" />
+      
+      <div v-if="!isRegistering" class="remember-me">
+        <label>
+          <input type="checkbox" v-model="rememberMe"> Recordar usuario
+        </label>
+      </div>
+
       <div class="actions">
         <button @click="login">{{ isRegistering ? 'Registrarse' : 'Entrar' }}</button>
         <button @click="sendMagicLink" v-if="!isRegistering" class="magic">✨ Sin Clave</button>
@@ -56,4 +78,5 @@ button { padding: 10px; cursor: pointer; background: #7367f0; color: white; bord
 .magic { background: #ff9f43; margin-top: 5px; }
 p { text-align: center; color: #7367f0; cursor: pointer; font-size: 0.9rem; }
 input { padding: 8px; border: 1px solid #ddd; }
+.remember-me { font-size: 0.9rem; color: #555; }
 </style>

@@ -42,8 +42,10 @@ const getYoutubeEmbedUrl = (url) => {
 
 const addCamera = async () => {
   try {
+    // Default detection_enabled to true for new cameras so they are analyzed immediately
+    const payload = { ...newCam.value, detection_enabled: true, detection_model: 'yolov8n' }
     const res = await fetch(`${API_URL}/cameras`, {
-      method: 'POST', headers: { 'Authorization': `Bearer ${props.token}`, 'Content-Type': 'application/json' }, body: JSON.stringify(newCam.value)
+      method: 'POST', headers: { 'Authorization': `Bearer ${props.token}`, 'Content-Type': 'application/json' }, body: JSON.stringify(payload)
     })
     const data = await res.json().catch(() => null)
     if (!res.ok) {
@@ -198,6 +200,14 @@ watch(detections, () => {
 
 const toggleAnalysis = async (start) => {
   const endpoint = start ? 'start' : 'stop'
+  
+  // If starting, ensure detection is enabled locally so we view the stream instead of embed
+  if (start && activeCamera.value && !activeCamera.value.detection_enabled) {
+      activeCamera.value.detection_enabled = true
+      // Optionally save this preference to backend
+      updateCameraSettings(activeCamera.value)
+  }
+
   await fetch(`${API_URL}/camera/${endpoint}`, {
     method: 'POST', headers: { 'Authorization': `Bearer ${props.token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ id: activeCamera.value.id, url: activeCamera.value.url })
   })
