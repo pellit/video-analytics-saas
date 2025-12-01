@@ -20,6 +20,8 @@ Route::get('/test/worker-env', function (\Illuminate\Http\Request $r) {
     return response()->json(['env' => env('WORKER_API_KEY'), 'header' => $r->header('X-WORKER-KEY')]);
 });
 
+// SSE stream for real-time detections and alerts (Outside auth middleware to support EventSource query param auth)
+Route::get('/sse/stream', [\App\Http\Controllers\SseController::class, 'stream']);
 
 // 2. Cargar Rutas Protegidas de Usuario
 // Aplicamos el middleware de autenticación a todo este grupo

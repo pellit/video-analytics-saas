@@ -55,7 +55,8 @@ class AlertController extends Controller
     public function recent()
     {
         $user = Auth::user();
-        $alertIds = $user->alerts()->pluck('id');
+        // Specify table name to avoid ambiguity in HasManyThrough join
+        $alertIds = $user->alerts()->pluck('alerts.id');
         $logs = \App\Models\AlertLog::whereIn('alert_id', $alertIds)->latest()->take(50)->get();
         return response()->json($logs);
     }

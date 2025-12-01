@@ -28,26 +28,41 @@ class SseController extends Controller
         if (!$user) return response()->json(['message' => 'Unauthorized'], 401);
 
         $response = new StreamedResponse(function () use ($user) {
-            // Set headers for SSE
-            echo "retry: 2000\n\n";
-            ob_flush();
-            flush();
+            try {
+                // Set headers for SSE
+                echo "retry: 2000\n\n";
+                if (ob_get_level() > 0) ob_flush();
+                flush();
 
-            $pubsub = Redis::connection()->pubSub();
-            $pubsub->subscribe(['alerts', 'detections']);
+                $pubsub = Redis::connection()->pubSub();
+                $pubsub->subscribe(['alerts', 'detections']);
 
-            foreach ($pubsub as $message) {
-                if ($message->kind === 'message') {
-                    try {
-                        $payload = json_decode($message->payload, true);
-                        // Filter by user_id: only send messages that belong to this user
-                        if (isset($payload['user_id']) && intval($payload['user_id']) !== intval($user->id)) {
-                            continue;
+                foreach ($pubsub as $message) {
+                    if ($message->kind === 'message') {
+                        try {
+                            $payload = json_decode($message->payload, true);
+                            // Filter by user_id: only send messages that belong to this user
+                            if (isset($payload['user_id']) && intval($payload['user_id']) !== intval($user->id)) {
+                                continue;
+                            }
+                            // SSE event name is the Redis channel
+                            echo "event: {$message->channel}\n";
+                            echo 'data: ' . json_encode($payload) . "\n\n";
+                            if (ob_get_level() > 0) ob_flush();
+                            flush();
+                        } catch (\Exception $e) {
+                            \Illuminate\Support\Facades\Log::error("SSE Payload Error: " . $e->getMessage());
                         }
-                        // SSE event name is the Redis channel
-                        echo "event: {$message->channel}\n";
-                        echo 'data: ' . json_encode($payload) . "\n\n";
-                        ob_flush();
+                    }
+                }
+            } catch (\Exception $e) {
+                \Illuminate\Support\Facades\Log::error("SSE Stream Error: " . $e->getMessage());
+                echo "event: error\n";
+                echo 'data: {"message": "Server Error"}' . "\n\n";
+                if (ob_get_level() > 0) ob_flush();
+                flush();
+            }
+        });
                         flush();
                     } catch (\Exception $e) {
                         // ignore
