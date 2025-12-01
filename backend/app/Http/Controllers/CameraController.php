@@ -38,6 +38,10 @@ class CameraController extends Controller
             'url' => 'sometimes|string',
             'detection_enabled' => 'sometimes|boolean',
             'detection_model' => 'sometimes|string|nullable',
+            'detection_classes' => 'sometimes|array',
+            'face_recognition_enabled' => 'sometimes|boolean',
+            'depth_enabled' => 'sometimes|boolean',
+            'bev_enabled' => 'sometimes|boolean',
             'tracking' => 'sometimes|boolean',
         ]);
         $camera->update($validated);
@@ -56,7 +60,11 @@ class CameraController extends Controller
             'action' => 'START',
             'camera_id' => $camera->id,
             'url' => $camera->url,
-            'model' => $camera->detection_model ?? 'yolov8n' // Enviar modelo configurado
+            'model' => $camera->detection_model ?? 'yolov8n', // Enviar modelo configurado
+            'detection_classes' => $camera->detection_classes, // Enviar clases
+            'face_recognition_enabled' => $camera->face_recognition_enabled,
+            'depth_enabled' => $camera->depth_enabled,
+            'bev_enabled' => $camera->bev_enabled
         ]);
         Redis::publish('video_control', $message);
 

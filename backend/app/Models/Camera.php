@@ -15,7 +15,14 @@ class Camera extends Model
         'name',
         'url',
         'status',
-        'roi_points' // Opcional, por si lo usamos en el futuro
+        'roi_points', // Opcional, por si lo usamos en el futuro
+        'depth_enabled',
+        'bev_enabled'
+    ];
+
+    protected $casts = [
+        'depth_enabled' => 'boolean',
+        'bev_enabled' => 'boolean',
     ];
 
     /**

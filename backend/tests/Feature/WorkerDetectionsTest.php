@@ -15,6 +15,7 @@ class WorkerDetectionsTest extends TestCase
     /** @test */
     public function worker_can_post_detection_and_alert_is_triggered()
     {
+        $this->withoutExceptionHandling();
         // Seed admin and camera
         $this->seed();
         $admin = User::where('email','admin@video-saas.com')->first();
