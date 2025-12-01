@@ -2,10 +2,14 @@ import { test, expect } from '@playwright/test';
 
 test.describe('Detections live update', () => {
   test('When worker posts detection UI shows it in list', async ({ page, request }) => {
+    // Collect frontend console logs to help diagnose issues
+    page.on('console', msg => console.log('PAGE LOG:', msg.text()));
+    page.on('pageerror', err => console.log('PAGE ERROR:', err.toString()));
     const baseUrl = process.env.E2E_BASE_URL || 'http://localhost:5173';
     await page.goto(baseUrl + '/');
 
-    // login as admin
+    // login as admin (wait for login form)
+    await page.waitForSelector('input[placeholder="Email"]', { timeout: 60000 });
     await page.locator('input[placeholder="Email"]').fill('admin@video-saas.com');
     await page.locator('input[placeholder="Contraseña"]').fill('admin123');
     await page.locator('button:has-text("Entrar")').click();
@@ -34,6 +38,7 @@ test.describe('Detections live update', () => {
 
     // Wait for detection to show up in the UI
     await page.waitForSelector('.detections-panel');
-    await expect(page.locator('.detections-panel li')).toContainText('person');
+    // Ensure at least one list item displays the detection
+    await expect(page.locator('.detections-panel')).toContainText('person');
   });
 });

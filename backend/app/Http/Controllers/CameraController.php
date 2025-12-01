@@ -55,7 +55,8 @@ class CameraController extends Controller
         $message = json_encode([
             'action' => 'START',
             'camera_id' => $camera->id,
-            'url' => $camera->url
+            'url' => $camera->url,
+            'model' => $camera->detection_model ?? 'yolov8n' // Enviar modelo configurado
         ]);
         Redis::publish('video_control', $message);
 

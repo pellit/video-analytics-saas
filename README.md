@@ -123,8 +123,10 @@ Note: Avoid exposing internal services like Redis on the host in production/Dokp
 APP_ENV=production
 APP_KEY=base64:TU_CLAVE_GENERADA_AQUI
 APP_DEBUG=false
-APP_URL=https://tu-dominio.com
-VITE_API_URL=https://tu-dominio.com/api
+APP_URL=http://192.168.0.38:8000
+VITE_API_URL=http://192.168.0.38:8000/api
+VITE_STREAM_URL=http://192.168.0.38:5000/video_feed
+FRONTEND_URL=http://192.168.0.38:5173
 WORKER_API_KEY=your_worker_api_key_here
 ```
 
@@ -313,3 +315,360 @@ video-dev.pellit.com.ar
 cv.pellit.com.ar 
 api-cv.pellit.com.ar 
 video.pellit.com.ar;
+
+Siguientes / mejoras:
+
+Real-time:
+Reemplazar SSE POC por un WebSocket o Laravel Echo server con Pusher o Soketi para mejorar escalabilidad.
+Worker scaling:
+Transicionar a worker pool / Kubernetes Job que procese streams en paralelo y use recursos limitados (GPU/CPU) apropiadamente; la implementación actual es multithread minimal, suficiente para testing.
+Tests:
+Añadir E2E test de overlay también espera que el canvas muestre el bbox (el test actual solo verifica lista). Puedo extender el E2E con una verificación visual del canvas o con assertions en DOM (lista).
+Prod compose / deploy:
+He dejado recomendaciones en README acerca de no usar docker-compose.dev.yml en Dockploy; si quieres, puedo crear docker-compose.prod.yml que haga build estático del frontend (Nginx) y sea safe para production.
+Cleanup:
+Eliminar api/test/worker-env debug route cuando termines de comprobar la env.
+
+esta era la hoja de ruta que inicio el proyecto, estos e cumplen?
+
+
+Aquí tienes la Hoja de Ruta Técnica y el código clave para transformar ese repo en tu SaaS.
+
+1. Arquitectura de la Solución
+Orquestador (Laravel API): Gestiona la base de datos de cámaras (mysql/pgsql), usuarios y envía órdenes ("Start/Stop") a Redis.
+Cliente (Vue 3 + Tailwind): Panel visual para ver métricas y streams.
+Bus de Mensajes (Redis): La cola donde Laravel pone tareas y Python publica eventos.
+Worker de IA (Python Refactorizado):
+Ya no es un script main.py que corre solo.
+Es un Demonio que escucha Redis.
+Usa YOLO para tráfico/seguridad.
+Usa Vosk + SentenceTransformers para "entender conceptos" (NLP).
+Base de Datos Vectorial (pgvector o ChromaDB): Para que la IA "entienda conceptos" (búsqueda semántica) en lugar de solo palabras clave exactas.
+
+2. El Backend: Laravel (El Jefe)
+Necesitas una estructura de base de datos para guardar la configuración de qué buscar (tráfico vs seguridad).
+Migración: create_cameras_table.php
+PHP
+Schema::create('cameras', function (Blueprint $table) {
+    $table->id();
+    $table->string('name');
+    $table->string('stream_url');
+    $table->enum('type', ['traffic', 'security', 'retail']); // Define qué modelo/lógica usar
+    $table->json('roi_points')->nullable(); // Región de interés (polígono)
+    $table->boolean('is_active')->default(false);
+    $table->timestamps();
+});
+
+
+El Controlador: CameraController.php
+Cuando activas una cámara, Laravel no procesa el video, solo despacha la orden.
+PHP
+public function startAnalysis(Camera $camera)
+{
+    $camera->update(['is_active' => true]);
+
+    // Enviamos la configuración completa a Python vía Redis
+    Redis::publish('video_control', json_encode([
+        'action' => 'START',
+        'camera_id' => $camera->id,
+        'url' => $camera->stream_url,
+        'config' => [
+            'mode' => $camera->type, // 'traffic' o 'security'
+            'detect_classes' => $camera->type === 'traffic' ? [2, 3, 5, 7] : [0], // COCO IDs: 2=car, 0=person
+            'semantic_search' => true // Activar análisis de conceptos
+        ]
+    ]));
+
+    return response()->json(['status' => 'Stream initiated']);
+}
+
+
+
+3. El Worker Python (El Cerebro Refactorizado)
+Aquí es donde reutilizamos el código del repositorio pellit/RealtimeVideoAnalytics. En lugar de ejecutar el bucle directamente, creamos una clase CameraProcess que hereda de multiprocessing.Process.
+Necesitarás instalar sentence-transformers y chromadb para la parte de "entender conceptos".
+Archivo: worker_manager.py (Este reemplaza al main.py original)
+Python
+import redis
+import json
+import multiprocessing
+from app.video_analytics import VideoAnalyticsProcess # Tu lógica adaptada del repo original
+
+# Conexión a Redis (El mismo hostname que en docker-compose)
+r = redis.Redis(host='redis', port=6379, decode_responses=True)
+
+# Diccionario para guardar los procesos activos: { "camera_id": ProcessObj }
+active_processes = {}
+
+def handle_message(message):
+    data = json.loads(message['data'])
+    cam_id = str(data['camera_id'])
+    action = data['action']
+
+    if action == 'START':
+        if cam_id in active_processes and active_processes[cam_id].is_alive():
+            print(f"Cámara {cam_id} ya está corriendo.")
+            return
+
+        print(f"Iniciando análisis para cámara {cam_id} tipo {data['config']['mode']}")
+        
+        # Lanzamos el proceso pesado en un núcleo aparte
+        # Pasamos la URL y la Configuración (qué detectar, si usar audio, etc.)
+        proc = VideoAnalyticsProcess(
+            cam_id=cam_id, 
+            url=data['url'], 
+            config=data['config']
+        )
+        proc.start()
+        active_processes[cam_id] = proc
+
+    elif action == 'STOP':
+        if cam_id in active_processes:
+            print(f"Deteniendo cámara {cam_id}")
+            active_processes[cam_id].terminate() # Matar proceso
+            del active_processes[cam_id]
+
+def main():
+    pubsub = r.pubsub()
+    pubsub.subscribe('video_control')
+    print("Worker Maestro esperando comandos de Laravel...")
+    
+    for message in pubsub.listen():
+        if message['type'] == 'message':
+            handle_message(message)
+
+if __name__ == "__main__":
+    main()
+
+
+
+4. Implementando "Entender Conceptos" (La parte Novedosa)
+Para que tu app no solo transcriba palabras sino que entienda el contexto (ej: alguien grita "¡Fuego!" y el sistema lo detecta como "Peligro"), integras esto en tu bucle de análisis.
+Dentro de tu clase de procesamiento (video_analytics.py):
+Python
+from sentence_transformers import SentenceTransformer
+import numpy as np
+
+# Cargar modelo ligero de embeddings (se hace una vez al inicio del proceso)
+semantic_model = SentenceTransformer('all-MiniLM-L6-v2')
+
+# Conceptos de "Peligro" pre-calculados (Vectores de referencia)
+danger_concepts = {
+    "robo": semantic_model.encode("Someone is stealing robbery thief"),
+    "accidente": semantic_model.encode("Car crash accident collision"),
+    "ayuda": semantic_model.encode("Help me emergency scream")
+}
+
+def analyze_audio_semantics(text_transcript):
+    """
+    Convierte el texto transcribido a vector y lo compara con conceptos de peligro.
+    """
+    # 1. Tokenizar y Vectorizar lo que se dijo
+    current_vector = semantic_model.encode(text_transcript)
+    
+    for concept_name, concept_vector in danger_concepts.items():
+        # 2. Calcular similitud (Coseno)
+        similarity = np.dot(current_vector, concept_vector) / (np.linalg.norm(current_vector) * np.linalg.norm(concept_vector))
+        
+        # 3. Si se parece más del 70%, disparar alerta
+        if similarity > 0.7:
+            return concept_name # Retorna "robo", "accidente", etc.
+    
+    return None
+
+
+Cuando el sistema detecta una similitud alta, envía el evento a Redis: Redis::publish('alerts', ...) y Laravel lo muestra en Vue como una notificación roja.
+
+5. Docker Compose Integrado
+Este archivo une todo. Usaremos la imagen oficial de Laravel (o una custom con PHP) y tu worker de Python.
+YAML
+version: '3.8'
+
+services:
+  # --- BACKEND LARAVEL ---
+  api:
+    image: bitnami/laravel:10
+    container_name: app_backend
+    ports:
+      - "8000:8000"
+    environment:
+      - DB_HOST=db
+      - REDIS_HOST=redis
+    depends_on:
+      - db
+      - redis
+    volumes:
+      - ./backend:/app
+    networks:
+      - saas_net
+
+  # --- FRONTEND VUE ---
+  frontend:
+    image: node:18-alpine
+    container_name: app_frontend
+    working_dir: /app
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./frontend:/app
+    command: npm run dev
+    networks:
+      - saas_net
+
+  # --- PYTHON AI WORKER ---
+  ai_worker:
+    build: 
+      context: ./python_engine # Tu carpeta con el código python refactorizado
+      dockerfile: Dockerfile
+    container_name: ai_worker_1
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu] # Si tienes GPU, esto es vital
+    environment:
+      - REDIS_HOST=redis
+      - YOUTUBE_DL_CACHE_DIR=/tmp/yt
+    volumes:
+      - ./python_engine/models:/models
+    depends_on:
+      - redis
+    command: python worker_manager.py # Corre el script que escucha Redis
+    networks:
+      - saas_net
+
+  # --- INFRAESTRUCTURA ---
+  redis:
+    image: redis:alpine
+    ports:
+      - "6379:6379"
+    networks:
+      - saas_net
+
+  db:
+    image: postgres:15 # Postgres es mejor para vectores (pgvector)
+    environment:
+      POSTGRES_DB: video_saas
+      POSTGRES_PASSWORD: secret
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    networks:
+      - saas_net
+
+networks:
+  saas_net:
+
+volumes:
+  pg_data:
+
+
+Resumen de Funcionalidades Logradas
+Escalabilidad: Si necesitas analizar 50 cámaras, simplemente subes más contenedores ai_worker en otros servidores apuntando al mismo Redis.
+Tokenización y Conceptos: Gracias a SentenceTransformers y la comparación vectorial, el sistema entiende que "¡Auxilio!" y "¡Ayuda!" son semánticamente lo mismo (concepto de peligro).
+Análisis de Tráfico: Laravel le dice a Python "Modo Tráfico", y Python configura YOLO para filtrar solo coches/buses/camiones y contar flujo.
+Seguridad: Laravel le dice "Modo Seguridad", y Python busca personas + comportamientos anómalos.
+¿Por dónde empezar?
+Crea el proyecto Laravel y configura la conexión a Redis.
+Crea el script worker_manager.py en Python que simplemente imprima "Recibí orden START" cuando Laravel se lo mande.
+Una vez conectados, mueve la lógica de YOLO del repo viejo dentro de la clase VideoAnalyticsProcess.
+Label Studio es una herramienta visual muy potente. En tu arquitectura SaaS, su rol es el "Human in the Loop": sirve para que tú (o tus empleados) corrijan los errores que comete la IA para que esta aprenda.
+Dado que ya lo tienes corriendo en el puerto 8081, aquí tienes la guía paso a paso para usarlo en tu flujo de trabajo de Active Learning (Reentrenamiento).
+
+1. Acceso y Configuración Inicial
+Entra a la web: Abre tu navegador en http://TU-IP-SERVIDOR:8081.
+Crea cuenta: La primera vez te pedirá crear un usuario (email y contraseña). Este será el "Super Admin".
+Crea un Proyecto:
+Haz clic en el botón azul "Create Project".
+Project Name: Ponle algo como Correcciones YOLO.
+Description: "Imágenes donde la IA tuvo baja confianza".
+2. Configurar la Interfaz de Etiquetado
+Esta es la parte más importante. Debes decirle a Label Studio que vas a trabajar con Cajas (Bounding Boxes).
+Dentro de la creación del proyecto, ve a la pestaña Labeling Setup.
+Busca Computer Vision > Object Detection with Bounding Boxes.
+Define tus etiquetas: Borra las que vienen por defecto (Airplane, etc.) y escribe las clases exactas que tu modelo YOLO usa.
+Si usas el modelo estándar (yolov8n.pt), las clases más comunes son:
+person
+car
+bus
+truck
+motorcycle
+Dale a Save.
+3. Importar Imágenes (El flujo de trabajo)
+En tu sistema, el Worker de Python guardará las imágenes difíciles en una carpeta. Para etiquetarlas:
+Haz clic en el botón azul Import.
+Arrastra las imágenes desde tu carpeta local (o la carpeta que descargaste del servidor).
+Dale a Import.
+(Nota: Label Studio permite "sincronizar" carpetas locales del servidor automáticamente, pero requiere una configuración extra en Docker. Por ahora, la subida manual es más segura).
+4. El Proceso de Etiquetado (Tu trabajo manual)
+Haz clic en la primera imagen de la lista (Tasks).
+Se abrirá el editor visual.
+Herramientas:
+Selecciona la etiqueta abajo (ej. person).
+Presiona la tecla 1, 2, 3 para cambiar rápido de etiqueta.
+Dibujar: Haz clic y arrastra sobre el objeto.
+Guardar:
+Si terminaste esa imagen, dale a Submit (o Ctrl + Enter).
+Si quieres saltarla, dale a Skip.
+
+Shutterstock
+Explorar
+5. Exportar para Reentrenar (El objetivo final)
+Una vez que has corregido 50 o 100 imágenes, es hora de enseñarle al modelo.
+Ve al botón Export (arriba a la derecha).
+Formato: Selecciona YOLO.
+Descargarás un archivo .zip.
+¿Qué tiene ese ZIP inside?
+/images: Tus fotos.
+/labels: Archivos .txt con las coordenadas normalizadas que YOLO entiende.
+classes.txt: La lista de nombres.
+
+6. Cómo cerrar el ciclo (Reentrenamiento)
+Ahora tienes datos nuevos y limpios. Para mejorar tu IA:
+Sube ese .zip a tu entorno de desarrollo local (tu PC con GPU).
+Descomprímelo.
+Ejecuta un comando de entrenamiento de YOLO (como vimos antes):
+Python
+from ultralytics import YOLO
+
+# Cargar el modelo que usas actualmente
+model = YOLO('yolov8n.pt') 
+
+# Entrenar con TUS correcciones
+# (data.yaml es un archivo que debes crear apuntando a tus carpetas nuevas)
+model.train(data='mis_correcciones/data.yaml', epochs=50)
+
+
+Esto generará un nuevo archivo best.pt.
+Reemplaza el archivo en ai_engine/models/yolov8n.pt en tu proyecto y haz Redeploy.
+¡Tu IA ahora es un poco más inteligente gracias a Label Studio!
+
+
+4. Implementando "Conceptos" y "Tokenización" (Fase 2)
+Para la parte de análisis avanzado (buscar "accidentes", "peleas", etc.), necesitas agregar una base de datos vectorial al docker-compose.
+Agrega el servicio:
+YAML
+chromadb:
+  image: chromadb/chroma
+  ports:
+    - "8001:8000"
+  networks:
+    - app_net
+
+
+
+
+Flujo de Tokenización:
+Tu worker de Audio (Vosk) extrae texto: "Help me please".
+Python genera un Embedding (vector numérico) de esa frase usando OpenAI o un modelo local (HuggingFace).
+Guardas ese vector en ChromaDB.
+Búsqueda en Laravel:
+Usuario busca: "Situación de peligro".
+Laravel convierte "Situación de peligro" a vector.
+Consulta a ChromaDB por vectores similares.
+ChromaDB devuelve el timestamp donde se dijo "Help me please" (porque semánticamente están cerca).
+Resumen de Escalabilidad
+¿Tienes 10 cámaras? Un solo contenedor ai_worker puede bastar.
+¿Tienes 100 cámaras? Ejecutas docker-compose up -d --scale ai_worker=10. Docker creará 10 copias de tu código Python y se repartirán el trabajo de Redis automáticamente.
+¿El Backend está lento? Laravel maneja miles de usuarios sin problema, pero el procesamiento pesado siempre ocurre en los workers de Python aislados.

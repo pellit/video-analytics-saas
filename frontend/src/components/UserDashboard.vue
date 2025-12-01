@@ -1,10 +1,10 @@
 <script setup>
-import { ref, onMounted, computed, watch, nextTick } from 'vue'
-import { watch } from 'vue'
+import { ref, onMounted, computed, watch, nextTick, onUnmounted } from 'vue'
 const props = defineProps(['token'])
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000/api'
-const STREAM_URL = import.meta.env.VITE_API_URL ? import.meta.env.VITE_API_URL.replace('/api', ':5000/video_feed') : 'http://192.168.0.38:5000/video_feed'
+// Prefer explicit stream URL; fallback to computed from API URL to be compatible with existing setups
+const STREAM_URL = import.meta.env.VITE_STREAM_URL || (import.meta.env.VITE_API_URL ? import.meta.env.VITE_API_URL.replace('/api', ':5000/video_feed') : 'http://192.168.0.38:5000/video_feed')
 
 const cameras = ref([])
 const activeCamera = ref(null)
@@ -63,6 +63,7 @@ const addCamera = async () => {
 const newAlertName = ref('Auto Alert')
 const newAlertEvent = ref('person_detected')
 const newAlertThreshold = ref(0.5)
+const runInBackground = ref(true) // Default: Keep running in background
 
 const updateCameraSettings = async (camera) => {
   try {
@@ -78,6 +79,22 @@ const updateCameraSettings = async (camera) => {
     }
   } catch (e) { console.error(e); alert('Error red al actualizar cámara') }
 }
+
+// Watch for camera changes to handle background processing preference
+watch(activeCamera, async (newCam, oldCam) => {
+    if (oldCam && isProcessing.value && !runInBackground.value) {
+        console.log(`Stopping camera ${oldCam.id} (Background disabled)`)
+        try {
+            await fetch(`${API_URL}/camera/stop`, {
+                method: 'POST', 
+                headers: { 'Authorization': `Bearer ${props.token}`, 'Content-Type': 'application/json' }, 
+                body: JSON.stringify({ id: oldCam.id })
+            })
+        } catch(e) { console.error("Error stopping camera", e) }
+    }
+    // Reset UI state for new camera (we assume stopped initially or user manually starts)
+    isProcessing.value = false 
+})
 
 const createAlert = async (camera, name, event, threshold) => {
   try {
@@ -123,6 +140,7 @@ const overlayCanvas = ref(null)
 let imgNaturalW = 0
 let imgNaturalH = 0
 
+const streamLoadError = ref(false)
 const onStreamLoad = (e) => {
   imgNaturalW = e.target.naturalWidth
   imgNaturalH = e.target.naturalHeight
@@ -133,6 +151,13 @@ const onStreamLoad = (e) => {
     canvas.height = imgNaturalH
     drawDetections()
   }
+}
+
+const onStreamError = (e) => {
+  console.error('Stream load error', e)
+  streamLoadError.value = true
+  // Hide processing flag if it was on; keep camera active so user can try again
+  isProcessing.value = false
 }
 
 const drawDetections = () => {
@@ -259,7 +284,20 @@ const initSSE = () => {
   eventSource.onerror = (err) => { console.warn('SSE error', err); }
 }
 onMounted(() => { initSSE() })
-onUnmounted(() => { if (eventSource) eventSource.close() })
+onUnmounted(async () => { 
+    if (eventSource) eventSource.close() 
+    // Stop processing if background mode is disabled
+    if (activeCamera.value && isProcessing.value && !runInBackground.value) {
+        try {
+            // Use sendBeacon or fetch (fetch might be cancelled on unload, but onUnmounted is Vue lifecycle)
+            await fetch(`${API_URL}/camera/stop`, {
+                method: 'POST', 
+                headers: { 'Authorization': `Bearer ${props.token}`, 'Content-Type': 'application/json' }, 
+                body: JSON.stringify({ id: activeCamera.value.id })
+            })
+        } catch(e) { console.error("Error stopping on unmount", e) }
+    }
+})
 </script>
 
 <template>
@@ -298,6 +336,7 @@ onUnmounted(() => { if (eventSource) eventSource.close() })
                       <option value="yolov8l">yolov8l</option>
                   </select>
                   <label><input type="checkbox" v-model="activeCamera.tracking" /> Seguimiento</label>
+                  <label title="Si está desactivado, el análisis se detendrá al cambiar de cámara o salir"><input type="checkbox" v-model="runInBackground" /> Background</label>
                   <button @click="updateCameraSettings(activeCamera)">Guardar Config</button>
               </div>
             </div>
@@ -314,8 +353,9 @@ onUnmounted(() => { if (eventSource) eventSource.close() })
         <div class="video-box">
             <iframe v-if="isProcessing && isYouTube" :src="activeStreamUrl" frameborder="0" allow="autoplay; encrypted-media; picture-in-picture" allowfullscreen class="stream"></iframe>
             <div v-else-if="isProcessing" class="stream" style="position: relative; width: 100%; height: 100%;">
-              <img ref="streamImg" :src="activeStreamUrl" class="stream" @load="onStreamLoad" style="position: absolute; left:0; top:0; width:100%; height:100%; object-fit: contain;" />
+              <img ref="streamImg" :src="activeStreamUrl" class="stream" @load="onStreamLoad" @error="onStreamError" style="position: absolute; left:0; top:0; width:100%; height:100%; object-fit: contain;" />
               <canvas ref="overlayCanvas" class="overlay-canvas" style="position: absolute; left:0; top:0; width:100%; height:100%; pointer-events: none;"></canvas>
+              <div v-if="streamLoadError" class="stream-error">No se pudo cargar el stream. Verifica que el worker esté corriendo y que la cámara esté activa.</div>
             </div>
             <div v-else class="placeholder">Stream Inactivo</div>
         </div>
@@ -341,6 +381,7 @@ onUnmounted(() => { if (eventSource) eventSource.close() })
 .cam-chip.active { background: #7367f0; color: white; border-color: #7367f0; }
 .video-box { background: black; height: 400px; display: flex; justify-content: center; align-items: center; color: white; border-radius: 10px; overflow: hidden; }
 .stream { height: 100%; width: 100%; object-fit: contain; }
+.stream-error { position:absolute; left:0; top:0; right:0; bottom:0; display:flex; justify-content:center; align-items:center; background:rgba(0,0,0,0.6); color:#fff; z-index:10; }
 .btn-start { background: #28c76f; color: white; padding: 8px 20px; border: none; border-radius: 5px; cursor: pointer; }
 .btn-stop { background: #ea5455; color: white; padding: 8px 20px; border: none; border-radius: 5px; cursor: pointer; }
 header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }

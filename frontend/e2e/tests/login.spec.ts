@@ -2,11 +2,15 @@ import { test, expect } from '@playwright/test';
 
 test.describe('Authentication flow', () => {
   test('Super Admin can log in (UI)', async ({ page }) => {
+    // Collect frontend console logs to help diagnose issues
+    page.on('console', msg => console.log('PAGE LOG:', msg.text()));
+    page.on('pageerror', err => console.log('PAGE ERROR:', err.toString()));
     // 1) Open the frontend (respect base url env var)
     const baseUrl = process.env.E2E_BASE_URL || 'http://localhost:5173';
     await page.goto(baseUrl + '/');
 
-    // 2) Fill login form
+    // 2) Wait for and fill login form
+    await page.waitForSelector('input[placeholder="Email"]', { timeout: 60000 });
     await page.locator('input[placeholder="Email"]').fill('admin@video-saas.com');
     await page.locator('input[placeholder="Contraseña"]').fill('admin123');
     await page.locator('button:has-text("Entrar")').click();

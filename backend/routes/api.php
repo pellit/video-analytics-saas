@@ -16,6 +16,10 @@ require __DIR__ . '/api/auth.php';
 use App\Http\Controllers\WorkerController;
 Route::post('/worker/detections', [WorkerController::class, 'postDetection']);
 
+Route::get('/test/worker-env', function (\Illuminate\Http\Request $r) {
+    return response()->json(['env' => env('WORKER_API_KEY'), 'header' => $r->header('X-WORKER-KEY')]);
+});
+
 
 // 2. Cargar Rutas Protegidas de Usuario
 // Aplicamos el middleware de autenticación a todo este grupo

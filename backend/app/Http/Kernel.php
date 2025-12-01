@@ -1,0 +1,50 @@
+<?php
+namespace App\Http;
+
+use Illuminate\Foundation\Http\Kernel as HttpKernel;
+use Illuminate\Cookie\Middleware\AddQueuedCookiesToResponse;
+use Illuminate\Cookie\Middleware\EncryptCookies;
+use Illuminate\Session\Middleware\StartSession;
+use Illuminate\View\Middleware\ShareErrorsFromSession;
+use Illuminate\Routing\Middleware\SubstituteBindings;
+use Illuminate\Routing\Middleware\ThrottleRequests;
+use Illuminate\Http\Middleware\HandleCors;
+use App\Http\Middleware\CheckSuperAdmin;
+
+class Kernel extends HttpKernel
+{
+    /**
+     * The application's global HTTP middleware stack.
+     *
+     * @var array<int, class-string|string>
+     */
+    protected $middleware = [
+        // Only enable CORS handling in the minimal kernel for this project
+        HandleCors::class,
+    ];
+
+    /**
+     * The application's route middleware groups.
+     *
+     * @var array<string, array<int, class-string|string>>
+     */
+    protected $middlewareGroups = [
+        'web' => [],
+        'api' => [
+            SubstituteBindings::class,
+        ],
+    ];
+
+    /**
+     * The application's route middleware aliases.
+     *
+     * @var array<string, class-string|string>
+     */
+    protected $routeMiddleware = [
+        // Expose a few route middleware aliases used in the project
+        'superadmin' => CheckSuperAdmin::class,
+        'throttle' => \Illuminate\Routing\Middleware\ThrottleRequests::class,
+        'signed' => \Illuminate\Routing\Middleware\ValidateSignature::class,
+        'substituteBindings' => SubstituteBindings::class,
+    ];
+}

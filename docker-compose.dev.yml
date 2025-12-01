@@ -12,12 +12,16 @@ services:
     environment:
       APP_ENV: local
       APP_DEBUG: true
+      CORS_ALLOWED_ORIGINS: '*'
       WORKER_API_KEY: ${WORKER_API_KEY}
       APP_KEY: ${APP_KEY:-}
+      # Host/URL variables for local dev (use your LAN IP or 0.0.0.0)
+      APP_URL: ${APP_URL:-http://192.168.0.38:8000}
+      FRONTEND_URL: ${FRONTEND_URL:-http://192.168.0.38:5173}
     
-    # ELIMINAMOS/COMENTAMOS: Los volúmenes de código fuente
-    # volumes:
-    #   - ./backend:/var/www/html
+    # VOLUMES: Espejar código en desarrollo (hot reload)
+    volumes:
+      - ./backend:/var/www/html
     ports:
       - "8000:8000"
 
@@ -28,12 +32,15 @@ services:
     # MANTENEMOS: Vite en modo desarrollo
     command: npm run dev -- --host
     
-    # ELIMINAMOS/COMENTAMOS: Los volúmenes de código
-    # volumes:
-    #   - ./frontend:/app
-    #   - /app/node_modules
+    # RESTAURAMOS: Los volúmenes de código para desarrollo
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
     environment:
-      VITE_API_URL: ${VITE_API_URL:-http://localhost:8000/api}
+      # Expose the backend API URL used by Vite in the browser
+      VITE_API_URL: ${VITE_API_URL:-http://192.168.0.38:8000/api}
+      # Expose the worker's annotated MJPEG stream URL used by the UI
+      VITE_STREAM_URL: ${VITE_STREAM_URL:-http://192.168.0.38:5000/video_feed}
     ports:
       - "5173:5173"
     #   - /app/node_modules
@@ -42,9 +49,9 @@ services:
   ai_worker:
     profiles:
       - dev
-    # ELIMINAMOS/COMENTAMOS: Volúmenes de código
-    # volumes:
-    #   - ./ai_engine:/app
+    # RESTAURAMOS: Volúmenes de código
+    volumes:
+      - ./ai_engine:/app
     environment:
       PYTHONUNBUFFERED: 1
       REDIS_HOST: ${REDIS_HOST:-redis}

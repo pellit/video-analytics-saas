@@ -65,6 +65,8 @@ def get_stream_url(youtube_url):
 def stream_thread(camera_id, url):
     print(f"🚀 Iniciando stream thread para camera {camera_id}")
     cap = None
+    last_url = None
+
     while True:
         with global_state['lock']:
             stream = global_state['streams'].get(str(camera_id))
@@ -73,18 +75,24 @@ def stream_thread(camera_id, url):
                     cap.release(); cap = None
                 time.sleep(0.5)
                 continue
-            raw_url = stream.get('url')
-            print(f"🔍 Buscando stream para: {raw_url}")
+            current_url = stream.get('url')
             
-        if "youtube" in raw_url or "youtu.be" in raw_url:
-                real_url = get_stream_url(raw_url)
+        # Re-initialize if URL changed or cap is None
+        if cap is None or current_url != last_url:
+            if cap:
+                cap.release()
+            
+            print(f"🔍 Buscando stream para: {current_url}")
+            if "youtube" in current_url or "youtu.be" in current_url:
+                real_url = get_stream_url(current_url)
                 print(f"▶ Stream URL obtenida (imprimiendo primeros 50 chars): {real_url[:50]}...")
             else:
-                real_url = raw_url
-
-            # Aumentamos el buffer para evitar cortes
-            os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport;udp"
+                real_url = current_url
+                # Aumentamos el buffer para evitar cortes
+                os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport;udp"
+            
             cap = cv2.VideoCapture(real_url)
+            last_url = current_url
             
             # Verificación extra
             if not cap.isOpened():
@@ -96,8 +104,11 @@ def stream_thread(camera_id, url):
         success, frame = cap.read()
         
         if not success:
-            # Si falla la lectura, no imprimas error en cada frame (ensucia el log)
+            # Si falla la lectura, liberamos cap para forzar reconexión
             # Solo reintenta suavemente
+            if cap:
+                cap.release()
+            cap = None
             time.sleep(0.1)
             continue
 
@@ -225,7 +236,13 @@ def video_feed(camera_id: str = None):
             time.sleep(0.04)
     return StreamingResponse(generator(), media_type='multipart/x-mixed-replace; boundary=frame')
 
+
+@app.get('/health')
+def health_check():
+    """Simple health endpoint for the worker process. This returns the list of active streams and a basic OK."""
+    return { 'status': 'ok', 'active_streams': list(global_state['streams'].keys()) }
+
 @app.on_event("startup")
 def startup_event():
+    # Start the Redis listener thread on startup
     threading.Thread(target=redis_listener_loop, daemon=True).start()
-    threading.Thread(target=video_processing_loop, daemon=True).start()

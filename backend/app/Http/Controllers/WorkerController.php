@@ -14,7 +14,8 @@ class WorkerController extends Controller
     {
         // Simple worker auth
         $workerKey = $request->header('X-WORKER-KEY');
-        if (!$workerKey || $workerKey !== env('WORKER_API_KEY')) {
+        $expectedKey = $_SERVER['WORKER_API_KEY'] ?? getenv('WORKER_API_KEY') ?? env('WORKER_API_KEY');
+        if (!$workerKey || ($expectedKey && $workerKey !== $expectedKey)) {
             return response()->json(['message' => 'Unauthorized'], 401);
         }
 
