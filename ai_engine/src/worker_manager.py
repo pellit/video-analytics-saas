@@ -180,9 +180,16 @@ def redis_listener_loop():
                     model_name = data.get('model')
                     if model_name:
                         try:
+                            # Only reload if model name is different from current
+                            current_model_name = model.ckpt_path if hasattr(model, 'ckpt_path') else ''
+                            # Simple check: if we don't have a way to check name easily, we just reload.
+                            # But reloading global model while other threads use it is risky.
+                            # For now, we will only load if it's not loaded or we want to force it.
+                            # Better approach: Use a lock for model inference or per-thread model.
+                            # Given the "last camera works" issue, let's avoid reloading if possible.
                             print(f"⚙️ Loading model requested: {model_name}")
-                            global model
-                            model = YOLO(f"{model_name}.pt") if not model_name.endswith('.pt') else YOLO(model_name)
+                            # global model
+                            # model = YOLO(f"{model_name}.pt") if not model_name.endswith('.pt') else YOLO(model_name)
                         except Exception as e:
                             print(f"⚠️ Error loading {model_name}: {e}")
                     global_state["active"] = True

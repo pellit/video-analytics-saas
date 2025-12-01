@@ -76,7 +76,7 @@ onMounted(async () => {
     </aside>
 
     <main class="content">
-      <UserDashboard v-if="currentView === 'dashboard'" :token="token" />
+      <UserDashboard v-if="currentView === 'dashboard'" :token="token" :user="user" />
       <AdminDashboard v-if="currentView === 'admin'" :token="token" />
     </main>
   </div>

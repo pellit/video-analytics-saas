@@ -52,4 +52,10 @@ class User extends Authenticatable
     {
         return $this->hasMany(Camera::class);
     }
+
+    // Relación con Alertas (a través de cámaras)
+    public function alerts()
+    {
+        return $this->hasManyThrough(Alert::class, Camera::class);
+    }
 }

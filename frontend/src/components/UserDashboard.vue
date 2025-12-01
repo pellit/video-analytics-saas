@@ -1,6 +1,6 @@
 <script setup>
 import { ref, onMounted, computed, watch, nextTick, onUnmounted } from 'vue'
-const props = defineProps(['token'])
+const props = defineProps(['token', 'user'])
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000/api'
 // Prefer explicit stream URL; fallback to computed from API URL to be compatible with existing setups
