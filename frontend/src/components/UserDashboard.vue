@@ -136,66 +136,41 @@ const stopPollingDetections = () => {
   detections.value = []
 }
 
-// Canvas overlay drawing
-const streamImg = ref(null)
-const overlayCanvas = ref(null)
-let imgNaturalW = 0
-let imgNaturalH = 0
-
+// Canvas overlay drawing removed since backend sends annotated frames
 const streamLoadError = ref(false)
-const onStreamLoad = (e) => {
-  imgNaturalW = e.target.naturalWidth
-  imgNaturalH = e.target.naturalHeight
-  // set canvas size to actual image pixel size for correct scaling
-  const canvas = overlayCanvas.value
-  if (canvas) {
-    canvas.width = imgNaturalW
-    canvas.height = imgNaturalH
-    drawDetections()
-  }
+const streamErrorUrl = ref('')
+
+const onStreamLoad = () => {
+  streamLoadError.value = false
 }
 
 const onStreamError = (e) => {
   console.error('Stream load error', e)
   streamLoadError.value = true
-  // Hide processing flag if it was on; keep camera active so user can try again
-  isProcessing.value = false
+  streamErrorUrl.value = activeStreamUrl.value
 }
 
-const drawDetections = () => {
-  const canvas = overlayCanvas.value
-  const img = streamImg.value
-  if (!canvas || !img || detections.value.length === 0) {
-    if (canvas) {
-      const ctx = canvas.getContext('2d')
-      ctx.clearRect(0,0,canvas.width, canvas.height)
-    }
-    return
-  }
-  const ctx = canvas.getContext('2d')
-  // scale to displayed size
-  // Use natural pixel coordinates since canvas matches natural size
-  const scaleX = 1
-  const scaleY = 1
-  ctx.clearRect(0,0,canvas.width, canvas.height)
-  ctx.strokeStyle = 'lime'
-  ctx.lineWidth = 3
-  ctx.font = '18px Arial'
-  ctx.fillStyle = 'lime'
-  for (const d of detections.value) {
-    const bbox = d.payload?.bbox || d.payload?.bbox || []
-    if (!bbox || bbox.length < 4) continue
-    const [x1, y1, x2, y2] = bbox
-    const w = (x2 - x1)
-    const h = (y2 - y1)
-    ctx.strokeRect(x1, y1, w, h)
-    ctx.fillText(`${d.payload?.label || d.event} (${Math.round((d.payload?.score||0)*100)}%)`, x1 + 5, y1 + 20)
-  }
+// Detections polling (Keep for list, but not for drawing)
+const detections = ref([])
+const fetchDetections = async () => {
+  if (!activeCamera.value) return
+  try {
+    const res = await fetch(`${API_URL}/cameras/${activeCamera.value.id}/detections`, { headers: { 'Authorization': `Bearer ${props.token}` } })
+    if (res.ok) detections.value = await res.json()
+  } catch (e) { console.error('fetchDetections error', e) }
+}
+let detectionsInterval = null
+const startPollingDetections = () => {
+  fetchDetections()
+  detectionsInterval = setInterval(fetchDetections, 2000)
+}
+const stopPollingDetections = () => {
+  if (detectionsInterval) clearInterval(detectionsInterval)
+  detections.value = []
 }
 
 watch(detections, () => {
-  // redraw overlay when detections change
-  nextTick(() => drawDetections())
+  // No drawing needed
 })
 
 const toggleAnalysis = async (start) => {
@@ -363,9 +338,11 @@ onUnmounted(async () => {
         <div class="video-box">
             <iframe v-if="isProcessing && isYouTube" :src="activeStreamUrl" frameborder="0" allow="autoplay; encrypted-media; picture-in-picture" allowfullscreen class="stream"></iframe>
             <div v-else-if="isProcessing" class="stream" style="position: relative; width: 100%; height: 100%;">
-              <img ref="streamImg" :src="activeStreamUrl" class="stream" @load="onStreamLoad" @error="onStreamError" style="position: absolute; left:0; top:0; width:100%; height:100%; object-fit: contain;" />
-              <canvas ref="overlayCanvas" class="overlay-canvas" style="position: absolute; left:0; top:0; width:100%; height:100%; pointer-events: none;"></canvas>
-              <div v-if="streamLoadError" class="stream-error">No se pudo cargar el stream. Verifica que el worker esté corriendo y que la cámara esté activa.</div>
+              <img :src="activeStreamUrl" class="stream" @load="onStreamLoad" @error="onStreamError" style="position: absolute; left:0; top:0; width:100%; height:100%; object-fit: contain;" />
+              <div v-if="streamLoadError" class="stream-error">
+                <p>No se pudo cargar el stream.</p>
+                <small>{{ streamErrorUrl }}</small>
+              </div>
             </div>
             <div v-else class="placeholder">Stream Inactivo</div>
         </div>
