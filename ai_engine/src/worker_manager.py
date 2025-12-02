@@ -255,16 +255,21 @@ def stream_thread(camera_id, url):
                     event_obj = { 'camera_id': int(camera_id), 'event': label, 'payload': payload }
                     # Publish on Redis channel
                     r.publish('detections', json.dumps(event_obj))
-                    # Send to backend worker endpoint
+                    # Send to backend worker endpoint (Throttled)
                     backend_url = os.environ.get('BACKEND_API_URL', 'http://localhost:8000')
                     worker_key = os.environ.get('WORKER_API_KEY')
-                    if worker_key:
-                        try:
-                            import requests
-                            headers = {'X-WORKER-KEY': worker_key, 'Content-Type': 'application/json'}
-                            requests.post(f"{backend_url}/api/worker/detections", json=event_obj, headers=headers, timeout=2)
-                        except Exception as e:
-                            print(f"⚠️ Error enviando deteccion al backend: {e}")
+                    
+                    # Simple throttling: only send if random < 0.1 (approx 10% of detections)
+                    # Or better: use a timestamp per camera. For now, random is easiest to unblock.
+                    if worker_key and np.random.rand() < 0.1:
+                        def send_async(url, json_data, headers):
+                            try:
+                                requests.post(url, json=json_data, headers=headers, timeout=1)
+                            except:
+                                pass # Fire and forget
+                        
+                        threading.Thread(target=send_async, args=(f"{backend_url}/api/worker/detections", event_obj, {'X-WORKER-KEY': worker_key, 'Content-Type': 'application/json'})).start()
+
                 except Exception as e:
                     print(f"⚠️ Error procesando box: {e}")
         except Exception as e:

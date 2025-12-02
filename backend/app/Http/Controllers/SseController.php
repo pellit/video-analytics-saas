@@ -28,6 +28,7 @@ class SseController extends Controller
         if (!$user) return response()->json(['message' => 'Unauthorized'], 401);
 
         $response = new StreamedResponse(function () use ($user) {
+            \Illuminate\Support\Facades\Log::info("SSE: Starting stream for user " . $user->id);
             try {
                 // Set headers for SSE
                 echo "retry: 2000\n\n";
@@ -63,17 +64,11 @@ class SseController extends Controller
                 flush();
             }
         });
-                        flush();
-                    } catch (\Exception $e) {
-                        // ignore
-                    }
-                }
-            }
-        }, 200, [
-            'Content-Type' => 'text/event-stream',
-            'Cache-Control' => 'no-cache',
-            'Connection' => 'keep-alive',
-        ]);
+
+        $response->headers->set('Content-Type', 'text/event-stream');
+        $response->headers->set('Cache-Control', 'no-cache');
+        $response->headers->set('Connection', 'keep-alive');
+        $response->headers->set('X-Accel-Buffering', 'no');
 
         return $response;
     }

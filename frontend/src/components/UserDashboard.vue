@@ -5,7 +5,21 @@ const emit = defineEmits(['logout'])
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000/api'
 // Prefer explicit stream URL; fallback to computed from API URL to be compatible with existing setups
-const STREAM_URL = import.meta.env.VITE_STREAM_URL || (import.meta.env.VITE_API_URL ? import.meta.env.VITE_API_URL.replace('/api', ':5000/video_feed') : 'http://192.168.0.38:5000/video_feed')
+const getStreamUrl = () => {
+    if (import.meta.env.VITE_STREAM_URL) return import.meta.env.VITE_STREAM_URL;
+    if (import.meta.env.VITE_API_URL) {
+        try {
+            const url = new URL(import.meta.env.VITE_API_URL);
+            url.port = '5000';
+            url.pathname = '/video_feed';
+            return url.toString();
+        } catch (e) {
+            console.error('Error parsing API URL for stream', e);
+        }
+    }
+    return 'http://192.168.0.38:5000/video_feed';
+}
+const STREAM_URL = getStreamUrl();
 
 const cameras = ref([])
 const activeCamera = ref(null)

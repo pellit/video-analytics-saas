@@ -15,14 +15,23 @@ class Camera extends Model
         'name',
         'url',
         'status',
-        'roi_points', // Opcional, por si lo usamos en el futuro
+        'detection_enabled',
+        'detection_model',
+        'detection_classes',
+        'face_recognition_enabled',
         'depth_enabled',
-        'bev_enabled'
+        'bev_enabled',
+        'roi_settings',
+        'roi_points'
     ];
 
     protected $casts = [
+        'detection_enabled' => 'boolean',
+        'detection_classes' => 'array',
+        'face_recognition_enabled' => 'boolean',
         'depth_enabled' => 'boolean',
         'bev_enabled' => 'boolean',
+        'roi_settings' => 'array',
     ];
 
     /**
@@ -43,4 +52,3 @@ class Camera extends Model
         return $this->hasMany(Alert::class);
     }
 }
-
