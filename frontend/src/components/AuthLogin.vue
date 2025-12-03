@@ -293,14 +293,14 @@ const sendMagicLink = async () => {
 }
 
 .form-welcome-row h1 {
-  color: var(--text);
+  color: #111827;
   font-size: 2rem;
-  font-weight: 600;
+  font-weight: 700;
   margin-bottom: 0.5rem;
 }
 
 .form-welcome-row h2 {
-  color: var(--text-gray);
+  color: #4b5563;
   font-size: 1rem;
   font-weight: 400;
 }
@@ -317,18 +317,20 @@ const sendMagicLink = async () => {
   gap: 0.75rem;
   width: 100%;
   padding: 0.75rem 1rem;
-  border: 1px solid var(--border);
+  border: 2px solid #d1d5db;
   border-radius: 0.5rem;
   text-decoration: none;
-  color: var(--text);
+  color: #1f2937;
   font-size: 0.95rem;
+  font-weight: 500;
   transition: all 0.2s ease;
   background: white;
 }
 
 .socials-row a:hover {
-  background: var(--input-bg);
-  border-color: var(--primary-light);
+  background: #f9fafb;
+  border-color: var(--primary);
+  color: var(--primary);
 }
 
 .socials-row svg {
@@ -340,14 +342,15 @@ const sendMagicLink = async () => {
   display: flex;
   align-items: center;
   gap: 1rem;
-  color: var(--text-gray);
+  color: #6b7280;
   font-size: 0.875rem;
+  font-weight: 500;
 }
 
 .divider-line {
   flex: 1;
   height: 1px;
-  background: var(--border);
+  background: #d1d5db;
 }
 
 /* Error Banner */
@@ -368,31 +371,35 @@ const sendMagicLink = async () => {
 }
 
 .text-field label {
-  color: var(--text);
+  color: #1f2937;
   font-size: 0.875rem;
-  font-weight: 500;
+  font-weight: 600;
 }
 
 .text-field input {
   width: 100%;
   padding: 0.75rem 1rem;
-  border: 1px solid var(--border);
+  border: 2px solid #d1d5db;
   border-radius: 0.5rem;
   font-size: 1rem;
   font-family: inherit;
-  background: var(--input-bg);
-  color: var(--text);
+  background: #ffffff;
+  color: #111827;
   transition: all 0.2s ease;
 }
 
 .text-field input::placeholder {
-  color: var(--text-placeholder);
+  color: #9ca3af;
 }
 
 .text-field input:focus {
   outline: none;
   border-color: var(--primary);
-  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.1);
+  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.15);
+}
+
+.text-field input:hover:not(:focus) {
+  border-color: #9ca3af;
 }
 
 /* Remember Row */
@@ -407,7 +414,8 @@ const sendMagicLink = async () => {
   gap: 0.5rem;
   cursor: pointer;
   font-size: 0.875rem;
-  color: var(--text-gray);
+  color: #374151;
+  font-weight: 500;
 }
 
 .checkbox-label input {
@@ -470,7 +478,7 @@ const sendMagicLink = async () => {
   justify-content: center;
   gap: 0.5rem;
   font-size: 0.875rem;
-  color: var(--text-gray);
+  color: #374151;
 }
 
 .my-form__row a {
