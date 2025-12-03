@@ -80,12 +80,24 @@ class ModelFactory:
         
         # Lazy import to avoid loading all models
         if model_type == ModelType.ONNX:
-            from .onnx_yolonas import ONNXYOLONASDetector
-            return ONNXYOLONASDetector(model_path=model_path, device=device)
+            try:
+                from .onnx_yolonas import ONNXYOLONASDetector
+                return ONNXYOLONASDetector(model_path=model_path, device=device)
+            except (FileNotFoundError, ImportError) as e:
+                print(f"[ModelFactory] ONNX model not available: {e}")
+                print("[ModelFactory] Falling back to RT-DETR...")
+                from .rt_detr import RTDETRDetector
+                return RTDETRDetector(model_name=model_path, device=device)
         
         elif model_type == ModelType.YOLO_NAS:
-            from .yolo_nas import YOLONASDetector
-            return YOLONASDetector(model_name=model_path, device=device)
+            try:
+                from .yolo_nas import YOLONASDetector
+                return YOLONASDetector(model_name=model_path, device=device)
+            except ImportError as e:
+                print(f"[ModelFactory] YOLO-NAS not available: {e}")
+                print("[ModelFactory] Falling back to RT-DETR...")
+                from .rt_detr import RTDETRDetector
+                return RTDETRDetector(model_name=model_path, device=device)
         
         elif model_type == ModelType.RT_DETR:
             from .rt_detr import RTDETRDetector

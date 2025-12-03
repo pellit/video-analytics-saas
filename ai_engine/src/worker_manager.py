@@ -107,8 +107,8 @@ global_state = {
 print("⏳ Cargando modelo de detección...")
 print(f"📋 Modelos disponibles: {list(ModelFactory.list_available_models().keys())}")
 
-# Get detector from environment (default: YOLO-NAS)
-# Set DETECTION_MODEL env var to change: 'yolo_nas', 'rt_detr', or 'ultralytics'
+# Get detector from environment (default: ONNX or RT-DETR fallback)
+# Set DETECTION_MODEL env var to change: 'onnx', 'yolo_nas', 'rt_detr', or 'ultralytics'
 try:
     model = get_detector()
     model.load_model()
@@ -116,12 +116,12 @@ try:
     print(f"✅ Modelo {model.__class__.__name__} cargado correctamente.")
 except Exception as e:
     print(f"❌ Error cargando modelo: {e}")
-    print("⚠️ Intentando cargar modelo de respaldo YOLO-NAS...")
-    from .models.yolo_nas import YOLONASDetector
-    model = YOLONASDetector()
+    print("⚠️ Intentando cargar modelo de respaldo RT-DETR...")
+    from src.models.rt_detr import RTDETRDetector
+    model = RTDETRDetector()
     model.load_model()
     class_names = model.get_class_names()
-    print("✅ Modelo de respaldo cargado.")
+    print("✅ Modelo de respaldo RT-DETR cargado.")
 
 # 1. MEJORA: Forzamos formato compatible con OpenCV
 def get_stream_url(youtube_url):
