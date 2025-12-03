@@ -672,3 +672,268 @@ Resumen de Escalabilidad
 ¿Tienes 10 cámaras? Un solo contenedor ai_worker puede bastar.
 ¿Tienes 100 cámaras? Ejecutas docker-compose up -d --scale ai_worker=10. Docker creará 10 copias de tu código Python y se repartirán el trabajo de Redis automáticamente.
 ¿El Backend está lento? Laravel maneja miles de usuarios sin problema, pero el procesamiento pesado siempre ocurre en los workers de Python aislados.
+
+-----
+
+## 🔌 API Externa para Terceros
+
+El sistema incluye una API REST que permite a **aplicaciones de terceros** enviar frames de video para análisis sin necesidad de configurar cámaras en el sistema.
+
+### Autenticación
+
+Las apps externas se autentican mediante **API Keys** que los usuarios pueden crear desde su dashboard.
+
+```bash
+# Header de autenticación
+X-API-Key: va_xxxxxxxxxxxxxxxxxxxx
+
+# O alternativa con Bearer
+Authorization: Bearer va_xxxxxxxxxxxxxxxxxxxx
+```
+
+### Endpoints Disponibles
+
+#### 📤 Enviar Frame para Análisis
+
+```http
+POST /api/external/analyze/frame
+```
+
+**Headers:**
+```
+X-API-Key: va_xxxxxxxxxxxx
+Content-Type: application/json
+```
+
+**Body (JSON - Base64):**
+```json
+{
+  "frame": "data:image/jpeg;base64,/9j/4AAQ...",
+  "detections": ["person", "car", "truck"],
+  "metadata": {
+    "source": "mobile-app",
+    "location": "entrance"
+  }
+}
+```
+
+**Body (Multipart - File Upload):**
+```bash
+curl -X POST http://tu-servidor.com/api/external/analyze/frame \
+  -H "X-API-Key: va_xxxxxxxxxxxx" \
+  -F "frame=@/path/to/image.jpg" \
+  -F "detections[]=person" \
+  -F "detections[]=car"
+```
+
+**Respuesta Exitosa:**
+```json
+{
+  "success": true,
+  "message": "Frame queued for analysis",
+  "job_id": "ext_abc123_1701619200",
+  "detections_requested": ["person", "car"]
+}
+```
+
+#### 📤 Enviar Batch de Frames
+
+```http
+POST /api/external/analyze/batch
+```
+
+**Body:**
+```json
+{
+  "frames": [
+    {
+      "frame": "base64_data_1...",
+      "detections": ["person"]
+    },
+    {
+      "frame": "base64_data_2...",
+      "detections": ["car", "truck"]
+    }
+  ]
+}
+```
+
+**Respuesta:**
+```json
+{
+  "success": true,
+  "message": "2 frames queued for analysis",
+  "job_ids": ["ext_abc123_1", "ext_abc123_2"]
+}
+```
+
+#### 📊 Ver Estado de la API Key
+
+```http
+GET /api/external/status
+```
+
+**Respuesta:**
+```json
+{
+  "name": "Mi App Mobile",
+  "requests_today": 150,
+  "rate_limit": 1000,
+  "remaining": 850,
+  "permissions": ["analyze_frames", "batch_analysis"],
+  "is_active": true
+}
+```
+
+### Códigos de Error
+
+| Código | Significado |
+|--------|-------------|
+| `401` | API Key inválida o faltante |
+| `403` | API Key desactivada o sin permisos |
+| `429` | Rate limit excedido (máx. requests/día) |
+| `422` | Datos inválidos (frame vacío, formato incorrecto) |
+
+**Ejemplo de Error:**
+```json
+{
+  "error": "Rate limit exceeded",
+  "message": "Daily limit of 1000 requests reached",
+  "retry_after": "2024-12-04T00:00:00Z"
+}
+```
+
+### Rate Limiting
+
+Cada API Key tiene un límite diario configurable (default: 1000 requests/día). El contador se reinicia a medianoche UTC.
+
+### Gestión de API Keys (Para Usuarios)
+
+Los usuarios autenticados pueden gestionar sus API Keys:
+
+| Endpoint | Método | Descripción |
+|----------|--------|-------------|
+| `/api/user/api-keys` | GET | Listar todas las API Keys |
+| `/api/user/api-keys` | POST | Crear nueva API Key |
+| `/api/user/api-keys/{id}` | DELETE | Eliminar API Key |
+| `/api/user/api-keys/{id}/regenerate` | POST | Regenerar el token |
+| `/api/user/api-keys/{id}/usage` | GET | Ver estadísticas de uso |
+
+**Crear API Key:**
+```bash
+curl -X POST http://tu-servidor.com/api/user/api-keys \
+  -H "Authorization: Bearer {user_token}" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "Mi App Android",
+    "rate_limit": 500,
+    "permissions": ["analyze_frames"]
+  }'
+```
+
+**Respuesta:**
+```json
+{
+  "message": "API Key created successfully",
+  "key": {
+    "id": 1,
+    "name": "Mi App Android",
+    "key": "va_abc123xyz789...",
+    "rate_limit": 500,
+    "is_active": true
+  },
+  "warning": "Store this key securely. It won't be shown again."
+}
+```
+
+### Panel de Administración
+
+Los administradores pueden ver el uso de todas las API Keys desde el **AdminDashboard**:
+
+- 📊 Total de requests del sistema
+- 📈 Requests y frames procesados hoy
+- 🔑 Lista de todas las API Keys con estadísticas
+- ⚙️ Activar/Desactivar API Keys remotamente
+
+**Endpoints Admin:**
+
+| Endpoint | Método | Descripción |
+|----------|--------|-------------|
+| `/api/admin/api/overview` | GET | Estadísticas globales |
+| `/api/admin/api/usage` | GET | Datos por día (últimos 30 días) |
+| `/api/admin/api/keys` | GET | Todas las API Keys del sistema |
+| `/api/admin/api/keys/{id}/toggle` | POST | Activar/Desactivar una key |
+
+### Flujo de Procesamiento
+
+```mermaid
+sequenceDiagram
+    participant App as App Tercero
+    participant API as Laravel API
+    participant Redis as Redis
+    participant Worker as AI Worker
+    
+    App->>API: POST /external/analyze/frame
+    API->>API: Validar API Key
+    API->>API: Verificar Rate Limit
+    API->>API: Registrar Usage Log
+    API->>Redis: Publish to 'external_frames'
+    API-->>App: 200 OK + job_id
+    Redis->>Worker: Consume frame
+    Worker->>Worker: YOLO Detection
+    Worker->>Redis: Publish results
+```
+
+### Ejemplo Completo de Integración
+
+```python
+import requests
+import base64
+
+API_KEY = "va_your_api_key_here"
+API_URL = "https://tu-servidor.com/api/external/analyze/frame"
+
+# Leer imagen y convertir a base64
+with open("frame.jpg", "rb") as f:
+    frame_base64 = base64.b64encode(f.read()).decode()
+
+# Enviar para análisis
+response = requests.post(
+    API_URL,
+    headers={"X-API-Key": API_KEY},
+    json={
+        "frame": f"data:image/jpeg;base64,{frame_base64}",
+        "detections": ["person", "car", "bicycle"],
+        "metadata": {
+            "camera_id": "cam_001",
+            "timestamp": "2024-12-03T10:30:00Z"
+        }
+    }
+)
+
+print(response.json())
+# {'success': True, 'job_id': 'ext_abc123_1701619200', ...}
+```
+
+```javascript
+// JavaScript / Node.js
+const fs = require('fs');
+const axios = require('axios');
+
+const API_KEY = 'va_your_api_key_here';
+const API_URL = 'https://tu-servidor.com/api/external/analyze/frame';
+
+const frame = fs.readFileSync('frame.jpg');
+const frameBase64 = `data:image/jpeg;base64,${frame.toString('base64')}`;
+
+axios.post(API_URL, {
+  frame: frameBase64,
+  detections: ['person', 'car']
+}, {
+  headers: { 'X-API-Key': API_KEY }
+})
+.then(res => console.log(res.data))
+.catch(err => console.error(err.response.data));
+```
+
+-----
