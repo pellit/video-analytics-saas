@@ -1,6 +1,5 @@
 redis
 opencv-python-headless
-ultralytics
 vosk
 numpy
 sentence-transformers
@@ -11,3 +10,11 @@ yt-dlp
 transformers
 torch
 torchvision
+
+# Detection Models (Apache 2.0 licensed)
+super-gradients>=3.5.0  # YOLO-NAS - Deci AI (Apache 2.0) - DEFAULT
+supervision>=0.16.0      # ByteTrack tracking and utilities
+
+# Optional: Ultralytics (AGPL-3.0 - DISABLED by default)
+# Set ENABLE_ULTRALYTICS=true to use
+# ultralytics  # Commented out - only install if testing required

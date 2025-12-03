@@ -145,10 +145,55 @@ video-analytics-saas/
 │   └── Dockerfile           # Node Alpine
 ├── ai_engine/               # Código Python
 │   ├── src/worker_manager.py # Entrypoint (Escucha Redis)
-│   ├── models/              # Archivos .pt (YOLO) y modelos Vosk
+│   ├── src/models/          # Capa de abstracción de modelos AI
 │   └── Dockerfile           # Python 3.11 Slim + OpenCV
 └── infrastructure/          # Configs de Nginx/Redis
 ```
+
+-----
+
+## 🤖 Modelos de Detección (AI Engine)
+
+El sistema soporta múltiples modelos de detección de objetos con una capa de abstracción que permite cambiar entre ellos fácilmente.
+
+### Modelos Disponibles
+
+| Modelo | Librería | Licencia | Estado |
+| :--- | :--- | :--- | :--- |
+| **YOLO-NAS** | super-gradients | Apache 2.0 | ✅ **PREDETERMINADO** |
+| RT-DETR | transformers | Apache 2.0 | ✅ Habilitado |
+| Ultralytics | ultralytics | AGPL-3.0 | ⚠️ **Deshabilitado** |
+
+### ⚠️ Nota Importante sobre Licencias
+
+**Ultralytics (YOLOv8)** está DESHABILITADO por defecto debido a su licencia AGPL-3.0 que requiere:
+- Distribución de código fuente abierto si se usa en producción
+- Licencia comercial de Ultralytics para uso propietario
+
+Para producción, usa **YOLO-NAS** (Apache 2.0) que ofrece rendimiento similar sin restricciones.
+
+### Configuración
+
+```bash
+# Variables de entorno para seleccionar modelo
+DETECTION_MODEL=yolo_nas         # Opciones: yolo_nas, rt_detr, ultralytics
+DETECTION_MODEL_PATH=yolo_nas_s  # Variante específica (opcional)
+
+# Solo para testing - NO usar en producción
+ENABLE_ULTRALYTICS=false         # Cambia a 'true' solo para pruebas
+```
+
+### API del Worker
+
+```bash
+# Ver modelos disponibles
+curl http://localhost:5000/models
+
+# Información del modelo actual
+curl http://localhost:5000/models/info
+```
+
+Ver documentación completa en `/ai_engine/src/models/README.md`.
 
 ## 🛠️ Comandos Útiles
 

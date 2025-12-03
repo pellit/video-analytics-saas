@@ -9,9 +9,9 @@ import requests
 from fastapi import FastAPI
 from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
-from ultralytics import YOLO
 from yt_dlp import YoutubeDL
 from .depth_service import DepthService
+from .models import get_detector, ModelFactory
 
 app = FastAPI()
 
@@ -76,9 +76,25 @@ global_state = {
     "lock": threading.Lock()
 }
 
-print("⏳ Cargando modelo YOLO...")
-model = YOLO('yolov8n.pt')
-print("✅ Modelo cargado.")
+# --- Model Loading with Abstraction Layer ---
+print("⏳ Cargando modelo de detección...")
+print(f"📋 Modelos disponibles: {list(ModelFactory.list_available_models().keys())}")
+
+# Get detector from environment (default: YOLO-NAS)
+# Set DETECTION_MODEL env var to change: 'yolo_nas', 'rt_detr', or 'ultralytics'
+try:
+    model = get_detector()
+    model.load_model()
+    class_names = model.get_class_names()
+    print(f"✅ Modelo {model.__class__.__name__} cargado correctamente.")
+except Exception as e:
+    print(f"❌ Error cargando modelo: {e}")
+    print("⚠️ Intentando cargar modelo de respaldo YOLO-NAS...")
+    from .models.yolo_nas import YOLONASDetector
+    model = YOLONASDetector()
+    model.load_model()
+    class_names = model.get_class_names()
+    print("✅ Modelo de respaldo cargado.")
 
 # 1. MEJORA: Forzamos formato compatible con OpenCV
 def get_stream_url(youtube_url):
@@ -161,51 +177,58 @@ def stream_thread(camera_id, url):
                 bev_enabled = stream.get('bev_enabled', False)
                 tracking_enabled = stream.get('tracking_enabled', False)
 
-        # Inferencia YOLO
-        classes_indices = []
-        if detection_classes and hasattr(model, 'names'):
+        # Inferencia con modelo abstracto
+        classes_indices = None
+        if detection_classes and class_names:
             # Map class names to indices
-            for idx, cls_name in model.names.items():
+            classes_indices = []
+            for idx, cls_name in class_names.items():
                 if cls_name in detection_classes:
                     classes_indices.append(idx)
+            if not classes_indices:
+                classes_indices = None  # No valid classes found, detect all
+        
+        # Get confidence threshold from config (default 0.5)
+        confidence_threshold = 0.5
+        with global_state['lock']:
+            stream = global_state['streams'].get(str(camera_id))
+            if stream:
+                confidence_threshold = stream.get('confidence_threshold', 0.5)
         
         # Use tracking or regular detection based on config
-        if tracking_enabled:
-            # YOLO native tracking with BoT-SORT
-            if classes_indices:
-                results = model.track(frame, classes=classes_indices, verbose=False, persist=True, tracker="botsort.yaml")
-            elif detection_classes and not classes_indices:
-                results = model.track(frame, classes=[], verbose=False, persist=True, tracker="botsort.yaml")
+        try:
+            if tracking_enabled:
+                detections, annotated_frame = model.track(
+                    frame, 
+                    confidence_threshold=confidence_threshold,
+                    classes=classes_indices
+                )
             else:
-                results = model.track(frame, verbose=False, persist=True, tracker="botsort.yaml")
-        else:
-            # Regular detection without tracking
-            if classes_indices:
-                results = model(frame, classes=classes_indices, verbose=False)
-            elif detection_classes and not classes_indices:
-                results = model(frame, classes=[], verbose=False)
-            else:
-                results = model(frame, verbose=False)
-
-        # Plot results - tracking IDs are automatically shown when using track()
-        annotated_frame = results[0].plot()
+                detections, annotated_frame = model.detect(
+                    frame, 
+                    confidence_threshold=confidence_threshold,
+                    classes=classes_indices
+                )
+        except Exception as e:
+            print(f"⚠️ Error en inferencia: {e}")
+            detections = []
+            annotated_frame = frame.copy()
 
         # Depth / 3D Logic
         if depth_enabled:
             try:
-                # Collect detections for Depth Service (including track IDs if available)
+                # Convert detections to format expected by Depth Service
                 detections_list = []
-                for box in results[0].boxes:
-                     label = results[0].names.get(int(box.cls), str(int(box.cls))) if results[0].names else str(int(box.cls))
-                     det_item = {
-                         'label': label,
-                         'bbox': box.xyxy[0].tolist(),
-                         'score': float(box.conf)
-                     }
-                     # Add track ID if tracking is enabled
-                     if tracking_enabled and hasattr(box, 'id') and box.id is not None:
-                         det_item['track_id'] = int(box.id)
-                     detections_list.append(det_item)
+                for det in detections:
+                    det_item = {
+                        'label': det.class_name,
+                        'bbox': list(det.bbox),
+                        'score': det.confidence
+                    }
+                    # Add track ID if tracking is enabled
+                    if tracking_enabled and det.track_id is not None:
+                        det_item['track_id'] = det.track_id
+                    detections_list.append(det_item)
                 
                 annotated_frame, bev_map, bev_data = depth_service.process_3d_view(annotated_frame, detections_list, enable_bev=bev_enabled)
                 
@@ -257,15 +280,17 @@ def stream_thread(camera_id, url):
 
         # Publicar detecciones en Redis y al Backend
         try:
-            detections = results[0].boxes
-            for box in detections:
+            for det in detections:
                 try:
-                    # label and score extraction
-                    label = results[0].names.get(int(box.cls), str(int(box.cls))) if results[0].names else str(int(box.cls))
-                    score = float(box.conf)
-                    bbox = box.xyxy.tolist()
-                    payload = { 'label': label, 'score': score, 'bbox': bbox }
-                    event_obj = { 'camera_id': int(camera_id), 'event': label, 'payload': payload }
+                    payload = { 
+                        'label': det.class_name, 
+                        'score': det.confidence, 
+                        'bbox': list(det.bbox)
+                    }
+                    if det.track_id is not None:
+                        payload['track_id'] = det.track_id
+                    
+                    event_obj = { 'camera_id': int(camera_id), 'event': det.class_name, 'payload': payload }
                     # Publish on Redis channel
                     r.publish('detections', json.dumps(event_obj))
                     # Send to backend worker endpoint (Throttled)
@@ -284,7 +309,7 @@ def stream_thread(camera_id, url):
                         threading.Thread(target=send_async, args=(f"{backend_url}/api/worker/detections", event_obj, {'X-WORKER-KEY': worker_key, 'Content-Type': 'application/json'})).start()
 
                 except Exception as e:
-                    print(f"⚠️ Error procesando box: {e}")
+                    print(f"⚠️ Error procesando detección: {e}")
         except Exception as e:
             print(f"⚠️ Error generando detecciones: {e}")
 
@@ -416,6 +441,28 @@ def health_check():
     with global_state['lock']:
         active_ids = [cam_id for cam_id, stream in global_state['streams'].items() if stream.get('active', False)]
     return { 'status': 'ok', 'active_streams': active_ids }
+
+
+@app.get('/models')
+def list_models():
+    """List available detection models and their status."""
+    return {
+        'current_model': model.__class__.__name__,
+        'available_models': ModelFactory.list_available_models(),
+        'class_names': class_names
+    }
+
+
+@app.get('/models/info')
+def model_info():
+    """Get detailed info about the currently loaded model."""
+    return {
+        'name': model.__class__.__name__,
+        'is_loaded': model.is_loaded,
+        'device': getattr(model, '_device', 'unknown'),
+        'total_classes': len(class_names)
+    }
+
 
 @app.on_event("startup")
 def startup_event():

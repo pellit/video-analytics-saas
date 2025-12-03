@@ -3,6 +3,7 @@
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
 use App\Http\Controllers\CameraController;
+use App\Http\Controllers\SceneAnalysisController;
 
 /*
 |--------------------------------------------------------------------------
@@ -25,6 +26,11 @@ Route::patch('/cameras/{id}', [CameraController::class, 'update']);  // Actualiz
 // Control de Video (Redis)
 Route::post('/camera/start', [CameraController::class, 'start']); // Iniciar stream
 Route::post('/camera/stop', [CameraController::class, 'stop']);   // Detener stream
+
+// Configuración de cámara (Wizard)
+Route::post('/cameras/{camera}/setup', [SceneAnalysisController::class, 'completeSetup']);
+Route::post('/cameras/{camera}/analyze-scene', [SceneAnalysisController::class, 'analyzeScene']);
+Route::post('/cameras/{camera}/apply-recommendations', [SceneAnalysisController::class, 'applyRecommendations']);
 
 // Detecciones
 Route::get('/cameras/{id}/detections', [\App\Http\Controllers\DetectionController::class, 'index']);
