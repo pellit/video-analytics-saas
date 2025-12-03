@@ -15,6 +15,7 @@ require __DIR__ . '/api/auth.php';
 // Worker endpoints (simple API key based)
 use App\Http\Controllers\WorkerController;
 Route::post('/worker/detections', [WorkerController::class, 'postDetection']);
+Route::post('/worker/face-detection', [\App\Http\Controllers\FaceRecognitionController::class, 'recordDetection']);
 
 Route::get('/test/worker-env', function (\Illuminate\Http\Request $r) {
     return response()->json(['env' => env('WORKER_API_KEY'), 'header' => $r->header('X-WORKER-KEY')]);

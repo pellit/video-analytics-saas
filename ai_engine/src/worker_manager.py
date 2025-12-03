@@ -2,6 +2,7 @@ import os
 import json
 import time
 import threading
+import base64
 import cv2
 import redis
 import numpy as np
@@ -259,6 +260,36 @@ def stream_thread(camera_id, url):
                         box = face[0:4].astype(np.int32)
                         score = face[-1]
                         
+                        # Extract face embedding using SFace
+                        try:
+                            # Crop and align face for embedding
+                            face_aligned = face_recognizer.alignCrop(frame, face)
+                            embedding = face_recognizer.feature(face_aligned)
+                            embedding_list = embedding.flatten().tolist()
+                        except Exception as emb_err:
+                            print(f"⚠️ Embedding error: {emb_err}")
+                            embedding_list = None
+                        
+                        # Crop face image for storage
+                        face_crop = None
+                        face_image_base64 = None
+                        try:
+                            x, y, fw, fh = box
+                            # Add margin
+                            margin = int(min(fw, fh) * 0.2)
+                            x1 = max(0, x - margin)
+                            y1 = max(0, y - margin)
+                            x2 = min(w, x + fw + margin)
+                            y2 = min(h, y + fh + margin)
+                            face_crop = frame[y1:y2, x1:x2]
+                            
+                            # Encode as base64 for sending to backend (throttled)
+                            if np.random.rand() < 0.1:  # Only send 10% to avoid overload
+                                _, buffer = cv2.imencode('.jpg', face_crop, [cv2.IMWRITE_JPEG_QUALITY, 80])
+                                face_image_base64 = base64.b64encode(buffer).decode('utf-8')
+                        except Exception as crop_err:
+                            print(f"⚠️ Face crop error: {crop_err}")
+                        
                         # Draw
                         cv2.rectangle(annotated_frame, (box[0], box[1]), (box[0]+box[2], box[1]+box[3]), (255, 0, 0), 2)
                         cv2.putText(annotated_frame, f"Face {score:.2f}", (box[0], box[1]-10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 2)
@@ -267,9 +298,42 @@ def stream_thread(camera_id, url):
                         event_obj = { 
                             'camera_id': int(camera_id), 
                             'event': 'face_detected', 
-                            'payload': { 'label': 'Face', 'score': float(score), 'bbox': box.tolist() } 
+                            'payload': { 
+                                'label': 'Face', 
+                                'score': float(score), 
+                                'bbox': box.tolist(),
+                                'has_embedding': embedding_list is not None
+                            } 
                         }
                         r.publish('detections', json.dumps(event_obj))
+                        
+                        # Send face detection to backend for storage (throttled)
+                        backend_url = os.environ.get('BACKEND_API_URL', 'http://localhost:8000')
+                        worker_key = os.environ.get('WORKER_API_KEY')
+                        
+                        if worker_key and face_image_base64:
+                            def send_face_async(url, json_data, headers):
+                                try:
+                                    requests.post(url, json=json_data, headers=headers, timeout=2)
+                                except Exception as e:
+                                    pass  # Fire and forget
+                            
+                            face_data = {
+                                'camera_id': int(camera_id),
+                                'confidence': float(score),
+                                'bbox': box.tolist(),
+                                'embedding': embedding_list,
+                                'face_image_base64': face_image_base64
+                            }
+                            threading.Thread(
+                                target=send_face_async,
+                                args=(
+                                    f"{backend_url}/api/worker/face-detection",
+                                    face_data,
+                                    {'X-WORKER-KEY': worker_key, 'Content-Type': 'application/json'}
+                                )
+                            ).start()
+                            
             except Exception as e:
                 print(f"⚠️ Face detection error: {e}")
 

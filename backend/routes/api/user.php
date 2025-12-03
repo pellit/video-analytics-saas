@@ -50,3 +50,15 @@ Route::get('/api-keys/{id}', [\App\Http\Controllers\ApiKeyController::class, 'sh
 Route::patch('/api-keys/{id}', [\App\Http\Controllers\ApiKeyController::class, 'update']);
 Route::delete('/api-keys/{id}', [\App\Http\Controllers\ApiKeyController::class, 'destroy']);
 Route::post('/api-keys/{id}/regenerate', [\App\Http\Controllers\ApiKeyController::class, 'regenerate']);
+
+// Face Recognition - Known Faces Management
+Route::get('/faces', [\App\Http\Controllers\FaceRecognitionController::class, 'listKnownFaces']);
+Route::post('/faces', [\App\Http\Controllers\FaceRecognitionController::class, 'createKnownFace']);
+Route::get('/faces/{id}', [\App\Http\Controllers\FaceRecognitionController::class, 'getKnownFace']);
+Route::patch('/faces/{id}', [\App\Http\Controllers\FaceRecognitionController::class, 'updateKnownFace']);
+Route::delete('/faces/{id}', [\App\Http\Controllers\FaceRecognitionController::class, 'deleteKnownFace']);
+
+// Face Recognition - Detections
+Route::get('/face-detections', [\App\Http\Controllers\FaceRecognitionController::class, 'getRecentDetections']);
+Route::post('/face-detections/{detectionId}/assign', [\App\Http\Controllers\FaceRecognitionController::class, 'assignDetectionToFace']);
+Route::post('/face-detections/{detectionId}/create-face', [\App\Http\Controllers\FaceRecognitionController::class, 'createFaceFromDetection']);

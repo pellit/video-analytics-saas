@@ -1,6 +1,7 @@
 <script setup>
 import { ref, onMounted, computed, watch, nextTick, onUnmounted } from 'vue'
 import NavBar from './NavBar.vue'
+import FaceRecognitionPanel from './FaceRecognitionPanel.vue'
 
 const props = defineProps(['token', 'user'])
 const emit = defineEmits(['logout', 'navigate'])
@@ -42,6 +43,7 @@ const activeCamera = ref(null)
 const isProcessing = ref(false)
 const showAdd = ref(false)
 const newCam = ref({ name: '', url: '' })
+const showFacePanel = ref(false) // Face recognition panel visibility
 
 // Initialize detection_classes with all available classes if null/empty
 const initializeCameraDefaults = (camera) => {
@@ -56,6 +58,7 @@ const initializeCameraDefaults = (camera) => {
   camera.tracking = camera.tracking ?? false
   return camera
 }
+
 
 const fetchCameras = async () => {
   try {
@@ -709,6 +712,13 @@ const saveProfile = async () => {
                 <span class="slider round"></span>
                 <span class="label-text">Reconocimiento Facial (YuNet/SFace)</span>
               </label>
+              <button 
+                v-if="activeCamera.face_recognition_enabled" 
+                @click="showFacePanel = !showFacePanel"
+                class="btn-view-faces"
+              >
+                {{ showFacePanel ? '✕ Cerrar' : '👤 Ver Caras' }}
+              </button>
             </div>
 
             <div class="setting-group">
@@ -810,6 +820,16 @@ const saveProfile = async () => {
           <div class="bev-placeholder">
             <p>🦅 Activa "Estimación de Profundidad" y "Vista de Pájaro" en la configuración para ver el mapa BEV</p>
           </div>
+        </div>
+        
+        <!-- Face Recognition Panel -->
+        <div class="panel-col face-panel" v-if="showFacePanel && activeCamera?.face_recognition_enabled">
+          <FaceRecognitionPanel
+            :token="token"
+            :camera-id="activeCamera?.id"
+            :enabled="activeCamera?.face_recognition_enabled && isProcessing"
+            @close="showFacePanel = false"
+          />
         </div>
       </div>
 
@@ -1404,6 +1424,26 @@ input:checked + .slider:before {
 }
 .bev-disabled {
   opacity: 0.7;
+}
+
+/* Face Recognition Panel */
+.face-panel {
+  min-width: 350px;
+  max-width: 450px;
+}
+.btn-view-faces {
+  margin-left: 10px;
+  padding: 4px 10px;
+  background: #4a90d9;
+  border: none;
+  border-radius: 4px;
+  color: #fff;
+  cursor: pointer;
+  font-size: 12px;
+  transition: background 0.2s;
+}
+.btn-view-faces:hover {
+  background: #5a9fea;
 }
 
 /* Modal */
