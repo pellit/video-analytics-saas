@@ -98,17 +98,22 @@ class ModelFactory:
         
         Environment variables:
             DETECTION_MODEL: Model type ('yolo_nas', 'rt_detr', 'ultralytics')
-            DETECTION_MODEL_PATH: Path to model weights (optional)
+            DETECTION_MODEL_PATH: Path to model weights (optional, defaults to yolo_nas_s)
             ENABLE_ULTRALYTICS: 'true' to enable ultralytics (testing only)
         """
         model_type_str = os.environ.get('DETECTION_MODEL', DEFAULT_MODEL.value)
-        model_path = os.environ.get('DETECTION_MODEL_PATH', None)
+        model_path = os.environ.get('DETECTION_MODEL_PATH', '').strip() or None
         
         try:
             model_type = ModelType(model_type_str.lower())
         except ValueError:
             print(f"[ModelFactory] Unknown model type '{model_type_str}', using default: {DEFAULT_MODEL.value}")
             model_type = DEFAULT_MODEL
+        
+        # Default to yolo_nas_s for YOLO-NAS if no path specified
+        if model_type == ModelType.YOLO_NAS and model_path is None:
+            model_path = 'yolo_nas_s'
+            print(f"[ModelFactory] Using default model: yolo_nas_s")
         
         return cls.create(model_type=model_type, model_path=model_path, device=device)
     

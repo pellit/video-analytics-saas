@@ -164,43 +164,29 @@ class BaseDetector(ABC):
         cv2.line(frame, (x2 - arc_len, y2), (x2, y2), color, thickness)
         cv2.ellipse(frame, (x2 - 8, y2 - 8), (8, 8), 0, 0, 90, color, thickness)
         
-        # Label - only show ID (no percentage)
+        # Minimalist label - just ID number
         if det.track_id is not None:
             label = f"#{det.track_id}"
         else:
-            label = det.class_name[:8]  # Short class name
+            # No track ID, skip label entirely for cleaner look
+            return
         
-        # Modern label style - small pill shape
+        # Minimalist label style (same as faces)
         font = cv2.FONT_HERSHEY_SIMPLEX
-        font_scale = 0.45
+        font_scale = 0.4
         font_thickness = 1
-        (tw, th), baseline = cv2.getTextSize(label, font, font_scale, font_thickness)
+        (tw, th), _ = cv2.getTextSize(label, font, font_scale, font_thickness)
         
-        # Position label at top-left, slightly inside
+        # Position label at top-left corner
         label_x = x1 + 4
-        label_y = y1 - 8
+        label_y = y1 - 6 if y1 > 20 else y1 + th + 10
         
-        # If label would go above frame, put it inside
-        if label_y - th - 4 < 0:
-            label_y = y1 + th + 12
-        
-        # Draw semi-transparent background pill
-        padding = 4
-        bg_x1 = label_x - padding
-        bg_y1 = label_y - th - padding
-        bg_x2 = label_x + tw + padding
-        bg_y2 = label_y + padding
-        
-        # Create overlay for transparency effect
+        # Semi-transparent background
         overlay = frame.copy()
-        cv2.rectangle(overlay, (bg_x1, bg_y1), (bg_x2, bg_y2), (40, 40, 40), -1)
+        cv2.rectangle(overlay, (label_x - 4, label_y - th - 4), (label_x + tw + 4, label_y + 4), (40, 40, 40), -1)
         cv2.addWeighted(overlay, 0.6, frame, 0.4, 0, frame)
-        
-        # Draw rounded corners on pill (subtle)
-        cv2.rectangle(frame, (bg_x1, bg_y1), (bg_x2, bg_y2), color, 1)
-        
-        # Draw label text
-        cv2.putText(frame, label, (label_x, label_y), font, font_scale, color, font_thickness, cv2.LINE_AA)
+        cv2.rectangle(frame, (label_x - 4, label_y - th - 4), (label_x + tw + 4, label_y + 4), color, 1)
+        cv2.putText(frame, label, (label_x, label_y), font, font_scale, color, 1, cv2.LINE_AA)
     
     def warmup(self, input_shape: Tuple[int, int, int] = (640, 640, 3)) -> None:
         """

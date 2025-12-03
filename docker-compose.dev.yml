@@ -31,6 +31,6 @@ services:
       WORKER_API_KEY: ${WORKER_API_KEY}
       # Model configuration for development
       DETECTION_MODEL: ${DETECTION_MODEL:-yolo_nas}
-      DETECTION_MODEL_PATH: ${DETECTION_MODEL_PATH:-}
+      DETECTION_MODEL_PATH: ${DETECTION_MODEL_PATH:-yolo_nas_s}
       # ⚠️ Set to 'true' only for testing Ultralytics (AGPL-3.0 license)
       ENABLE_ULTRALYTICS: ${ENABLE_ULTRALYTICS:-false}

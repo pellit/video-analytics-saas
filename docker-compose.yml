@@ -49,7 +49,7 @@ services:
         - WORKER_API_KEY=${WORKER_API_KEY}
         # Model configuration (default: yolo_nas for production - Apache 2.0 license)
         - DETECTION_MODEL=${DETECTION_MODEL:-yolo_nas}
-        - DETECTION_MODEL_PATH=${DETECTION_MODEL_PATH:-}
+        - DETECTION_MODEL_PATH=${DETECTION_MODEL_PATH:-yolo_nas_s}
         # ⚠️ WARNING: Only set to 'true' for testing - Ultralytics has AGPL-3.0 license
         - ENABLE_ULTRALYTICS=${ENABLE_ULTRALYTICS:-false}
       # Worker is internal by default in production - do not publish to avoid host port conflicts
