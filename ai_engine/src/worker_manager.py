@@ -292,9 +292,47 @@ def stream_thread(camera_id, url):
                         except Exception as crop_err:
                             print(f"⚠️ Face crop error: {crop_err}")
                         
-                        # Draw
-                        cv2.rectangle(annotated_frame, (box[0], box[1]), (box[0]+box[2], box[1]+box[3]), (255, 0, 0), 2)
-                        cv2.putText(annotated_frame, f"Face {score:.2f}", (box[0], box[1]-10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 2)
+                        # Draw modern face detection (corner arcs style)
+                        x, y, fw, fh = box
+                        x1, y1, x2, y2 = x, y, x + fw, y + fh
+                        
+                        # Platform color for faces (magenta/pink tones)
+                        face_color = (200, 100, 220)  # BGR - pinkish
+                        
+                        # Corner arc length
+                        arc_len = min(fw, fh) // 4
+                        arc_len = max(12, min(arc_len, 35))
+                        thickness = 2
+                        
+                        # Draw corner arcs
+                        cv2.line(annotated_frame, (x1, y1), (x1 + arc_len, y1), face_color, thickness)
+                        cv2.line(annotated_frame, (x1, y1), (x1, y1 + arc_len), face_color, thickness)
+                        cv2.ellipse(annotated_frame, (x1 + 6, y1 + 6), (6, 6), 180, 0, 90, face_color, thickness)
+                        
+                        cv2.line(annotated_frame, (x2 - arc_len, y1), (x2, y1), face_color, thickness)
+                        cv2.line(annotated_frame, (x2, y1), (x2, y1 + arc_len), face_color, thickness)
+                        cv2.ellipse(annotated_frame, (x2 - 6, y1 + 6), (6, 6), 270, 0, 90, face_color, thickness)
+                        
+                        cv2.line(annotated_frame, (x1, y2 - arc_len), (x1, y2), face_color, thickness)
+                        cv2.line(annotated_frame, (x1, y2), (x1 + arc_len, y2), face_color, thickness)
+                        cv2.ellipse(annotated_frame, (x1 + 6, y2 - 6), (6, 6), 90, 0, 90, face_color, thickness)
+                        
+                        cv2.line(annotated_frame, (x2, y2 - arc_len), (x2, y2), face_color, thickness)
+                        cv2.line(annotated_frame, (x2 - arc_len, y2), (x2, y2), face_color, thickness)
+                        cv2.ellipse(annotated_frame, (x2 - 6, y2 - 6), (6, 6), 0, 0, 90, face_color, thickness)
+                        
+                        # Simple face label (just icon indicator, no percentage)
+                        label = "Face"
+                        font = cv2.FONT_HERSHEY_SIMPLEX
+                        (tw, th), _ = cv2.getTextSize(label, font, 0.4, 1)
+                        label_y = y1 - 6 if y1 > 20 else y2 + th + 10
+                        
+                        # Semi-transparent background
+                        overlay = annotated_frame.copy()
+                        cv2.rectangle(overlay, (x1, label_y - th - 4), (x1 + tw + 8, label_y + 4), (40, 40, 40), -1)
+                        cv2.addWeighted(overlay, 0.6, annotated_frame, 0.4, 0, annotated_frame)
+                        cv2.rectangle(annotated_frame, (x1, label_y - th - 4), (x1 + tw + 8, label_y + 4), face_color, 1)
+                        cv2.putText(annotated_frame, label, (x1 + 4, label_y), font, 0.4, face_color, 1, cv2.LINE_AA)
                         
                         # Publish Face Event
                         event_obj = { 

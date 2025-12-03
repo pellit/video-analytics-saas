@@ -205,27 +205,9 @@ class YOLONASDetector(BaseDetector):
             self.tracker = SimpleTracker()
     
     def _draw_detection(self, frame: np.ndarray, det: DetectionResult) -> None:
-        """Draw detection box and label on frame."""
-        x1, y1, x2, y2 = det.bbox
-        color = (0, 255, 0)  # Green
-        
-        # Draw box
-        cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
-        
-        # Create label
-        label = f"{det.class_name}: {det.confidence:.2f}"
-        if det.track_id is not None:
-            label = f"ID:{det.track_id} {label}"
-        
-        # Draw label background
-        (w, h), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
-        cv2.rectangle(frame, (x1, y1 - h - 10), (x1 + w, y1), color, -1)
-        
-        # Draw label text
-        cv2.putText(
-            frame, label, (x1, y1 - 5),
-            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1
-        )
+        """Draw modern detection visualization with corner arcs."""
+        # Use the base class modern drawing method
+        self.draw_modern_detection(frame, det)
     
     def get_class_names(self) -> Dict[int, str]:
         """Return class names mapping."""
