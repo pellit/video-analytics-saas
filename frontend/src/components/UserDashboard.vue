@@ -101,8 +101,8 @@ const updateFullscreenStats = (detection) => {
     fullscreenStats.value.facesCount++
   }
   
-  fullscreenStats.value.objectsDetected = detections.value.length
-  fullscreenStats.value.alertsCount = alerts.value.length
+  fullscreenStats.value.objectsDetected = detections.value?.length || 0
+  fullscreenStats.value.alertsCount = alerts.value?.length || 0
   
   // Update nearest distance from BEV
   if (detection.bev_data?.nearest_distance) {
@@ -408,6 +408,7 @@ const updateCameraSettings = async (camera) => {
   }
 }
 
+const detections = ref([]) // Store detections received via SSE
 const alerts = ref([]) // Store alerts received via SSE
 const activeWorkerStreams = ref([])
 const WORKER_URL = STREAM_URL.replace('/video_feed', '')
@@ -1027,12 +1028,12 @@ const saveProfile = async () => {
             <span class="hud-icon">⚠️</span> Eventos Recientes
           </div>
           <div class="hud-events-list">
-            <div v-for="(det, i) in detections.slice(0, 5)" :key="i" class="hud-event">
+            <div v-for="(det, i) in (detections || []).slice(0, 5)" :key="i" class="hud-event">
               <span class="hud-event-icon">{{ det.event?.includes('person') ? '👤' : det.event?.includes('face') ? '😊' : '📦' }}</span>
               <span class="hud-event-text">{{ det.event || det.label }}</span>
               <span class="hud-event-time">{{ new Date().toLocaleTimeString() }}</span>
             </div>
-            <div v-if="detections.length === 0" class="hud-event empty">
+            <div v-if="!detections || detections.length === 0" class="hud-event empty">
               Sin eventos recientes
             </div>
           </div>
@@ -1042,11 +1043,11 @@ const saveProfile = async () => {
         <div class="hud-bottom-bar">
           <div class="hud-quick-stat">
             <span class="hud-qs-label">OBJETOS</span>
-            <span class="hud-qs-value">{{ detections.length }}</span>
+            <span class="hud-qs-value">{{ detections?.length || 0 }}</span>
           </div>
           <div class="hud-quick-stat">
             <span class="hud-qs-label">ALERTAS</span>
-            <span class="hud-qs-value">{{ alerts.length }}</span>
+            <span class="hud-qs-value">{{ alerts?.length || 0 }}</span>
           </div>
           <div class="hud-quick-stat" v-if="fullscreenStats.nearestDistance">
             <span class="hud-qs-label">DISTANCIA</span>
