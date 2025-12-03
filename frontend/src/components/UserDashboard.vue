@@ -60,12 +60,14 @@ const fullscreenStats = ref({
 
 // Toggle fullscreen HUD mode
 const toggleFullscreen = () => {
+  console.log('toggleFullscreen called, current:', isFullscreen.value)
   isFullscreen.value = !isFullscreen.value
   if (isFullscreen.value) {
     document.body.style.overflow = 'hidden'
   } else {
     document.body.style.overflow = ''
   }
+  console.log('toggleFullscreen done, new:', isFullscreen.value)
 }
 
 // Exit fullscreen on Escape key
@@ -714,8 +716,8 @@ const saveProfile = async () => {
         <!-- Video Feed -->
         <div class="video-box" @dblclick="toggleFullscreen" :title="isProcessing ? 'Doble clic para pantalla completa' : ''">
             <iframe v-if="isProcessing && isYouTube && showVideo" :src="activeStreamUrl" frameborder="0" allow="autoplay; encrypted-media; picture-in-picture" allowfullscreen class="stream"></iframe>
-            <div v-else-if="isProcessing && showVideo" class="stream-wrapper">
-              <img :src="activeStreamUrl" class="stream" @load="onStreamLoad" @error="onStreamError" />
+            <div v-else-if="isProcessing && showVideo" class="stream-wrapper" @dblclick.stop="toggleFullscreen">
+              <img :src="activeStreamUrl" class="stream" @load="onStreamLoad" @error="onStreamError" @dblclick.stop="toggleFullscreen" />
               <div v-if="streamLoadError" class="stream-error">
                 <p>No se pudo cargar el stream.</p>
                 <small>{{ streamErrorUrl }}</small>
@@ -725,7 +727,7 @@ const saveProfile = async () => {
                 <span>⛶ Doble clic para HUD</span>
               </div>
             </div>
-            <div v-else class="placeholder">
+            <div v-else class="placeholder" @dblclick.stop="toggleFullscreen">
               <div class="placeholder-content">
                 <i class="icon-camera-off"></i>
                 <p>{{ isProcessing ? 'Ejecutando en Segundo Plano' : 'Análisis Detenido' }}</p>
@@ -1233,6 +1235,7 @@ const saveProfile = async () => {
   align-items: center;
   min-height: 300px;
   overflow: hidden;
+  cursor: pointer;
 }
 .stream-wrapper { 
   width: 100%; 
@@ -1242,6 +1245,7 @@ const saveProfile = async () => {
   left: 0;
   right: 0;
   bottom: 0;
+  cursor: pointer;
 }
 .stream { 
   width: 100%; 
@@ -1250,6 +1254,7 @@ const saveProfile = async () => {
   position: absolute;
   top: 0;
   left: 0;
+  cursor: pointer;
 }
 iframe.stream {
   border: none;
