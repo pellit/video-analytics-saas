@@ -108,9 +108,8 @@ class BaseDetector(ABC):
     
     def draw_modern_detection(self, frame: np.ndarray, det: 'DetectionResult', color: Tuple[int, int, int] = None) -> None:
         """
-        Draw modern detection visualization with corner arcs.
-        Uses platform colors (cyan/blue tones) by default.
-        Shows only track ID without confidence percentage.
+        Draw ultra-minimal detection visualization - corners only.
+        Optimized for speed: no arcs, thin lines, simple label.
         
         Args:
             frame: Frame to draw on
@@ -123,70 +122,51 @@ class BaseDetector(ABC):
         w = x2 - x1
         h = y2 - y1
         
-        # Platform colors (cyan/teal palette) - BGR format
+        # Platform colors (cyan/teal) - BGR format
         if color is None:
-            # Vary color slightly based on track_id for visual distinction
             if det.track_id is not None:
-                hue_shift = (det.track_id * 37) % 60  # Subtle variation
-                color = (
-                    200 + (hue_shift % 55),  # B: 200-255 (cyan to blue)
-                    200 - (hue_shift % 40),  # G: 160-200 
-                    50 + (hue_shift % 50)    # R: 50-100
-                )
+                hue_shift = (det.track_id * 37) % 60
+                color = (200 + (hue_shift % 55), 180 - (hue_shift % 30), 50 + (hue_shift % 40))
             else:
-                color = (230, 180, 60)  # Default cyan-ish
+                color = (220, 180, 60)  # Cyan
         
-        # Corner arc length (proportional to box size)
-        arc_len = min(w, h) // 4
-        arc_len = max(15, min(arc_len, 40))  # Clamp between 15-40px
+        # Corner length (small, proportional)
+        corner_len = min(w, h) // 5
+        corner_len = max(10, min(corner_len, 25))  # 10-25px
         
-        thickness = 2
+        thickness = 1  # Thin lines for speed
         
-        # Draw corner arcs (incomplete rectangle - modern style)
-        # Top-left corner
-        cv2.line(frame, (x1, y1), (x1 + arc_len, y1), color, thickness)
-        cv2.line(frame, (x1, y1), (x1, y1 + arc_len), color, thickness)
-        # Small arc at corner
-        cv2.ellipse(frame, (x1 + 8, y1 + 8), (8, 8), 180, 0, 90, color, thickness)
+        # Draw only corner lines (no arcs - faster)
+        # Top-left
+        cv2.line(frame, (x1, y1), (x1 + corner_len, y1), color, thickness)
+        cv2.line(frame, (x1, y1), (x1, y1 + corner_len), color, thickness)
         
-        # Top-right corner
-        cv2.line(frame, (x2 - arc_len, y1), (x2, y1), color, thickness)
-        cv2.line(frame, (x2, y1), (x2, y1 + arc_len), color, thickness)
-        cv2.ellipse(frame, (x2 - 8, y1 + 8), (8, 8), 270, 0, 90, color, thickness)
+        # Top-right
+        cv2.line(frame, (x2 - corner_len, y1), (x2, y1), color, thickness)
+        cv2.line(frame, (x2, y1), (x2, y1 + corner_len), color, thickness)
         
-        # Bottom-left corner  
-        cv2.line(frame, (x1, y2 - arc_len), (x1, y2), color, thickness)
-        cv2.line(frame, (x1, y2), (x1 + arc_len, y2), color, thickness)
-        cv2.ellipse(frame, (x1 + 8, y2 - 8), (8, 8), 90, 0, 90, color, thickness)
+        # Bottom-left
+        cv2.line(frame, (x1, y2 - corner_len), (x1, y2), color, thickness)
+        cv2.line(frame, (x1, y2), (x1 + corner_len, y2), color, thickness)
         
-        # Bottom-right corner
-        cv2.line(frame, (x2, y2 - arc_len), (x2, y2), color, thickness)
-        cv2.line(frame, (x2 - arc_len, y2), (x2, y2), color, thickness)
-        cv2.ellipse(frame, (x2 - 8, y2 - 8), (8, 8), 0, 0, 90, color, thickness)
+        # Bottom-right
+        cv2.line(frame, (x2, y2 - corner_len), (x2, y2), color, thickness)
+        cv2.line(frame, (x2 - corner_len, y2), (x2, y2), color, thickness)
         
-        # Minimalist label - just ID number
-        if det.track_id is not None:
-            label = f"#{det.track_id}"
-        else:
-            # No track ID, skip label entirely for cleaner look
-            return
+        # Label: class name only (no percentage, no ID)
+        label = det.class_name[:10]  # Max 10 chars
         
-        # Minimalist label style (same as faces)
         font = cv2.FONT_HERSHEY_SIMPLEX
-        font_scale = 0.4
-        font_thickness = 1
-        (tw, th), _ = cv2.getTextSize(label, font, font_scale, font_thickness)
+        font_scale = 0.35
+        (tw, th), _ = cv2.getTextSize(label, font, font_scale, 1)
         
-        # Position label at top-left corner
-        label_x = x1 + 4
-        label_y = y1 - 6 if y1 > 20 else y1 + th + 10
+        # Position: top-left, outside box if possible
+        lx = x1
+        ly = y1 - 4 if y1 > 15 else y1 + th + 8
         
-        # Semi-transparent background
-        overlay = frame.copy()
-        cv2.rectangle(overlay, (label_x - 4, label_y - th - 4), (label_x + tw + 4, label_y + 4), (40, 40, 40), -1)
-        cv2.addWeighted(overlay, 0.6, frame, 0.4, 0, frame)
-        cv2.rectangle(frame, (label_x - 4, label_y - th - 4), (label_x + tw + 4, label_y + 4), color, 1)
-        cv2.putText(frame, label, (label_x, label_y), font, font_scale, color, 1, cv2.LINE_AA)
+        # Dark background pill (simple, no overlay for speed)
+        cv2.rectangle(frame, (lx - 2, ly - th - 2), (lx + tw + 2, ly + 2), (30, 30, 30), -1)
+        cv2.putText(frame, label, (lx, ly), font, font_scale, color, 1, cv2.LINE_AA)
     
     def warmup(self, input_shape: Tuple[int, int, int] = (640, 640, 3)) -> None:
         """
