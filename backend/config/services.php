@@ -35,4 +35,8 @@ return [
         ],
     ],
 
+    'worker' => [
+        'api_key' => env('WORKER_API_KEY'),
+    ],
+
 ];

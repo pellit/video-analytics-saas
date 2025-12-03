@@ -273,6 +273,7 @@ def stream_thread(camera_id, url):
                         # Crop face image for storage
                         face_crop = None
                         face_image_base64 = None
+                        should_save = np.random.rand() < 0.3  # Save 30% of faces
                         try:
                             x, y, fw, fh = box
                             # Add margin
@@ -283,10 +284,11 @@ def stream_thread(camera_id, url):
                             y2 = min(h, y + fh + margin)
                             face_crop = frame[y1:y2, x1:x2]
                             
-                            # Encode as base64 for sending to backend (throttled)
-                            if np.random.rand() < 0.1:  # Only send 10% to avoid overload
+                            # Encode as base64 for sending to backend
+                            if should_save and face_crop is not None and face_crop.size > 0:
                                 _, buffer = cv2.imencode('.jpg', face_crop, [cv2.IMWRITE_JPEG_QUALITY, 80])
                                 face_image_base64 = base64.b64encode(buffer).decode('utf-8')
+                                print(f"📸 Face cropped for saving (size: {face_crop.shape})")
                         except Exception as crop_err:
                             print(f"⚠️ Face crop error: {crop_err}")
                         
@@ -307,16 +309,21 @@ def stream_thread(camera_id, url):
                         }
                         r.publish('detections', json.dumps(event_obj))
                         
-                        # Send face detection to backend for storage (throttled)
+                        # Send face detection to backend for storage
                         backend_url = os.environ.get('BACKEND_API_URL', 'http://localhost:8000')
                         worker_key = os.environ.get('WORKER_API_KEY')
                         
-                        if worker_key and face_image_base64:
+                        # Always send if we have embedding OR image
+                        if worker_key and (embedding_list or face_image_base64):
                             def send_face_async(url, json_data, headers):
                                 try:
-                                    requests.post(url, json=json_data, headers=headers, timeout=2)
+                                    resp = requests.post(url, json=json_data, headers=headers, timeout=2)
+                                    if resp.status_code == 201:
+                                        print(f"✅ Face detection saved to backend")
+                                    else:
+                                        print(f"⚠️ Backend response: {resp.status_code}")
                                 except Exception as e:
-                                    pass  # Fire and forget
+                                    print(f"❌ Error sending face to backend: {e}")
                             
                             face_data = {
                                 'camera_id': int(camera_id),

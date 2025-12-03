@@ -681,14 +681,12 @@ const saveProfile = async () => {
             <div class="setting-group" v-if="activeCamera.detection_enabled">
               <label>Modelo</label>
               <select v-model="activeCamera.detection_model" class="dark-select">
-                  <option value="yolov8n">YOLOv8 Nano (Rápido)</option>
-                  <option value="yolov8s">YOLOv8 Small</option>
-                  <option value="yolov8m">YOLOv8 Medium</option>
-                  <option value="yolov8l">YOLOv8 Large (Preciso)</option>
-                  <option value="yolo11n">YOLO11 Nano (Nuevo)</option>
-                  <option value="yolo11s">YOLO11 Small</option>
-                  <option value="yolo11m">YOLO11 Medium</option>
+                  <option value="yolo_nas_s">YOLO-NAS Small (Rápido) ⭐</option>
+                  <option value="yolo_nas_m">YOLO-NAS Medium</option>
+                  <option value="yolo_nas_l">YOLO-NAS Large (Preciso)</option>
+                  <option value="rt_detr">RT-DETR (Transformer)</option>
               </select>
+              <small class="model-note">✅ Modelos con licencia Apache 2.0</small>
             </div>
 
             <div class="setting-group" v-if="activeCamera.detection_enabled">
@@ -1107,6 +1105,12 @@ iframe.stream {
   color: white;
   padding: 8px;
   border-radius: 4px;
+}
+.model-note {
+  display: block;
+  font-size: 0.75rem;
+  color: #4a9;
+  margin-top: 4px;
 }
 .multi-select-box {
   height: 150px;
@@ -1859,6 +1863,13 @@ input:checked + .slider:before {
   .dark-select {
     font-size: 0.85rem;
     padding: 0.5rem;
+  }
+  
+  .model-note {
+    display: block;
+    font-size: 0.7rem;
+    color: #4a9;
+    margin-top: 4px;
   }
   
   .checkbox-item {
