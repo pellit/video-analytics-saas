@@ -1,8 +1,6 @@
 services:
   # --- BACKEND ---
   api:
-    profiles:
-      - dev
     # MANTENEMOS: El comando de desarrollo (para que escuche en puerto 8000)
     command: php artisan serve --host=0.0.0.0 --port=8000
     
@@ -25,8 +23,6 @@ services:
 
   # --- FRONTEND ---
   frontend:
-    profiles:
-      - dev
     # MANTENEMOS: Vite en modo desarrollo
     command: npm run dev -- --host
     
@@ -45,8 +41,6 @@ services:
 
   # --- AI WORKER ---
   ai_worker:
-    profiles:
-      - dev
     # RESTAURAMOS: Volúmenes de código
     volumes:
       - ./ai_engine:/app

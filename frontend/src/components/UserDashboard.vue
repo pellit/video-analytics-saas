@@ -1,7 +1,9 @@
 <script setup>
 import { ref, onMounted, computed, watch, nextTick, onUnmounted } from 'vue'
+import NavBar from './NavBar.vue'
+
 const props = defineProps(['token', 'user'])
-const emit = defineEmits(['logout'])
+const emit = defineEmits(['logout', 'navigate'])
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000/api'
 // Prefer explicit stream URL; fallback to computed from API URL to be compatible with existing setups
@@ -21,17 +23,47 @@ const getStreamUrl = () => {
 }
 const STREAM_URL = getStreamUrl();
 
+// COCO Classes for Multi-select (defined early for use in initializeCameraDefaults)
+const availableClasses = [
+  'person', 'bicycle', 'car', 'motorcycle', 'airplane', 'bus', 'train', 'truck', 'boat', 
+  'traffic light', 'fire hydrant', 'stop sign', 'parking meter', 'bench', 'bird', 'cat', 
+  'dog', 'horse', 'sheep', 'cow', 'elephant', 'bear', 'zebra', 'giraffe', 'backpack', 
+  'umbrella', 'handbag', 'tie', 'suitcase', 'frisbee', 'skis', 'snowboard', 'sports ball', 
+  'kite', 'baseball bat', 'baseball glove', 'skateboard', 'surfboard', 'tennis racket', 
+  'bottle', 'wine glass', 'cup', 'fork', 'knife', 'spoon', 'bowl', 'banana', 'apple', 
+  'sandwich', 'orange', 'broccoli', 'carrot', 'hot dog', 'pizza', 'donut', 'cake', 'chair', 
+  'couch', 'potted plant', 'bed', 'dining table', 'toilet', 'tv', 'laptop', 'mouse', 
+  'remote', 'keyboard', 'cell phone', 'microwave', 'oven', 'toaster', 'sink', 'refrigerator', 
+  'book', 'clock', 'vase', 'scissors', 'teddy bear', 'hair drier', 'toothbrush'
+]
+
 const cameras = ref([])
 const activeCamera = ref(null)
 const isProcessing = ref(false)
 const showAdd = ref(false)
 const newCam = ref({ name: '', url: '' })
 
+// Initialize detection_classes with all available classes if null/empty
+const initializeCameraDefaults = (camera) => {
+  if (!camera.detection_classes || camera.detection_classes.length === 0) {
+    camera.detection_classes = [...availableClasses]
+  }
+  // Ensure boolean fields have proper defaults
+  camera.detection_enabled = camera.detection_enabled ?? false
+  camera.face_recognition_enabled = camera.face_recognition_enabled ?? false
+  camera.depth_enabled = camera.depth_enabled ?? false
+  camera.bev_enabled = camera.bev_enabled ?? false
+  camera.tracking = camera.tracking ?? false
+  return camera
+}
+
 const fetchCameras = async () => {
   try {
     const res = await fetch(`${API_URL}/cameras`, { headers: { 'Authorization': `Bearer ${props.token}`, 'Accept': 'application/json' } })
     if (res.ok) {
-        cameras.value = await res.json()
+        const data = await res.json()
+        // Initialize defaults for all cameras
+        cameras.value = data.map(initializeCameraDefaults)
         if (cameras.value.length > 0) activeCamera.value = cameras.value[0]
     } else {
         if (res.status === 401) {
@@ -87,43 +119,228 @@ const newAlertEvent = ref('person_detected')
 const newAlertThreshold = ref(0.5)
 const runInBackground = ref(true) // Default: Keep running in background
 
-// COCO Classes for Multi-select
-const availableClasses = [
-  'person', 'bicycle', 'car', 'motorcycle', 'airplane', 'bus', 'train', 'truck', 'boat', 
-  'traffic light', 'fire hydrant', 'stop sign', 'parking meter', 'bench', 'bird', 'cat', 
-  'dog', 'horse', 'sheep', 'cow', 'elephant', 'bear', 'zebra', 'giraffe', 'backpack', 
-  'umbrella', 'handbag', 'tie', 'suitcase', 'frisbee', 'skis', 'snowboard', 'sports ball', 
-  'kite', 'baseball bat', 'baseball glove', 'skateboard', 'surfboard', 'tennis racket', 
-  'bottle', 'wine glass', 'cup', 'fork', 'knife', 'spoon', 'bowl', 'banana', 'apple', 
-  'sandwich', 'orange', 'broccoli', 'carrot', 'hot dog', 'pizza', 'donut', 'cake', 'chair', 
-  'couch', 'potted plant', 'bed', 'dining table', 'toilet', 'tv', 'laptop', 'mouse', 
-  'remote', 'keyboard', 'cell phone', 'microwave', 'oven', 'toaster', 'sink', 'refrigerator', 
-  'book', 'clock', 'vase', 'scissors', 'teddy bear', 'hair drier', 'toothbrush'
-]
+// BEV (Bird's Eye View) state
+const bevCanvas = ref(null)
+const bevData = ref({
+  objects: [],
+  nearestDistance: Infinity,
+  gridSize: 10 // metros que representa el canvas
+})
 
-const updateCameraSettings = async (camera) => {
-  try {
-    const res = await fetch(`${API_URL}/cameras/${camera.id}`, {
-      method: 'PATCH', headers: { 'Authorization': `Bearer ${props.token}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ 
-        detection_enabled: camera.detection_enabled, 
-        detection_model: camera.detection_model, 
-        detection_classes: camera.detection_classes, // Send selected classes
-        face_recognition_enabled: camera.face_recognition_enabled, // Send face recognition setting
-        depth_enabled: camera.depth_enabled,
-        bev_enabled: camera.bev_enabled,
-        tracking: camera.tracking 
-      })
-    })
-    if (!res.ok) {
-      const body = await res.json().catch(() => null)
-      alert('No se pudo actualizar configuración: ' + (body?.message || res.status))
-    } else {
-      alert('Configuración actualizada')
+// Función para dibujar el BEV en el canvas
+const drawBEV = () => {
+  if (!bevCanvas.value) return
+  const canvas = bevCanvas.value
+  const ctx = canvas.getContext('2d')
+  const w = canvas.width
+  const h = canvas.height
+  const gridSize = bevData.value.gridSize // metros totales
+  const scale = w / gridSize // pixels por metro
+  
+  // Limpiar canvas
+  ctx.fillStyle = '#1e1e1e'
+  ctx.fillRect(0, 0, w, h)
+  
+  // Dibujar grid con medidas
+  ctx.strokeStyle = '#333'
+  ctx.lineWidth = 1
+  ctx.font = '10px Arial'
+  ctx.fillStyle = '#666'
+  
+  // Líneas verticales y horizontales cada metro
+  for (let i = 0; i <= gridSize; i++) {
+    const pos = i * scale
+    // Vertical
+    ctx.beginPath()
+    ctx.moveTo(pos, 0)
+    ctx.lineTo(pos, h)
+    ctx.stroke()
+    // Horizontal
+    ctx.beginPath()
+    ctx.moveTo(0, pos)
+    ctx.lineTo(w, pos)
+    ctx.stroke()
+    // Etiquetas de medida
+    if (i > 0 && i < gridSize) {
+      ctx.fillText(`${i}m`, pos + 2, h - 5)
+      ctx.fillText(`${i}m`, 2, h - pos - 2)
     }
-  } catch (e) { console.error(e); alert('Error red al actualizar cámara') }
+  }
+  
+  // Dibujar posición de la cámara (abajo centro)
+  ctx.fillStyle = '#4a90d9'
+  ctx.beginPath()
+  ctx.moveTo(w / 2, h - 10)
+  ctx.lineTo(w / 2 - 8, h)
+  ctx.lineTo(w / 2 + 8, h)
+  ctx.closePath()
+  ctx.fill()
+  ctx.fillStyle = '#4a90d9'
+  ctx.font = '11px Arial'
+  ctx.fillText('📷 Cámara', w / 2 - 25, h - 15)
+  
+  // Dibujar círculos de distancia de referencia
+  ctx.strokeStyle = '#444'
+  ctx.setLineDash([5, 5])
+  for (let dist of [3, 6, 9]) {
+    if (dist <= gridSize) {
+      ctx.beginPath()
+      ctx.arc(w / 2, h, dist * scale, Math.PI, 0)
+      ctx.stroke()
+      ctx.fillStyle = '#555'
+      ctx.fillText(`${dist}m`, w / 2 + dist * scale + 3, h - 5)
+    }
+  }
+  ctx.setLineDash([])
+  
+  // Dibujar objetos detectados
+  bevData.value.objects.forEach((obj, idx) => {
+    const x = w / 2 + (obj.x * scale)  // x relativo al centro
+    const y = h - (obj.distance * scale)  // y desde abajo (cámara)
+    
+    // Color según distancia
+    let color = '#ff4444' // cerca (rojo)
+    if (obj.distance > 6) color = '#44ff44' // lejos (verde)
+    else if (obj.distance > 3) color = '#ffaa44' // medio (naranja)
+    
+    // Dibujar punto
+    ctx.fillStyle = color
+    ctx.beginPath()
+    ctx.arc(x, y, 8, 0, Math.PI * 2)
+    ctx.fill()
+    
+    // Dibujar etiqueta
+    ctx.fillStyle = '#fff'
+    ctx.font = 'bold 10px Arial'
+    const label = obj.trackId ? `#${obj.trackId}` : obj.label.substring(0, 3)
+    ctx.fillText(label, x - 8, y - 12)
+    
+    // Dibujar distancia
+    ctx.font = '9px Arial'
+    ctx.fillStyle = '#aaa'
+    ctx.fillText(`${obj.distance.toFixed(1)}m`, x - 10, y + 18)
+  })
 }
 
+// Procesar datos de BEV desde detecciones
+const processBEVData = (detection) => {
+  if (!detection.bev_data) return
+  
+  bevData.value.objects = detection.bev_data.objects || []
+  bevData.value.nearestDistance = detection.bev_data.nearest_distance || Infinity
+  
+  nextTick(() => drawBEV())
+}
+
+// Polling detections stub functions (now handled by SSE, kept for compatibility)
+let pollingInterval = null
+const startPollingDetections = () => {
+  // Detections are now received via SSE, but we can keep this as a fallback
+  // or simply do nothing since SSE handles real-time updates
+  console.log('Detection polling: using SSE for real-time updates')
+}
+const stopPollingDetections = () => {
+  if (pollingInterval) {
+    clearInterval(pollingInterval)
+    pollingInterval = null
+  }
+}
+
+const isSaving = ref(false)
+
+// Funciones para seleccionar/deseleccionar todas las clases
+const selectAllClasses = () => {
+  if (activeCamera.value) {
+    activeCamera.value.detection_classes = [...availableClasses]
+  }
+}
+
+const deselectAllClasses = () => {
+  if (activeCamera.value) {
+    activeCamera.value.detection_classes = []
+  }
+}
+
+const updateCameraSettings = async (camera) => {
+  if (isSaving.value) return
+  isSaving.value = true
+  
+  const wasProcessing = isProcessing.value
+  
+  try {
+    // Si está procesando, detener primero para aplicar cambios
+    if (wasProcessing) {
+      console.log('Deteniendo stream para aplicar cambios...')
+      await fetch(`${API_URL}/camera/stop`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${props.token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: camera.id })
+      })
+      isProcessing.value = false
+      // Pequeña pausa para que el worker se detenga
+      await new Promise(resolve => setTimeout(resolve, 500))
+    }
+    
+    const payload = { 
+      detection_enabled: camera.detection_enabled, 
+      detection_model: camera.detection_model, 
+      detection_classes: camera.detection_classes,
+      face_recognition_enabled: camera.face_recognition_enabled,
+      depth_enabled: camera.depth_enabled,
+      bev_enabled: camera.bev_enabled,
+      tracking: camera.tracking 
+    }
+    
+    console.log('Guardando configuración:', payload)
+    
+    const res = await fetch(`${API_URL}/cameras/${camera.id}`, {
+      method: 'PATCH', 
+      headers: { 
+        'Authorization': `Bearer ${props.token}`, 
+        'Content-Type': 'application/json',
+        'Accept': 'application/json'
+      },
+      body: JSON.stringify(payload)
+    })
+    
+    if (!res.ok) {
+      const body = await res.json().catch(() => null)
+      console.error('Error response:', res.status, body)
+      alert('No se pudo actualizar configuración: ' + (body?.message || body?.error || `Error ${res.status}`))
+      // Recargar cámaras para restaurar estado original
+      await fetchCameras()
+      return
+    }
+    
+    const updatedCamera = await res.json()
+    // Actualizar la cámara local con los datos del servidor
+    Object.assign(camera, initializeCameraDefaults(updatedCamera))
+    
+    alert('Configuración actualizada correctamente')
+    
+    // Si estaba procesando, reiniciar con nueva configuración
+    if (wasProcessing) {
+      console.log('Reiniciando stream con nueva configuración...')
+      await fetch(`${API_URL}/camera/start`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${props.token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: camera.id })
+      })
+      isProcessing.value = true
+      setTimeout(fetchWorkerStatus, 1000)
+    }
+    
+  } catch (e) { 
+    console.error('Error de red:', e)
+    alert('Error de red al actualizar cámara. Verifique la conexión.')
+    // Recargar cámaras para restaurar estado original
+    await fetchCameras()
+  } finally {
+    isSaving.value = false
+  }
+}
+
+const alerts = ref([]) // Store alerts received via SSE
 const activeWorkerStreams = ref([])
 const WORKER_URL = STREAM_URL.replace('/video_feed', '')
 
@@ -286,6 +503,20 @@ const initSSE = () => {
         detections.value.unshift(data)
         // limit length
         if (detections.value.length > 20) detections.value.pop()
+        
+        // Procesar datos BEV si están presentes
+        if (data.bev_data) {
+          processBEVData(data)
+        }
+      }
+    } catch (e) {}
+  })
+  // Listener específico para eventos BEV
+  eventSource.addEventListener('bev', (e) => {
+    try {
+      const data = JSON.parse(e.data)
+      if (activeCamera.value && data.camera_id === activeCamera.value.id) {
+        processBEVData(data)
       }
     } catch (e) {}
   })
@@ -310,24 +541,75 @@ onUnmounted(async () => {
         } catch(e) { console.error("Error stopping on unmount", e) }
     }
 })
+
+// Alerts/notifications for navbar
+const navNotifications = computed(() => {
+  return alerts.value.slice(0, 10).map((a, i) => ({
+    id: i,
+    message: a.message || `${a.camera_name}: ${a.type}`,
+    time: a.created_at ? new Date(a.created_at).toLocaleTimeString() : 'Ahora',
+    type: 'alert',
+    read: false
+  }))
+})
+
+// Count of running cameras for navbar
+const runningCamerasCount = computed(() => {
+  return cameras.value.filter(cam => isCameraRunning(cam.id)).length
+})
+
+// Profile modal state
+const showProfileModal = ref(false)
+const profileForm = ref({
+  name: '',
+  email: ''
+})
+
+const openProfileModal = () => {
+  profileForm.value.name = props.user?.name || ''
+  profileForm.value.email = props.user?.email || ''
+  showProfileModal.value = true
+}
+
+const closeProfileModal = () => {
+  showProfileModal.value = false
+}
+
+const saveProfile = async () => {
+  // TODO: Implement profile update API call
+  alert('Perfil actualizado (pendiente implementar)')
+  closeProfileModal()
+}
 </script>
 
 <template>
-  <div class="dashboard-user control-center">
-    <!-- Sidebar / Camera List -->
-    <div class="sidebar">
-      <div class="sidebar-header">
-        <h3>Cámaras</h3>
-        <button @click="showAdd = true" class="btn-icon" title="Añadir Cámara">+</button>
-      </div>
-      <div class="cam-list">
-        <div v-for="cam in cameras" :key="cam.id" 
-             class="cam-item" :class="{active: activeCamera?.id === cam.id}"
-             @click="activeCamera = cam">
-             <span class="status-dot" :class="{online: isCameraRunning(cam.id)}"></span>
-             {{ cam.name }}
+  <div class="app-layout">
+    <!-- NavBar Component -->
+    <NavBar 
+      :user="user" 
+      :notifications="navNotifications"
+      :cameras-online="runningCamerasCount"
+      current-view="dashboard"
+      @logout="emit('logout')"
+      @openProfile="showProfileModal = true"
+      @navigate="(view) => emit('navigate', view)"
+    />
+    
+    <div class="dashboard-user control-center">
+      <!-- Sidebar / Camera List -->
+      <div class="sidebar">
+        <div class="sidebar-header">
+          <h3>🎥 Cámaras</h3>
+          <button @click="showAdd = true" class="btn-icon" title="Añadir Cámara">+</button>
         </div>
-      </div>
+        <div class="cam-list">
+          <div v-for="cam in cameras" :key="cam.id" 
+               class="cam-item" :class="{active: activeCamera?.id === cam.id}"
+               @click="activeCamera = cam">
+               <span class="status-dot" :class="{online: isCameraRunning(cam.id)}"></span>
+               {{ cam.name }}
+          </div>
+        </div>
     </div>
 
     <!-- Main Content -->
@@ -408,6 +690,11 @@ onUnmounted(async () => {
 
             <div class="setting-group" v-if="activeCamera.detection_enabled">
               <label>Clases a Detectar</label>
+              <div class="class-actions">
+                <button type="button" @click="selectAllClasses" class="btn-small">Seleccionar Todas</button>
+                <button type="button" @click="deselectAllClasses" class="btn-small btn-secondary">Deseleccionar Todas</button>
+                <span class="class-count">{{ activeCamera.detection_classes?.length || 0 }}/{{ availableClasses.length }}</span>
+              </div>
               <div class="multi-select-box">
                 <label v-for="cls in availableClasses" :key="cls" class="checkbox-item">
                   <input type="checkbox" :value="cls" v-model="activeCamera.detection_classes">
@@ -456,7 +743,10 @@ onUnmounted(async () => {
               </label>
             </div>
 
-            <button @click="updateCameraSettings(activeCamera)" class="btn-save">Guardar Cambios</button>
+            <button @click="updateCameraSettings(activeCamera)" class="btn-save" :disabled="isSaving">
+              {{ isSaving ? 'Guardando...' : 'Guardar Cambios' }}
+            </button>
+            <p v-if="isProcessing" class="save-note">⚠️ El stream se reiniciará para aplicar los cambios</p>
           </div>
 
           <!-- Alerts Creator -->
@@ -477,7 +767,7 @@ onUnmounted(async () => {
         </div>
       </div>
 
-      <!-- Bottom Panel: Logs & Alerts -->
+      <!-- Bottom Panel: Logs, Alerts & BEV -->
       <div class="bottom-panel">
         <div class="panel-col">
           <h3>Alertas Recientes</h3>
@@ -498,6 +788,28 @@ onUnmounted(async () => {
               <span class="details">{{ d.payload?.label }}</span>
             </li>
           </ul>
+        </div>
+        <!-- BEV Panel -->
+        <div class="panel-col bev-panel" v-if="activeCamera?.depth_enabled && activeCamera?.bev_enabled">
+          <h3>Vista de Pájaro (BEV)</h3>
+          <div class="bev-container">
+            <canvas ref="bevCanvas" width="300" height="300" class="bev-canvas"></canvas>
+            <div class="bev-legend">
+              <div class="legend-item"><span class="dot near"></span> 0-3m</div>
+              <div class="legend-item"><span class="dot mid"></span> 3-6m</div>
+              <div class="legend-item"><span class="dot far"></span> 6m+</div>
+            </div>
+            <div class="bev-stats" v-if="bevData.objects.length > 0">
+              <p>Objetos: {{ bevData.objects.length }}</p>
+              <p>Más cercano: {{ bevData.nearestDistance.toFixed(1) }}m</p>
+            </div>
+          </div>
+        </div>
+        <div class="panel-col bev-panel bev-disabled" v-else-if="activeCamera">
+          <h3>Vista de Pájaro (BEV)</h3>
+          <div class="bev-placeholder">
+            <p>🦅 Activa "Estimación de Profundidad" y "Vista de Pájaro" en la configuración para ver el mapa BEV</p>
+          </div>
         </div>
       </div>
 
@@ -521,66 +833,152 @@ onUnmounted(async () => {
         </div>
     </div>
 
+    <!-- Profile Modal -->
+    <Transition name="modal-fade">
+      <div v-if="showProfileModal" class="modal-overlay" @click.self="closeProfileModal">
+        <div class="modal-box profile-modal">
+          <div class="modal-header">
+            <h3>👤 Editar Perfil</h3>
+            <button class="close-btn" @click="closeProfileModal">&times;</button>
+          </div>
+          
+          <div class="profile-avatar-section">
+            <div class="profile-avatar-large">
+              {{ user?.name?.split(' ').map(n => n[0]).join('').toUpperCase().slice(0, 2) || '?' }}
+            </div>
+            <span class="profile-role-badge">{{ user?.role === 'superadmin' ? '👑 Super Admin' : user?.role === 'admin' ? '⭐ Admin' : '👤 Usuario' }}</span>
+          </div>
+          
+          <div class="profile-form">
+            <div class="form-group">
+              <label>Nombre</label>
+              <input v-model="profileForm.name" type="text" class="dark-input" placeholder="Tu nombre">
+            </div>
+            <div class="form-group">
+              <label>Email</label>
+              <input v-model="profileForm.email" type="email" class="dark-input" placeholder="tu@email.com">
+            </div>
+            <div class="form-group">
+              <label>Nueva Contraseña (dejar vacío para no cambiar)</label>
+              <input v-model="profileForm.password" type="password" class="dark-input" placeholder="••••••••">
+            </div>
+          </div>
+          
+          <div class="modal-actions">
+            <button @click="closeProfileModal" class="btn-cancel">Cancelar</button>
+            <button @click="saveProfile" class="btn-confirm">
+              <span>💾</span> Guardar Cambios
+            </button>
+          </div>
+        </div>
+      </div>
+    </Transition>
+
+    </div>
   </div>
 </template>
 
 <style scoped>
+/* App Layout with NavBar */
+.app-layout {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+  background: #0d1117;
+}
+
 /* Control Center Theme */
 .control-center {
   display: flex;
-  height: 100vh;
-  background-color: #1a1a1a;
+  height: calc(100vh - 4rem);
+  margin-top: 4rem;
+  background-color: #0d1117;
   color: #e0e0e0;
-  font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  font-family: 'Poppins', 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
   overflow: hidden;
 }
 
 /* Sidebar */
 .sidebar {
-  width: 250px;
-  background-color: #252526;
-  border-right: 1px solid #333;
+  width: 260px;
+  background-color: #161b22;
+  border-right: 1px solid #30363d;
   display: flex;
   flex-direction: column;
 }
 .sidebar-header {
-  padding: 15px;
+  padding: 1rem;
   display: flex;
   justify-content: space-between;
   align-items: center;
-  border-bottom: 1px solid #333;
+  border-bottom: 1px solid #30363d;
+}
+.sidebar-header h3 {
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: #c9d1d9;
 }
 .btn-icon {
-  background: #333;
+  background: linear-gradient(135deg, #1f6feb, #a855f7);
   border: none;
   color: white;
-  width: 30px;
-  height: 30px;
-  border-radius: 4px;
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
   cursor: pointer;
+  font-size: 1.1rem;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s ease;
+}
+.btn-icon:hover {
+  transform: scale(1.05);
+  box-shadow: 0 4px 12px rgba(31, 111, 235, 0.3);
 }
 .cam-list {
   flex: 1;
   overflow-y: auto;
+  padding: 0.5rem;
 }
 .cam-item {
-  padding: 12px 15px;
+  padding: 0.75rem 1rem;
   cursor: pointer;
   display: flex;
   align-items: center;
-  gap: 10px;
-  border-bottom: 1px solid #2d2d2d;
-  transition: background 0.2s;
+  gap: 0.75rem;
+  border-radius: 0.5rem;
+  margin-bottom: 0.25rem;
+  transition: all 0.2s ease;
+  color: #8b949e;
+  font-size: 0.9rem;
 }
-.cam-item:hover { background-color: #2d2d2d; }
-.cam-item.active { background-color: #37373d; border-left: 3px solid #007acc; }
+.cam-item:hover { 
+  background-color: #21262d; 
+  color: #c9d1d9;
+}
+.cam-item.active { 
+  background-color: rgba(31, 111, 235, 0.15); 
+  color: #58a6ff;
+  border-left: 3px solid #1f6feb; 
+}
 .status-dot {
   width: 8px;
   height: 8px;
   border-radius: 50%;
-  background-color: #666;
+  background-color: #484f58;
+  flex-shrink: 0;
 }
-.status-dot.online { background-color: #4caf50; }
+.status-dot.online { 
+  background-color: #3fb950; 
+  box-shadow: 0 0 8px rgba(63, 185, 80, 0.5);
+  animation: pulse-dot 2s infinite;
+}
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.6; }
+}
 
 /* Main Content */
 .main-content {
@@ -588,29 +986,52 @@ onUnmounted(async () => {
   display: flex;
   flex-direction: column;
   overflow-y: auto;
+  background: #0d1117;
 }
 .control-header {
-  padding: 15px 20px;
-  background-color: #1e1e1e;
+  padding: 1rem 1.5rem;
+  background-color: #161b22;
   display: flex;
   justify-content: space-between;
   align-items: center;
-  border-bottom: 1px solid #333;
+  border-bottom: 1px solid #30363d;
 }
-.header-left { display: flex; align-items: center; gap: 15px; }
-.badge { padding: 4px 8px; border-radius: 4px; font-size: 0.8em; font-weight: bold; }
-.badge-success { background-color: #1b5e20; color: #a5d6a7; }
-.badge-secondary { background-color: #424242; color: #bdbdbd; }
+.header-left { 
+  display: flex; 
+  align-items: center; 
+  gap: 1rem; 
+}
+.header-left h2 {
+  font-size: 1.1rem;
+  font-weight: 600;
+  color: #c9d1d9;
+}
+.badge { 
+  padding: 0.35rem 0.75rem; 
+  border-radius: 2rem; 
+  font-size: 0.7rem; 
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.badge-success { 
+  background-color: rgba(63, 185, 80, 0.15); 
+  color: #3fb950; 
+}
+.badge-secondary { 
+  background-color: rgba(139, 148, 158, 0.15); 
+  color: #8b949e; 
+}
 
 .video-grid {
   display: grid;
-  grid-template-columns: 1fr 300px;
+  grid-template-columns: 1fr 320px;
   gap: 1px;
-  background-color: #333;
-  height: 60vh;
+  background-color: #30363d;
+  height: 55vh;
 }
 .video-box {
-  background-color: #000;
+  background-color: #0d1117;
   position: relative;
   display: flex;
   justify-content: center;
@@ -650,33 +1071,92 @@ onUnmounted(async () => {
   padding: 5px;
   border-radius: 4px;
 }
+.class-actions {
+  display: flex;
+  gap: 0.5rem;
+  margin-bottom: 0.75rem;
+  align-items: center;
+}
+.class-count {
+  margin-left: auto;
+  font-size: 0.75rem;
+  color: #8b949e;
+  background: #21262d;
+  padding: 0.25rem 0.5rem;
+  border-radius: 1rem;
+}
+.btn-small {
+  padding: 0.35rem 0.75rem;
+  font-size: 0.75rem;
+  background: linear-gradient(135deg, #1f6feb, #388bfd);
+  border: none;
+  border-radius: 0.35rem;
+  color: white;
+  cursor: pointer;
+  font-weight: 500;
+  transition: all 0.2s ease;
+}
+.btn-small:hover { 
+  transform: translateY(-1px);
+  box-shadow: 0 2px 8px rgba(31, 111, 235, 0.3);
+}
+.btn-small.btn-secondary {
+  background: #21262d;
+  border: 1px solid #30363d;
+  color: #c9d1d9;
+}
+.btn-small.btn-secondary:hover { 
+  background: #30363d;
+  transform: translateY(-1px);
+}
+.save-note {
+  font-size: 0.75rem;
+  color: #f0883e;
+  margin-top: 0.5rem;
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+.btn-save:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
 .checkbox-item {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 4px;
-  font-size: 0.9rem;
+  gap: 0.5rem;
+  padding: 0.35rem 0.5rem;
+  font-size: 0.85rem;
   cursor: pointer;
+  border-radius: 0.35rem;
+  color: #8b949e;
+  transition: all 0.15s ease;
 }
-.checkbox-item:hover { background-color: #333; }
+.checkbox-item:hover { 
+  background-color: #21262d;
+  color: #c9d1d9;
+}
+.checkbox-item input[type="checkbox"] {
+  accent-color: #1f6feb;
+}
 
 /* Switch */
 .switch {
   position: relative;
   display: inline-flex;
   align-items: center;
-  gap: 10px;
+  gap: 0.75rem;
   cursor: pointer;
 }
 .switch input { opacity: 0; width: 0; height: 0; }
 .slider {
   position: relative;
   display: inline-block;
-  width: 34px;
+  width: 36px;
   height: 20px;
-  background-color: #ccc;
-  transition: .4s;
-  border-radius: 34px;
+  background-color: #484f58;
+  transition: all 0.3s ease;
+  border-radius: 20px;
 }
 .slider:before {
   position: absolute;
@@ -686,52 +1166,674 @@ onUnmounted(async () => {
   left: 3px;
   bottom: 3px;
   background-color: white;
-  transition: .4s;
+  transition: all 0.3s ease;
   border-radius: 50%;
 }
-input:checked + .slider { background-color: #2196F3; }
-input:checked + .slider:before { transform: translateX(14px); }
-.label-text { font-size: 0.9rem; }
+input:checked + .slider { 
+  background: linear-gradient(135deg, #1f6feb, #388bfd);
+}
+input:checked + .slider:before { 
+  transform: translateX(16px); 
+}
+.label-text { 
+  font-size: 0.85rem;
+  color: #c9d1d9;
+}
 
 /* Buttons */
-.btn-save { width: 100%; background-color: #007acc; color: white; border: none; padding: 10px; border-radius: 4px; cursor: pointer; margin-top: 10px; }
-.btn-save:hover { background-color: #005999; }
-.btn-action { width: 100%; background-color: #444; color: white; border: none; padding: 8px; border-radius: 4px; cursor: pointer; margin-top: 10px; }
-.btn-start { background-color: #2e7d32; color: white; border: none; padding: 8px 15px; border-radius: 4px; cursor: pointer; display: flex; align-items: center; gap: 5px; }
-.btn-stop { background-color: #c62828; color: white; border: none; padding: 8px 15px; border-radius: 4px; cursor: pointer; display: flex; align-items: center; gap: 5px; }
+.header-actions {
+  display: flex;
+  gap: 0.5rem;
+}
+.btn-save { 
+  width: 100%; 
+  background: linear-gradient(135deg, #1f6feb, #388bfd);
+  color: white; 
+  border: none; 
+  padding: 0.75rem; 
+  border-radius: 0.5rem; 
+  cursor: pointer; 
+  margin-top: 0.75rem;
+  font-weight: 500;
+  transition: all 0.2s ease;
+}
+.btn-save:hover { 
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(31, 111, 235, 0.3);
+}
+.btn-action { 
+  width: 100%; 
+  background-color: #21262d; 
+  color: #c9d1d9; 
+  border: 1px solid #30363d; 
+  padding: 0.5rem; 
+  border-radius: 0.4rem; 
+  cursor: pointer; 
+  margin-top: 0.5rem;
+  transition: all 0.2s ease;
+}
+.btn-action:hover {
+  background-color: #30363d;
+}
+.btn-start { 
+  background: linear-gradient(135deg, #238636, #2ea043);
+  color: white; 
+  border: none; 
+  padding: 0.5rem 1rem; 
+  border-radius: 0.5rem; 
+  cursor: pointer; 
+  display: flex; 
+  align-items: center; 
+  gap: 0.5rem;
+  font-weight: 500;
+  font-size: 0.875rem;
+  transition: all 0.2s ease;
+}
+.btn-start:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(35, 134, 54, 0.3);
+}
+.btn-stop { 
+  background: linear-gradient(135deg, #da3633, #f85149);
+  color: white; 
+  border: none; 
+  padding: 0.5rem 1rem; 
+  border-radius: 0.5rem; 
+  cursor: pointer; 
+  display: flex; 
+  align-items: center; 
+  gap: 0.5rem;
+  font-weight: 500;
+  font-size: 0.875rem;
+  transition: all 0.2s ease;
+}
+.btn-stop:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(248, 81, 73, 0.3);
+}
+.btn-secondary {
+  background-color: #21262d;
+  color: #c9d1d9;
+  border: 1px solid #30363d;
+  padding: 0.5rem 1rem;
+  border-radius: 0.5rem;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-weight: 500;
+  font-size: 0.875rem;
+  transition: all 0.2s ease;
+}
+.btn-secondary:hover {
+  background-color: #30363d;
+  border-color: #8b949e;
+}
 
 /* Bottom Panel */
 .bottom-panel {
   flex: 1;
-  background-color: #1e1e1e;
-  border-top: 1px solid #333;
+  background-color: #161b22;
+  border-top: 1px solid #30363d;
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: 1fr 1fr 1fr;
   overflow: hidden;
 }
 .panel-col {
-  padding: 15px;
+  padding: 1rem;
   overflow-y: auto;
-  border-right: 1px solid #333;
+  border-right: 1px solid #30363d;
+}
+.panel-col h4 {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: #c9d1d9;
+  margin-bottom: 0.75rem;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
 }
 .log-list { list-style: none; padding: 0; margin: 0; }
 .log-item {
-  padding: 8px;
-  border-bottom: 1px solid #333;
-  font-size: 0.9rem;
+  padding: 0.6rem 0.75rem;
+  border-radius: 0.4rem;
+  background: #0d1117;
+  margin-bottom: 0.5rem;
+  font-size: 0.85rem;
   display: flex;
+  gap: 0.75rem;
+  border-left: 3px solid transparent;
+  transition: all 0.2s ease;
+}
+.log-item:hover {
+  background: #21262d;
+}
+.log-item .time { 
+  color: #8b949e; 
+  font-family: 'SF Mono', monospace; 
+  font-size: 0.75rem;
+}
+.log-item .event { 
+  color: #58a6ff; 
+  font-weight: 500; 
+}
+.log-item.alert { 
+  border-left-color: #f0883e;
+}
+.log-item.alert .event { 
+  color: #f0883e; 
+}
+
+/* BEV Panel Styles */
+.bev-panel {
+  display: flex;
+  flex-direction: column;
+}
+.bev-container {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
   gap: 10px;
 }
-.log-item .time { color: #888; font-family: monospace; }
-.log-item .event { color: #4fc3f7; font-weight: bold; }
-.log-item.alert .event { color: #ffb74d; }
+.bev-canvas {
+  background: #1a1a1a;
+  border: 1px solid #444;
+  border-radius: 4px;
+}
+.bev-legend {
+  display: flex;
+  gap: 15px;
+  font-size: 0.8rem;
+}
+.legend-item {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+.legend-item .dot {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+}
+.legend-item .dot.near { background: #ff4444; }
+.legend-item .dot.mid { background: #ffaa44; }
+.legend-item .dot.far { background: #44ff44; }
+.bev-stats {
+  background: #252526;
+  padding: 8px 15px;
+  border-radius: 4px;
+  font-size: 0.85rem;
+  display: flex;
+  gap: 20px;
+}
+.bev-stats p { margin: 0; }
+.bev-placeholder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 200px;
+  text-align: center;
+  color: #666;
+  font-size: 0.9rem;
+  padding: 1.25rem;
+}
+.bev-disabled {
+  opacity: 0.7;
+}
 
 /* Modal */
-.modal-overlay { position: fixed; top:0; left:0; width:100%; height:100%; background: rgba(0,0,0,0.7); display: flex; justify-content: center; align-items: center; z-index: 1000; }
-.modal-box { background: #252526; padding: 25px; border-radius: 8px; width: 400px; display: flex; flex-direction: column; gap: 15px; border: 1px solid #444; }
-.modal-actions { display: flex; justify-content: flex-end; gap: 10px; }
-.btn-confirm { background: #007acc; color: white; border: none; padding: 8px 15px; border-radius: 4px; cursor: pointer; }
-.btn-cancel { background: transparent; color: #ccc; border: 1px solid #555; padding: 8px 15px; border-radius: 4px; cursor: pointer; }
+.modal-overlay { 
+  position: fixed; 
+  top: 0; 
+  left: 0; 
+  width: 100%; 
+  height: 100%; 
+  background: rgba(0, 0, 0, 0.8); 
+  backdrop-filter: blur(4px);
+  display: flex; 
+  justify-content: center; 
+  align-items: center; 
+  z-index: 2000; 
+}
+.modal-box { 
+  background: #161b22; 
+  padding: 1.5rem; 
+  border-radius: 0.75rem; 
+  width: 420px; 
+  display: flex; 
+  flex-direction: column; 
+  gap: 1rem; 
+  border: 1px solid #30363d;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.5);
+  animation: modalIn 0.2s ease-out;
+}
+@keyframes modalIn {
+  from {
+    opacity: 0;
+    transform: scale(0.95) translateY(-10px);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+.modal-box h3 {
+  font-size: 1.1rem;
+  font-weight: 600;
+  color: #c9d1d9;
+  margin-bottom: 0.5rem;
+}
+.dark-input {
+  background: #0d1117;
+  border: 1px solid #30363d;
+  padding: 0.75rem 1rem;
+  border-radius: 0.5rem;
+  color: #c9d1d9;
+  font-size: 0.9rem;
+  transition: all 0.2s ease;
+}
+.dark-input:focus {
+  outline: none;
+  border-color: #1f6feb;
+  box-shadow: 0 0 0 3px rgba(31, 111, 235, 0.15);
+}
+.dark-input::placeholder {
+  color: #484f58;
+}
+.modal-actions { 
+  display: flex; 
+  justify-content: flex-end; 
+  gap: 0.75rem;
+  margin-top: 0.5rem;
+}
+.btn-confirm { 
+  background: linear-gradient(135deg, #1f6feb, #a855f7);
+  color: white; 
+  border: none; 
+  padding: 0.6rem 1.25rem; 
+  border-radius: 0.5rem; 
+  cursor: pointer;
+  font-weight: 500;
+  transition: all 0.2s ease;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+.btn-confirm:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(31, 111, 235, 0.4);
+}
+.btn-cancel { 
+  background: transparent; 
+  color: #8b949e; 
+  border: 1px solid #30363d; 
+  padding: 0.6rem 1.25rem; 
+  border-radius: 0.5rem; 
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+.btn-cancel:hover {
+  background: #21262d;
+  color: #c9d1d9;
+}
 
-.empty-state { display: flex; justify-content: center; align-items: center; height: 100%; color: #666; }
+.empty-state { 
+  display: flex; 
+  flex-direction: column;
+  justify-content: center; 
+  align-items: center; 
+  height: 100%; 
+  color: #484f58;
+  gap: 1rem;
+}
+.empty-state svg {
+  opacity: 0.3;
+}
+
+/* Profile Modal Styles */
+.profile-modal {
+  width: 480px;
+  max-width: 90vw;
+}
+
+.modal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding-bottom: 1rem;
+  border-bottom: 1px solid #30363d;
+  margin-bottom: 1rem;
+}
+
+.modal-header h3 {
+  margin: 0;
+  font-size: 1.2rem;
+}
+
+.close-btn {
+  background: transparent;
+  border: none;
+  color: #8b949e;
+  font-size: 1.5rem;
+  cursor: pointer;
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  transition: all 0.2s ease;
+}
+
+.close-btn:hover {
+  background: #21262d;
+  color: #c9d1d9;
+}
+
+.profile-avatar-section {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.75rem;
+  margin-bottom: 1.5rem;
+}
+
+.profile-avatar-large {
+  width: 80px;
+  height: 80px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #1f6feb, #a855f7);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.8rem;
+  font-weight: 700;
+  color: white;
+  box-shadow: 0 4px 20px rgba(31, 111, 235, 0.3);
+}
+
+.profile-role-badge {
+  background: linear-gradient(135deg, #21262d, #30363d);
+  padding: 0.4rem 1rem;
+  border-radius: 20px;
+  font-size: 0.85rem;
+  color: #c9d1d9;
+  border: 1px solid #30363d;
+}
+
+.profile-form {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.form-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.form-group label {
+  font-size: 0.85rem;
+  color: #8b949e;
+  font-weight: 500;
+}
+
+/* Modal transition animations */
+.modal-fade-enter-active,
+.modal-fade-leave-active {
+  transition: all 0.3s ease;
+}
+
+.modal-fade-enter-active .modal-box,
+.modal-fade-leave-active .modal-box {
+  transition: all 0.3s ease;
+}
+
+.modal-fade-enter-from,
+.modal-fade-leave-to {
+  opacity: 0;
+}
+
+.modal-fade-enter-from .modal-box,
+.modal-fade-leave-to .modal-box {
+  opacity: 0;
+  transform: scale(0.9) translateY(-20px);
+}
+
+/* =============================================== */
+/* RESPONSIVE DESIGN */
+/* =============================================== */
+
+/* Tablets and smaller desktops */
+@media (max-width: 1200px) {
+  .video-grid {
+    grid-template-columns: 1fr;
+  }
+  
+  .control-panel {
+    max-height: 400px;
+    overflow-y: auto;
+  }
+  
+  .bottom-panels {
+    flex-direction: column;
+  }
+  
+  .panel-col {
+    width: 100%;
+  }
+}
+
+/* Tablets */
+@media (max-width: 1024px) {
+  .sidebar {
+    width: 220px;
+  }
+  
+  .header-actions {
+    flex-wrap: wrap;
+    gap: 0.5rem;
+  }
+  
+  .header-actions button {
+    padding: 0.5rem 0.75rem;
+    font-size: 0.8rem;
+  }
+  
+  .alerts-panel {
+    max-height: 300px;
+  }
+}
+
+/* Small tablets and large phones */
+@media (max-width: 768px) {
+  .control-center {
+    flex-direction: column;
+    height: auto;
+    min-height: calc(100vh - 4rem);
+  }
+  
+  .sidebar {
+    width: 100%;
+    max-height: 200px;
+    border-right: none;
+    border-bottom: 1px solid #30363d;
+  }
+  
+  .cam-list {
+    display: flex;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    gap: 0.5rem;
+    padding: 0.5rem;
+  }
+  
+  .cam-item {
+    flex-shrink: 0;
+    white-space: nowrap;
+    min-width: auto;
+  }
+  
+  .main-content {
+    padding: 1rem;
+    overflow-y: auto;
+  }
+  
+  .control-header {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.75rem;
+  }
+  
+  .header-actions {
+    width: 100%;
+    justify-content: flex-start;
+  }
+  
+  .video-box {
+    min-height: 250px;
+  }
+  
+  .control-panel {
+    max-height: none;
+  }
+  
+  .modal-box {
+    width: calc(100vw - 2rem);
+    max-height: 90vh;
+    overflow-y: auto;
+  }
+  
+  .profile-modal {
+    width: calc(100vw - 2rem);
+  }
+  
+  .multi-select-box {
+    max-height: 150px;
+  }
+  
+  .bev-container {
+    flex-direction: column;
+  }
+  
+  .bev-canvas {
+    width: 100%;
+    height: 200px;
+  }
+  
+  .bev-legend {
+    flex-wrap: wrap;
+  }
+}
+
+/* Phones */
+@media (max-width: 480px) {
+  .control-center {
+    margin-top: 3.5rem;
+    height: calc(100vh - 3.5rem);
+  }
+  
+  .sidebar-header h3 {
+    font-size: 0.85rem;
+  }
+  
+  .sidebar-header {
+    padding: 0.75rem;
+  }
+  
+  .btn-icon {
+    width: 24px;
+    height: 24px;
+    font-size: 0.9rem;
+  }
+  
+  .cam-item {
+    padding: 0.5rem 0.75rem;
+    font-size: 0.85rem;
+  }
+  
+  .control-header h2 {
+    font-size: 1rem;
+  }
+  
+  .badge {
+    font-size: 0.65rem;
+    padding: 0.2rem 0.5rem;
+  }
+  
+  .header-actions button {
+    flex: 1;
+    justify-content: center;
+  }
+  
+  .panel-section h3 {
+    font-size: 0.9rem;
+  }
+  
+  .setting-group label {
+    font-size: 0.8rem;
+  }
+  
+  .dark-select {
+    font-size: 0.85rem;
+    padding: 0.5rem;
+  }
+  
+  .checkbox-item {
+    font-size: 0.8rem;
+  }
+  
+  .video-box {
+    min-height: 200px;
+  }
+  
+  .placeholder-content {
+    font-size: 0.85rem;
+  }
+  
+  .alerts-panel .alert-item {
+    padding: 0.6rem;
+    font-size: 0.8rem;
+  }
+  
+  .modal-box {
+    padding: 1rem;
+  }
+  
+  .modal-box h3 {
+    font-size: 1rem;
+  }
+  
+  .dark-input {
+    padding: 0.6rem 0.75rem;
+    font-size: 0.85rem;
+  }
+  
+  .modal-actions button {
+    padding: 0.5rem 1rem;
+    font-size: 0.85rem;
+  }
+  
+  .profile-avatar-large {
+    width: 60px;
+    height: 60px;
+    font-size: 1.4rem;
+  }
+}
+
+/* Extra small phones */
+@media (max-width: 360px) {
+  .header-actions {
+    flex-direction: column;
+  }
+  
+  .header-actions button {
+    width: 100%;
+  }
+  
+  .sidebar {
+    max-height: 150px;
+  }
+}
 </style>

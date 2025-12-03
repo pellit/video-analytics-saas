@@ -36,7 +36,7 @@ class SseController extends Controller
                 flush();
 
                 $pubsub = Redis::connection()->pubSub();
-                $pubsub->subscribe(['alerts', 'detections']);
+                $pubsub->subscribe(['alerts', 'detections', 'bev_events']);
 
                 foreach ($pubsub as $message) {
                     if ($message->kind === 'message') {
@@ -46,8 +46,9 @@ class SseController extends Controller
                             if (isset($payload['user_id']) && intval($payload['user_id']) !== intval($user->id)) {
                                 continue;
                             }
-                            // SSE event name is the Redis channel
-                            echo "event: {$message->channel}\n";
+                            // SSE event name is the Redis channel (map bev_events to 'bev' for frontend)
+                            $eventName = $message->channel === 'bev_events' ? 'bev' : $message->channel;
+                            echo "event: {$eventName}\n";
                             echo 'data: ' . json_encode($payload) . "\n\n";
                             if (ob_get_level() > 0) ob_flush();
                             flush();

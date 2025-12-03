@@ -39,7 +39,9 @@ class DepthService:
     def process_3d_view(self, frame, detections, enable_bev=False):
         """
         Draws pseudo-3D boxes on the frame and optionally returns a BEV image.
-        detections: list of dicts { 'label': str, 'bbox': [x1, y1, x2, y2], 'score': float }
+        detections: list of dicts { 'label': str, 'bbox': [x1, y1, x2, y2], 'score': float, 'track_id': int (optional) }
+        Returns: (annotated_frame, bev_map, bev_data)
+        bev_data: dict with objects and their positions for frontend rendering
         """
         depth_map = self.estimate_depth(frame)
         
@@ -62,6 +64,8 @@ class DepthService:
         # frame = cv2.addWeighted(frame, 0.7, depth_colormap, 0.3, 0)
 
         bev_map = None
+        bev_data = {'objects': [], 'nearest_distance': float('inf')}
+        
         if enable_bev:
             bev_h, bev_w = 500, 500
             bev_map = np.zeros((bev_h, bev_w, 3), dtype=np.uint8)
@@ -162,8 +166,36 @@ class DepthService:
                 # So 1.0 -> y=bev_h, 0.0 -> y=0
                 bev_y = int((1.0 - obj_depth) * bev_h)
                 
-                # Draw point
+                # Estimate distance in meters (rough approximation)
+                # obj_depth is 0-1 where 1 is closest
+                # Map to 0-10 meters range (configurable)
+                max_distance = 10.0  # metros
+                estimated_distance = (1.0 - obj_depth) * max_distance
+                
+                # X position relative to center (-5m to +5m)
+                x_relative = ((cx / w) - 0.5) * max_distance
+                
+                # Add to BEV data for frontend
+                bev_obj = {
+                    'label': det['label'],
+                    'x': round(x_relative, 2),  # metros desde el centro
+                    'distance': round(estimated_distance, 2),  # metros de profundidad
+                    'score': det['score'],
+                    'trackId': det.get('track_id')
+                }
+                bev_data['objects'].append(bev_obj)
+                
+                # Update nearest distance
+                if estimated_distance < bev_data['nearest_distance']:
+                    bev_data['nearest_distance'] = estimated_distance
+                
+                # Draw point on BEV map
                 cv2.circle(bev_map, (bev_x, bev_y), 5, color, -1)
-                cv2.putText(bev_map, det['label'], (bev_x + 5, bev_y), cv2.FONT_HERSHEY_SIMPLEX, 0.4, color, 1)
+                label_text = f"{det['label']} {estimated_distance:.1f}m"
+                cv2.putText(bev_map, label_text, (bev_x + 5, bev_y), cv2.FONT_HERSHEY_SIMPLEX, 0.4, color, 1)
 
-        return frame, bev_map
+        # Convert inf to a large number for JSON serialization
+        if bev_data['nearest_distance'] == float('inf'):
+            bev_data['nearest_distance'] = 999
+
+        return frame, bev_map, bev_data

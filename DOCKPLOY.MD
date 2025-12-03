@@ -1,5 +1,29 @@
-¡Hola! Con gusto te ayudaré a configurar tu código para usar variables de entorno al realizar un despliegue con Docker Compose en Dokploy.
+## Doscploy repair
 
+docker ps -a | grep -i dock
+docker service ls | grep -i dokploy
+docker ps -a | grep traefik
+docker service ps dokploy --no-trunc && echo "---" && docker logs $(docker ps -q -f name=dokploy.1) --tail 30 2>&1
+ss -tulnp | grep -E ":(3000|80|443)" 2>/dev/null || netstat -tulnp | grep -E ":(3000|80|443)"
+
+docker logs $(docker ps -q -f name=dokploy.1) 2>&1 | tail -50
+
+docker logs $(docker ps -q -f name=dokploy.1) 2>&1 | tail -50
+
+docker service inspect dokploy --format '{{json .Endpoint.Ports}}' | jq . 2>/dev/null || docker service inspect dokploy --format '{{json .Endpoint.Ports}}'
+
+curl -v http://localhost:3000 2>&1 | head -20
+
+docker service logs dokploy 2>&1 | tail -100
+
+docker service logs dokploy-postgres 2>&1 | tail -20
+
+docker network ls | grep dokploy
+
+docker service update --force dokploy && sleep 30 && docker service logs dokploy 2>&1 | tail -50
+
+
+# Gestión de Variables de Entorno en Dokploy para Docker Compose
 Dokploy facilita la gestión de variables de entorno para los despliegues de Docker Compose al crear un archivo `.env` automáticamente.
 
 Aquí te detallo cómo configurar tu código y el proceso dentro de Dokploy:

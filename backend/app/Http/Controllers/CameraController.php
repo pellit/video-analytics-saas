@@ -64,7 +64,8 @@ class CameraController extends Controller
             'detection_classes' => $camera->detection_classes, // Enviar clases
             'face_recognition_enabled' => $camera->face_recognition_enabled,
             'depth_enabled' => $camera->depth_enabled,
-            'bev_enabled' => $camera->bev_enabled
+            'bev_enabled' => $camera->bev_enabled,
+            'tracking' => $camera->tracking ?? false  // Enviar opción de tracking
         ]);
         Redis::publish('video_control', $message);
 

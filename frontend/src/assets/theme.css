@@ -1,0 +1,232 @@
+/* ============================================
+   VIDEO ANALYTICS SAAS - DESIGN SYSTEM
+   ============================================
+   Paleta de colores coherente y moderna
+   Inspirada en los ejemplos UI_examples
+   ============================================ */
+
+:root {
+  /* ========== Primary Colors ========== */
+  --primary: #8543CC;
+  --primary-light: #a855f7;
+  --primary-dark: #6d28d9;
+  --primary-glow: rgba(133, 67, 204, 0.3);
+  
+  /* ========== Accent Colors ========== */
+  --accent: #F4BD50;
+  --accent-light: #fbbf24;
+  --accent-dark: #d97706;
+  
+  /* ========== Background Colors ========== */
+  --bg-primary: #0d1117;
+  --bg-secondary: #161b22;
+  --bg-tertiary: #1f2336;
+  --bg-elevated: #21262d;
+  --bg-widget: #3A2D54;
+  --bg-card: #252d3d;
+  
+  /* ========== Border Colors ========== */
+  --border-primary: #30363d;
+  --border-secondary: #42375d;
+  --border-focus: var(--primary);
+  
+  /* ========== Text Colors ========== */
+  --text-primary: #e6edf3;
+  --text-secondary: #8b949e;
+  --text-tertiary: #6e7681;
+  --text-muted: #484f58;
+  --text-accent: #CEC0E0;
+  
+  /* ========== Status Colors ========== */
+  --success: #3fb950;
+  --success-bg: rgba(63, 185, 80, 0.15);
+  --success-dark: #238636;
+  
+  --warning: #f0883e;
+  --warning-bg: rgba(240, 136, 62, 0.15);
+  
+  --error: #f85149;
+  --error-bg: rgba(248, 81, 73, 0.15);
+  --error-dark: #da3633;
+  
+  --info: #58a6ff;
+  --info-bg: rgba(88, 166, 255, 0.15);
+  
+  /* ========== Notification Colors ========== */
+  --notification-success-bg: #313e2c;
+  --notification-success-text: #aaec8a;
+  
+  /* ========== Gradients ========== */
+  --gradient-primary: linear-gradient(135deg, var(--primary) 0%, var(--primary-light) 100%);
+  --gradient-success: linear-gradient(135deg, var(--success-dark) 0%, var(--success) 100%);
+  --gradient-error: linear-gradient(135deg, var(--error-dark) 0%, var(--error) 100%);
+  --gradient-accent: linear-gradient(135deg, var(--accent-dark) 0%, var(--accent) 100%);
+  --gradient-dark: linear-gradient(135deg, var(--bg-secondary) 0%, var(--bg-widget) 100%);
+  
+  /* ========== Shadows ========== */
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.4);
+  --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.5);
+  --shadow-xl: 0 16px 48px rgba(0, 0, 0, 0.6);
+  --shadow-glow: 0 0 20px var(--primary-glow);
+  --shadow-success: 0 4px 12px rgba(63, 185, 80, 0.3);
+  --shadow-error: 0 4px 12px rgba(248, 81, 73, 0.3);
+  --shadow-primary: 0 4px 12px var(--primary-glow);
+  
+  /* ========== Spacing ========== */
+  --spacing-xs: 0.25rem;
+  --spacing-sm: 0.5rem;
+  --spacing-md: 1rem;
+  --spacing-lg: 1.5rem;
+  --spacing-xl: 2rem;
+  --spacing-2xl: 3rem;
+  
+  /* ========== Border Radius ========== */
+  --radius-sm: 0.375rem;
+  --radius-md: 0.5rem;
+  --radius-lg: 0.75rem;
+  --radius-xl: 1rem;
+  --radius-2xl: 1.5rem;
+  --radius-full: 9999px;
+  
+  /* ========== Typography ========== */
+  --font-family: 'Poppins', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --font-mono: 'SF Mono', 'Fira Code', monospace;
+  
+  --font-size-xs: 0.75rem;
+  --font-size-sm: 0.875rem;
+  --font-size-base: 1rem;
+  --font-size-lg: 1.125rem;
+  --font-size-xl: 1.25rem;
+  --font-size-2xl: 1.5rem;
+  --font-size-3xl: 2rem;
+  
+  --font-weight-normal: 400;
+  --font-weight-medium: 500;
+  --font-weight-semibold: 600;
+  --font-weight-bold: 700;
+  
+  --line-height-tight: 1.25;
+  --line-height-normal: 1.5;
+  --line-height-relaxed: 1.75;
+  
+  /* ========== Transitions ========== */
+  --transition-fast: 150ms ease;
+  --transition-base: 200ms ease;
+  --transition-slow: 300ms ease;
+  --transition-bounce: 300ms cubic-bezier(0.68, -0.55, 0.265, 1.55);
+  
+  /* ========== Z-Index ========== */
+  --z-dropdown: 100;
+  --z-sticky: 200;
+  --z-fixed: 300;
+  --z-modal-backdrop: 400;
+  --z-modal: 500;
+  --z-popover: 600;
+  --z-tooltip: 700;
+  --z-toast: 800;
+  
+  /* ========== Layout ========== */
+  --navbar-height: 4rem;
+  --sidebar-width: 260px;
+  --sidebar-collapsed-width: 70px;
+}
+
+/* ============================================
+   BASE STYLES
+   ============================================ */
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html {
+  font-size: 16px;
+  scroll-behavior: smooth;
+}
+
+body {
+  font-family: var(--font-family);
+  font-size: var(--font-size-base);
+  line-height: var(--line-height-normal);
+  color: var(--text-primary);
+  background-color: var(--bg-primary);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* ============================================
+   SCROLLBAR STYLES
+   ============================================ */
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--bg-secondary);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--border-primary);
+  border-radius: var(--radius-full);
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--text-tertiary);
+}
+
+/* ============================================
+   SELECTION STYLES
+   ============================================ */
+
+::selection {
+  background-color: var(--primary);
+  color: white;
+}
+
+/* ============================================
+   FOCUS STYLES
+   ============================================ */
+
+:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+
+/* ============================================
+   LINK STYLES
+   ============================================ */
+
+a {
+  color: var(--info);
+  text-decoration: none;
+  transition: color var(--transition-fast);
+}
+
+a:hover {
+  color: var(--primary-light);
+}
+
+/* ============================================
+   UTILITY CLASSES
+   ============================================ */
+
+.text-primary { color: var(--text-primary); }
+.text-secondary { color: var(--text-secondary); }
+.text-muted { color: var(--text-muted); }
+.text-accent { color: var(--accent); }
+.text-success { color: var(--success); }
+.text-warning { color: var(--warning); }
+.text-error { color: var(--error); }
+
+.bg-primary { background-color: var(--bg-primary); }
+.bg-secondary { background-color: var(--bg-secondary); }
+.bg-elevated { background-color: var(--bg-elevated); }
+
+.gradient-primary { background: var(--gradient-primary); }
+.gradient-success { background: var(--gradient-success); }
+.gradient-error { background: var(--gradient-error); }

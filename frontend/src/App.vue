@@ -27,6 +27,11 @@ const handleLogout = () => {
   currentView.value = 'dashboard'
 }
 
+// Navegación entre vistas
+const handleNavigate = (view) => {
+  currentView.value = view
+}
+
 // Verificar Magic Link al cargar
 onMounted(async () => {
   const urlParams = new URLSearchParams(window.location.search)
@@ -51,45 +56,39 @@ onMounted(async () => {
     @success="handleLoginSuccess" 
   />
 
-  <div v-else class="app-layout">
-    <aside class="sidebar">
-      <div class="user-info">
-        <h3>Video SaaS</h3>
-        <small>Rol: {{ user?.role }}</small>
-      </div>
-      
-      <nav class="nav-menu">
-        <button @click="currentView = 'dashboard'" :class="{ active: currentView === 'dashboard' }">
-          📹 Mis Cámaras
-        </button>
-        <button 
-          v-if="user?.role === 'superadmin'" 
-          @click="currentView = 'admin'" 
-          :class="{ active: currentView === 'admin' }"
-          class="btn-admin"
-        >
-          ⚡ SuperAdmin
-        </button>
-      </nav>
-      
-      <button @click="handleLogout" class="btn-logout">Salir</button>
-    </aside>
-
-    <main class="content">
-      <UserDashboard v-if="currentView === 'dashboard'" :token="token" :user="user" @logout="handleLogout" />
-      <AdminDashboard v-if="currentView === 'admin'" :token="token" />
-    </main>
+  <div v-else class="app-container">
+    <UserDashboard 
+      v-if="currentView === 'dashboard'" 
+      :token="token" 
+      :user="user" 
+      @logout="handleLogout"
+      @navigate="handleNavigate"
+    />
+    <AdminDashboard 
+      v-if="currentView === 'admin'" 
+      :token="token"
+      :user="user"
+      @logout="handleLogout"
+      @navigate="handleNavigate"
+    />
   </div>
 </template>
 
 <style>
-/* Estilos Globales del Layout */
-body { margin: 0; font-family: sans-serif; background: #f0f2f5; }
-.app-layout { display: flex; height: 100vh; }
-.sidebar { width: 250px; background: #1e1e2d; color: white; padding: 20px; display: flex; flex-direction: column; }
-.content { flex: 1; padding: 20px; overflow-y: auto; }
-.nav-menu { display: flex; flex-direction: column; gap: 10px; margin-bottom: auto; border-top: 1px solid #333; padding-top: 20px; }
-.nav-menu button { background: transparent; color: #ccc; border: none; text-align: left; padding: 10px; cursor: pointer; }
-.nav-menu button.active { color: white; font-weight: bold; border-left: 3px solid #7367f0; }
-.btn-logout { margin-top: auto; background: #333; color: white; border: none; padding: 10px; cursor: pointer; }
+/* Reset y estilos base - el tema viene de theme.css */
+* {
+  box-sizing: border-box;
+}
+
+body { 
+  margin: 0; 
+  font-family: 'Poppins', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; 
+  background: #0d1117;
+  color: #c9d1d9;
+}
+
+.app-container {
+  min-height: 100vh;
+  background: #0d1117;
+}
 </style>

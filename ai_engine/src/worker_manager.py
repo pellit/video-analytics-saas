@@ -151,6 +151,7 @@ def stream_thread(camera_id, url):
         face_enabled = False
         depth_enabled = False
         bev_enabled = False
+        tracking_enabled = False
         with global_state['lock']:
             stream = global_state['streams'].get(str(camera_id))
             if stream:
@@ -158,6 +159,7 @@ def stream_thread(camera_id, url):
                 face_enabled = stream.get('face_enabled', False)
                 depth_enabled = stream.get('depth_enabled', False)
                 bev_enabled = stream.get('bev_enabled', False)
+                tracking_enabled = stream.get('tracking_enabled', False)
 
         # Inferencia YOLO
         classes_indices = []
@@ -167,44 +169,55 @@ def stream_thread(camera_id, url):
                 if cls_name in detection_classes:
                     classes_indices.append(idx)
         
-        if classes_indices:
-            results = model(frame, classes=classes_indices, verbose=False)
+        # Use tracking or regular detection based on config
+        if tracking_enabled:
+            # YOLO native tracking with BoT-SORT
+            if classes_indices:
+                results = model.track(frame, classes=classes_indices, verbose=False, persist=True, tracker="botsort.yaml")
+            elif detection_classes and not classes_indices:
+                results = model.track(frame, classes=[], verbose=False, persist=True, tracker="botsort.yaml")
+            else:
+                results = model.track(frame, verbose=False, persist=True, tracker="botsort.yaml")
         else:
-            # If classes list is provided but empty/invalid, we might want to detect nothing or everything?
-            # Logic: if detection_classes is not empty but no match found, detect nothing.
-            # If detection_classes is empty (default), detect everything.
-            if detection_classes and not classes_indices:
-                results = model(frame, classes=[], verbose=False) # Detect nothing
+            # Regular detection without tracking
+            if classes_indices:
+                results = model(frame, classes=classes_indices, verbose=False)
+            elif detection_classes and not classes_indices:
+                results = model(frame, classes=[], verbose=False)
             else:
                 results = model(frame, verbose=False)
 
+        # Plot results - tracking IDs are automatically shown when using track()
         annotated_frame = results[0].plot()
 
         # Depth / 3D Logic
         if depth_enabled:
             try:
-                # Collect detections for Depth Service
+                # Collect detections for Depth Service (including track IDs if available)
                 detections_list = []
                 for box in results[0].boxes:
                      label = results[0].names.get(int(box.cls), str(int(box.cls))) if results[0].names else str(int(box.cls))
-                     detections_list.append({
+                     det_item = {
                          'label': label,
                          'bbox': box.xyxy[0].tolist(),
                          'score': float(box.conf)
-                     })
+                     }
+                     # Add track ID if tracking is enabled
+                     if tracking_enabled and hasattr(box, 'id') and box.id is not None:
+                         det_item['track_id'] = int(box.id)
+                     detections_list.append(det_item)
                 
-                annotated_frame, bev_map = depth_service.process_3d_view(annotated_frame, detections_list, enable_bev=bev_enabled)
+                annotated_frame, bev_map, bev_data = depth_service.process_3d_view(annotated_frame, detections_list, enable_bev=bev_enabled)
                 
-                if bev_enabled and bev_map is not None:
-                     # Stitch BEV to the right
-                     h, w = annotated_frame.shape[:2]
-                     bh, bw = bev_map.shape[:2]
-                     # Resize BEV to match frame height
-                     if bh > 0:
-                        scale = h / bh
-                        new_bw = int(bw * scale)
-                        bev_resized = cv2.resize(bev_map, (new_bw, h))
-                        annotated_frame = np.hstack((annotated_frame, bev_resized))
+                # Send BEV data to frontend via Redis (no concatenation to video)
+                if bev_enabled and bev_data and bev_data['objects']:
+                    bev_event = {
+                        'camera_id': int(camera_id),
+                        'event': 'bev_update',
+                        'bev_data': bev_data
+                    }
+                    r.publish('bev_events', json.dumps(bev_event))
+                
             except Exception as e:
                 print(f"⚠️ Depth error: {e}")
 
@@ -295,6 +308,9 @@ def redis_listener_loop():
                     face_enabled = data.get('face_recognition_enabled', False)
                     depth_enabled = data.get('depth_enabled', False)
                     bev_enabled = data.get('bev_enabled', False)
+                    tracking_enabled = data.get('tracking', False)  # Tracking option
+                    
+                    print(f"🎯 Config - Classes: {len(detection_classes) if detection_classes else 'all'}, Face: {face_enabled}, Depth: {depth_enabled}, BEV: {bev_enabled}, Tracking: {tracking_enabled}")
                     
                     with global_state['lock']:
                         if cam_id not in global_state['streams']:
@@ -307,7 +323,8 @@ def redis_listener_loop():
                                 'detection_classes': detection_classes,
                                 'face_enabled': face_enabled,
                                 'depth_enabled': depth_enabled,
-                                'bev_enabled': bev_enabled
+                                'bev_enabled': bev_enabled,
+                                'tracking_enabled': tracking_enabled
                             }
                         else:
                             global_state['streams'][cam_id]['active'] = True
@@ -316,6 +333,7 @@ def redis_listener_loop():
                             global_state['streams'][cam_id]['face_enabled'] = face_enabled
                             global_state['streams'][cam_id]['depth_enabled'] = depth_enabled
                             global_state['streams'][cam_id]['bev_enabled'] = bev_enabled
+                            global_state['streams'][cam_id]['tracking_enabled'] = tracking_enabled
                         
                         # Launch thread if missing
                         if not global_state['streams'][cam_id].get('thread'):

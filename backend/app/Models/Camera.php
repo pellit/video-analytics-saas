@@ -21,6 +21,7 @@ class Camera extends Model
         'face_recognition_enabled',
         'depth_enabled',
         'bev_enabled',
+        'tracking',
         'roi_settings',
         'roi_points'
     ];
@@ -31,6 +32,7 @@ class Camera extends Model
         'face_recognition_enabled' => 'boolean',
         'depth_enabled' => 'boolean',
         'bev_enabled' => 'boolean',
+        'tracking' => 'boolean',
         'roi_settings' => 'array',
     ];
 
