@@ -2,6 +2,7 @@
 import { ref, onMounted, computed, watch, nextTick, onUnmounted } from 'vue'
 import NavBar from './NavBar.vue'
 import FaceRecognitionPanel from './FaceRecognitionPanel.vue'
+import ToastNotification from './ToastNotification.vue'
 
 const props = defineProps(['token', 'user'])
 const emit = defineEmits(['logout', 'navigate'])
@@ -86,6 +87,18 @@ onUnmounted(() => {
   document.body.style.overflow = ''
 })
 
+// Toast notification state
+const toast = ref({ show: false, message: '', type: 'success' })
+const showToast = (message, type = 'success') => {
+  toast.value = { show: true, message, type }
+}
+const closeToast = () => {
+  toast.value.show = false
+}
+
+// Settings panel accordion state
+const settingsSection = ref('detection') // 'detection', 'face', 'advanced', 'alerts'
+
 // Update fullscreen stats from detections
 const updateFullscreenStats = (detection) => {
   const label = detection.event || detection.label || ''
@@ -135,17 +148,17 @@ const fetchCameras = async () => {
         if (cameras.value.length > 0) activeCamera.value = cameras.value[0]
     } else {
         if (res.status === 401) {
-            alert('Sesión expirada. Por favor inicie sesión nuevamente.')
+            showToast('Sesión expirada. Por favor inicie sesión nuevamente.', 'error')
             emit('logout')
             return
         }
         const body = await res.json().catch(() => null)
         console.error('Error fetching cameras', res.status, body)
-        alert(body?.message || 'No se pudieron cargar las cámaras')
+        showToast(body?.message || 'No se pudieron cargar las cámaras', 'error')
     }
   } catch (e) {
     console.error(e)
-    alert('Error de red al cargar cámaras')
+    showToast('Error de red al cargar cámaras', 'error')
   }
 }
 
@@ -170,14 +183,14 @@ const addCamera = async () => {
     const data = await res.json().catch(() => null)
     if (!res.ok) {
       console.error('Create camera failed', res.status, data)
-      alert(data?.message || 'No se pudo crear la cámara')
+      showToast(data?.message || 'No se pudo crear la cámara', 'error')
       return
     }
-    alert('Cámara creada correctamente')
+    showToast('Cámara creada correctamente', 'success')
     showAdd.value = false; newCam.value = { name: '', url: '' }; fetchCameras()
   } catch (e) {
     console.error(e)
-    alert('Error de red al crear la cámara')
+    showToast('Error de red al crear la cámara', 'error')
   }
 }
 
@@ -374,7 +387,7 @@ const updateCameraSettings = async (camera) => {
     if (!res.ok) {
       const body = await res.json().catch(() => null)
       console.error('Error response:', res.status, body)
-      alert('No se pudo actualizar configuración: ' + (body?.message || body?.error || `Error ${res.status}`))
+      showToast('No se pudo actualizar configuración: ' + (body?.message || body?.error || `Error ${res.status}`), 'error')
       // Recargar cámaras para restaurar estado original
       await fetchCameras()
       return
@@ -384,7 +397,7 @@ const updateCameraSettings = async (camera) => {
     // Actualizar la cámara local con los datos del servidor
     Object.assign(camera, initializeCameraDefaults(updatedCamera))
     
-    alert('Configuración actualizada correctamente')
+    showToast('Configuración actualizada correctamente', 'success')
     
     // Si estaba procesando, reiniciar con nueva configuración
     if (wasProcessing) {
@@ -400,7 +413,7 @@ const updateCameraSettings = async (camera) => {
     
   } catch (e) { 
     console.error('Error de red:', e)
-    alert('Error de red al actualizar cámara. Verifique la conexión.')
+    showToast('Error de red al actualizar cámara. Verifique la conexión.', 'error')
     // Recargar cámaras para restaurar estado original
     await fetchCameras()
   } finally {
@@ -478,14 +491,14 @@ const toggleAnalysis = async (start, backgroundOnly = false) => {
   })
   
   if (res.status === 401) {
-      alert('Sesión expirada. Por favor inicie sesión nuevamente.')
+      showToast('Sesión expirada. Por favor inicie sesión nuevamente.', 'error')
       emit('logout')
       return
   }
 
   if (!res.ok) {
       const body = await res.json().catch(() => null)
-      alert('Error al cambiar estado: ' + (body?.message || res.status))
+      showToast('Error al cambiar estado: ' + (body?.message || res.status), 'error')
       return
   }
 
@@ -595,8 +608,9 @@ const initSSE = () => {
   eventSource.addEventListener('alerts', (e) => {
     try { const payload = JSON.parse(e.data); alerts.value.unshift(payload); if (alerts.value.length>20) alerts.value.pop() } catch(e){}
   })
-  eventSource.onopen = () => console.log('SSE connected')
-  eventSource.onerror = (err) => { console.warn('SSE error', err); }
+  // Debug SSE - descomentar si necesitas depurar conexión SSE
+  // eventSource.onopen = () => console.log('SSE connected')
+  // eventSource.onerror = (err) => { console.warn('SSE error', err); }
 }
 onMounted(() => { initSSE() })
 onUnmounted(async () => { 
@@ -649,13 +663,21 @@ const closeProfileModal = () => {
 
 const saveProfile = async () => {
   // TODO: Implement profile update API call
-  alert('Perfil actualizado (pendiente implementar)')
+  showToast('Perfil actualizado (pendiente implementar)', 'info')
   closeProfileModal()
 }
 </script>
 
 <template>
   <div class="app-layout">
+    <!-- Toast Notification -->
+    <ToastNotification 
+      :show="toast.show" 
+      :message="toast.message" 
+      :type="toast.type"
+      @close="closeToast"
+    />
+
     <!-- NavBar Component -->
     <NavBar 
       :user="user" 
@@ -737,115 +759,166 @@ const saveProfile = async () => {
         </div>
 
         <!-- Control Panel (Right Side) -->
-        <div class="control-panel">
+        <div class="control-panel" v-if="user?.role === 'superadmin'">
           
-          <!-- Settings Tab -->
-          <div class="panel-section" v-if="user?.role === 'superadmin'">
-            <h3>Configuración AI</h3>
+          <!-- Accordion Settings -->
+          <div class="settings-accordion">
             
-            <div class="setting-group">
-              <label class="switch">
-                <input type="checkbox" v-model="activeCamera.detection_enabled">
-                <span class="slider round"></span>
-                <span class="label-text">Detección de Objetos</span>
-              </label>
-            </div>
-
-            <div class="setting-group" v-if="activeCamera.detection_enabled">
-              <label>Modelo</label>
-              <select v-model="activeCamera.detection_model" class="dark-select">
-                  <option value="onnx">ONNX (⚡ Más Rápido) ⭐</option>
-                  <option value="yolo_nas_s">YOLO-NAS Small</option>
-                  <option value="yolo_nas_m">YOLO-NAS Medium</option>
-                  <option value="yolo_nas_l">YOLO-NAS Large (Preciso)</option>
-                  <option value="rt_detr">RT-DETR (Transformer)</option>
-              </select>
-              <small class="model-note">✅ Modelos con licencia Apache 2.0 | ONNX es 2-3x más rápido en CPU</small>
-            </div>
-
-            <div class="setting-group" v-if="activeCamera.detection_enabled">
-              <label>Clases a Detectar</label>
-              <div class="class-actions">
-                <button type="button" @click="selectAllClasses" class="btn-small">Seleccionar Todas</button>
-                <button type="button" @click="deselectAllClasses" class="btn-small btn-secondary">Deseleccionar Todas</button>
-                <span class="class-count">{{ activeCamera.detection_classes?.length || 0 }}/{{ availableClasses.length }}</span>
-              </div>
-              <div class="multi-select-box">
-                <label v-for="cls in availableClasses" :key="cls" class="checkbox-item">
-                  <input type="checkbox" :value="cls" v-model="activeCamera.detection_classes">
-                  {{ cls }}
-                </label>
-              </div>
-            </div>
-
-            <div class="setting-group">
-              <label class="switch">
-                <input type="checkbox" v-model="activeCamera.face_recognition_enabled">
-                <span class="slider round"></span>
-                <span class="label-text">Reconocimiento Facial (YuNet/SFace)</span>
-              </label>
-              <button 
-                v-if="activeCamera.face_recognition_enabled" 
-                @click="showFacePanel = !showFacePanel"
-                class="btn-view-faces"
-              >
-                {{ showFacePanel ? '✕ Cerrar' : '👤 Ver Caras' }}
+            <!-- Detection Section -->
+            <div class="accordion-item" :class="{ open: settingsSection === 'detection' }">
+              <button class="accordion-header" @click="settingsSection = settingsSection === 'detection' ? '' : 'detection'">
+                <span class="accordion-icon">🎯</span>
+                <span class="accordion-title">Detección</span>
+                <span class="accordion-status" :class="{ active: activeCamera?.detection_enabled }">
+                  {{ activeCamera?.detection_enabled ? 'ON' : 'OFF' }}
+                </span>
+                <span class="accordion-arrow">{{ settingsSection === 'detection' ? '▲' : '▼' }}</span>
               </button>
+              <div class="accordion-content" v-show="settingsSection === 'detection'">
+                <div class="setting-row">
+                  <label class="toggle-switch">
+                    <input type="checkbox" v-model="activeCamera.detection_enabled">
+                    <span class="toggle-slider"></span>
+                  </label>
+                  <span class="setting-label">Activar detección</span>
+                </div>
+                
+                <div v-if="activeCamera.detection_enabled" class="nested-settings">
+                  <div class="setting-row">
+                    <label class="setting-label">Modelo AI</label>
+                    <select v-model="activeCamera.detection_model" class="compact-select">
+                      <option value="onnx">⚡ ONNX (Rápido)</option>
+                      <option value="yolo_nas_s">YOLO-NAS S</option>
+                      <option value="yolo_nas_m">YOLO-NAS M</option>
+                      <option value="rt_detr">RT-DETR</option>
+                    </select>
+                  </div>
+                  
+                  <div class="setting-row classes-row">
+                    <div class="classes-header">
+                      <span class="setting-label">Clases</span>
+                      <span class="class-badge">{{ activeCamera.detection_classes?.length || 0 }}/{{ availableClasses.length }}</span>
+                    </div>
+                    <div class="class-buttons">
+                      <button type="button" @click="selectAllClasses" class="btn-mini">Todas</button>
+                      <button type="button" @click="deselectAllClasses" class="btn-mini ghost">Ninguna</button>
+                    </div>
+                  </div>
+                  <div class="classes-grid">
+                    <label v-for="cls in availableClasses" :key="cls" class="class-chip" :class="{ selected: activeCamera.detection_classes?.includes(cls) }">
+                      <input type="checkbox" :value="cls" v-model="activeCamera.detection_classes" hidden>
+                      {{ cls }}
+                    </label>
+                  </div>
+                </div>
+              </div>
             </div>
 
-            <div class="setting-group">
-              <label class="switch">
-                <input type="checkbox" v-model="activeCamera.depth_enabled">
-                <span class="slider round"></span>
-                <span class="label-text">Estimación de Profundidad (Depth Anything v2)</span>
-              </label>
+            <!-- Face Recognition Section -->
+            <div class="accordion-item" :class="{ open: settingsSection === 'face' }">
+              <button class="accordion-header" @click="settingsSection = settingsSection === 'face' ? '' : 'face'">
+                <span class="accordion-icon">👤</span>
+                <span class="accordion-title">Reconocimiento Facial</span>
+                <span class="accordion-status" :class="{ active: activeCamera?.face_recognition_enabled }">
+                  {{ activeCamera?.face_recognition_enabled ? 'ON' : 'OFF' }}
+                </span>
+                <span class="accordion-arrow">{{ settingsSection === 'face' ? '▲' : '▼' }}</span>
+              </button>
+              <div class="accordion-content" v-show="settingsSection === 'face'">
+                <div class="setting-row">
+                  <label class="toggle-switch">
+                    <input type="checkbox" v-model="activeCamera.face_recognition_enabled">
+                    <span class="toggle-slider"></span>
+                  </label>
+                  <span class="setting-label">Activar reconocimiento</span>
+                </div>
+                <button 
+                  v-if="activeCamera.face_recognition_enabled" 
+                  @click="showFacePanel = !showFacePanel"
+                  class="btn-faces"
+                >
+                  {{ showFacePanel ? '✕ Cerrar Panel' : '👤 Gestionar Caras' }}
+                </button>
+              </div>
             </div>
 
-            <div class="setting-group" v-if="activeCamera.depth_enabled">
-              <label class="switch">
-                <input type="checkbox" v-model="activeCamera.bev_enabled">
-                <span class="slider round"></span>
-                <span class="label-text">Vista de Pájaro (BEV)</span>
-              </label>
+            <!-- Advanced Section -->
+            <div class="accordion-item" :class="{ open: settingsSection === 'advanced' }">
+              <button class="accordion-header" @click="settingsSection = settingsSection === 'advanced' ? '' : 'advanced'">
+                <span class="accordion-icon">⚙️</span>
+                <span class="accordion-title">Avanzado</span>
+                <span class="accordion-arrow">{{ settingsSection === 'advanced' ? '▲' : '▼' }}</span>
+              </button>
+              <div class="accordion-content" v-show="settingsSection === 'advanced'">
+                <div class="setting-row">
+                  <label class="toggle-switch">
+                    <input type="checkbox" v-model="activeCamera.depth_enabled">
+                    <span class="toggle-slider"></span>
+                  </label>
+                  <span class="setting-label">Profundidad (Depth)</span>
+                </div>
+                
+                <div class="setting-row" v-if="activeCamera.depth_enabled">
+                  <label class="toggle-switch">
+                    <input type="checkbox" v-model="activeCamera.bev_enabled">
+                    <span class="toggle-slider"></span>
+                  </label>
+                  <span class="setting-label">Vista Aérea (BEV)</span>
+                </div>
+                
+                <div class="setting-row">
+                  <label class="toggle-switch">
+                    <input type="checkbox" v-model="activeCamera.tracking">
+                    <span class="toggle-slider"></span>
+                  </label>
+                  <span class="setting-label">Tracking</span>
+                </div>
+                
+                <div class="setting-row">
+                  <label class="toggle-switch">
+                    <input type="checkbox" v-model="runInBackground">
+                    <span class="toggle-slider"></span>
+                  </label>
+                  <span class="setting-label">Ejecutar en 2do plano</span>
+                </div>
+              </div>
             </div>
 
-            <div class="setting-group">
-              <label class="switch">
-                <input type="checkbox" v-model="activeCamera.tracking">
-                <span class="slider round"></span>
-                <span class="label-text">Seguimiento (Tracking)</span>
-              </label>
+            <!-- Alerts Section -->
+            <div class="accordion-item" :class="{ open: settingsSection === 'alerts' }">
+              <button class="accordion-header" @click="settingsSection = settingsSection === 'alerts' ? '' : 'alerts'">
+                <span class="accordion-icon">🔔</span>
+                <span class="accordion-title">Crear Alerta</span>
+                <span class="accordion-arrow">{{ settingsSection === 'alerts' ? '▲' : '▼' }}</span>
+              </button>
+              <div class="accordion-content" v-show="settingsSection === 'alerts'">
+                <div class="alert-form">
+                  <input v-model="newAlertName" placeholder="Nombre de la alerta" class="form-input" />
+                  <select v-model="newAlertEvent" class="form-input">
+                    <option value="person_detected">Persona Detectada</option>
+                    <option value="car_detected">Vehículo Detectado</option>
+                    <option value="intrusion">Intrusión en Zona</option>
+                  </select>
+                  <div class="threshold-row">
+                    <label>Umbral</label>
+                    <input v-model.number="newAlertThreshold" type="number" step="0.1" min="0" max="1" class="form-input small" />
+                  </div>
+                  <button @click="createAlert(activeCamera, newAlertName, newAlertEvent, newAlertThreshold)" class="btn-create-alert">
+                    + Crear Alerta
+                  </button>
+                </div>
+              </div>
             </div>
+          </div>
 
-             <div class="setting-group">
-              <label class="switch">
-                <input type="checkbox" v-model="runInBackground">
-                <span class="slider round"></span>
-                <span class="label-text">Ejecutar en 2do plano</span>
-              </label>
-            </div>
-
-            <button @click="updateCameraSettings(activeCamera)" class="btn-save" :disabled="isSaving">
-              {{ isSaving ? 'Guardando...' : 'Guardar Cambios' }}
+          <!-- Save Button -->
+          <div class="save-section">
+            <button @click="updateCameraSettings(activeCamera)" class="btn-save-main" :disabled="isSaving">
+              <span v-if="isSaving" class="spinner-small"></span>
+              {{ isSaving ? 'Guardando...' : '💾 Guardar Cambios' }}
             </button>
-            <p v-if="isProcessing" class="save-note">⚠️ El stream se reiniciará para aplicar los cambios</p>
+            <p v-if="isProcessing" class="save-hint">El stream se reiniciará al guardar</p>
           </div>
-
-          <!-- Alerts Creator -->
-          <div class="panel-section" v-if="user?.role === 'superadmin'">
-            <h3>Crear Regla</h3>
-            <div class="form-row">
-              <input v-model="newAlertName" placeholder="Nombre" class="dark-input" />
-              <input v-model.number="newAlertThreshold" placeholder="Umbral" type="number" step="0.1" class="dark-input small" />
-            </div>
-            <select v-model="newAlertEvent" class="dark-select">
-              <option value="person_detected">Persona Detectada</option>
-              <option value="car_detected">Vehículo Detectado</option>
-              <option value="intrusion">Intrusión en Zona</option>
-            </select>
-            <button @click="createAlert(activeCamera, newAlertName, newAlertEvent, newAlertThreshold)" class="btn-action">Crear Alerta</button>
-          </div>
-
         </div>
       </div>
 
@@ -1353,6 +1426,342 @@ iframe.stream {
   opacity: 0.6;
   cursor: not-allowed;
 }
+
+/* Settings Accordion */
+.settings-accordion {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.accordion-item {
+  background: #1c1c1c;
+  border: 1px solid #333;
+  border-radius: 0.5rem;
+  overflow: hidden;
+  transition: all 0.2s ease;
+}
+
+.accordion-item.open {
+  border-color: #484f58;
+}
+
+.accordion-header {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.75rem;
+  background: transparent;
+  border: none;
+  color: #c9d1d9;
+  cursor: pointer;
+  font-size: 0.85rem;
+  font-weight: 500;
+  transition: all 0.15s ease;
+}
+
+.accordion-header:hover {
+  background: #252526;
+}
+
+.accordion-icon {
+  font-size: 1rem;
+}
+
+.accordion-title {
+  flex: 1;
+  text-align: left;
+}
+
+.accordion-status {
+  font-size: 0.65rem;
+  font-weight: 600;
+  padding: 0.2rem 0.5rem;
+  border-radius: 0.25rem;
+  background: #484f58;
+  color: #8b949e;
+}
+
+.accordion-status.active {
+  background: linear-gradient(135deg, #238636, #2ea043);
+  color: white;
+}
+
+.accordion-arrow {
+  font-size: 0.65rem;
+  color: #8b949e;
+}
+
+.accordion-content {
+  padding: 0.75rem;
+  background: #161616;
+  border-top: 1px solid #333;
+}
+
+.setting-row {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-bottom: 0.75rem;
+}
+
+.setting-row:last-child {
+  margin-bottom: 0;
+}
+
+.setting-label {
+  font-size: 0.8rem;
+  color: #c9d1d9;
+}
+
+/* Toggle Switch (New Style) */
+.toggle-switch {
+  position: relative;
+  width: 36px;
+  height: 20px;
+  flex-shrink: 0;
+}
+
+.toggle-switch input {
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.toggle-slider {
+  position: absolute;
+  cursor: pointer;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: #484f58;
+  border-radius: 20px;
+  transition: all 0.3s ease;
+}
+
+.toggle-slider:before {
+  position: absolute;
+  content: "";
+  height: 14px;
+  width: 14px;
+  left: 3px;
+  bottom: 3px;
+  background: white;
+  border-radius: 50%;
+  transition: all 0.3s ease;
+}
+
+.toggle-switch input:checked + .toggle-slider {
+  background: linear-gradient(135deg, #238636, #2ea043);
+}
+
+.toggle-switch input:checked + .toggle-slider:before {
+  transform: translateX(16px);
+}
+
+.nested-settings {
+  margin-top: 0.75rem;
+  padding-top: 0.75rem;
+  border-top: 1px dashed #333;
+}
+
+.compact-select {
+  flex: 1;
+  background: #252526;
+  border: 1px solid #484f58;
+  color: #c9d1d9;
+  padding: 0.4rem 0.6rem;
+  border-radius: 0.35rem;
+  font-size: 0.8rem;
+}
+
+.classes-row {
+  flex-direction: column;
+  align-items: stretch;
+}
+
+.classes-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 0.5rem;
+}
+
+.class-badge {
+  font-size: 0.7rem;
+  color: #8b949e;
+  background: #252526;
+  padding: 0.15rem 0.4rem;
+  border-radius: 0.25rem;
+}
+
+.class-buttons {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.btn-mini {
+  padding: 0.25rem 0.5rem;
+  font-size: 0.7rem;
+  background: linear-gradient(135deg, #1f6feb, #388bfd);
+  border: none;
+  border-radius: 0.25rem;
+  color: white;
+  cursor: pointer;
+  font-weight: 500;
+}
+
+.btn-mini.ghost {
+  background: transparent;
+  border: 1px solid #484f58;
+  color: #8b949e;
+}
+
+.classes-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  max-height: 120px;
+  overflow-y: auto;
+  padding: 0.5rem;
+  background: #1c1c1c;
+  border-radius: 0.35rem;
+}
+
+.class-chip {
+  font-size: 0.7rem;
+  padding: 0.2rem 0.5rem;
+  background: #252526;
+  border: 1px solid #333;
+  border-radius: 0.25rem;
+  color: #8b949e;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.class-chip:hover {
+  border-color: #484f58;
+}
+
+.class-chip.selected {
+  background: linear-gradient(135deg, rgba(31, 111, 235, 0.2), rgba(56, 139, 253, 0.2));
+  border-color: #1f6feb;
+  color: #58a6ff;
+}
+
+.btn-faces {
+  width: 100%;
+  margin-top: 0.75rem;
+  padding: 0.5rem;
+  background: linear-gradient(135deg, #8b5cf6, #a78bfa);
+  border: none;
+  border-radius: 0.35rem;
+  color: white;
+  font-size: 0.8rem;
+  cursor: pointer;
+  font-weight: 500;
+}
+
+/* Alert Form */
+.alert-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.form-input {
+  width: 100%;
+  background: #252526;
+  border: 1px solid #484f58;
+  color: #c9d1d9;
+  padding: 0.5rem 0.6rem;
+  border-radius: 0.35rem;
+  font-size: 0.8rem;
+}
+
+.form-input.small {
+  width: 80px;
+}
+
+.threshold-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.threshold-row label {
+  font-size: 0.8rem;
+  color: #8b949e;
+}
+
+.btn-create-alert {
+  padding: 0.5rem;
+  background: linear-gradient(135deg, #f0883e, #fb8532);
+  border: none;
+  border-radius: 0.35rem;
+  color: white;
+  font-size: 0.8rem;
+  cursor: pointer;
+  font-weight: 500;
+}
+
+/* Save Section */
+.save-section {
+  margin-top: 1rem;
+  padding-top: 1rem;
+  border-top: 1px solid #333;
+}
+
+.btn-save-main {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  padding: 0.75rem;
+  background: linear-gradient(135deg, #1f6feb, #388bfd);
+  border: none;
+  border-radius: 0.5rem;
+  color: white;
+  font-size: 0.9rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.btn-save-main:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(31, 111, 235, 0.3);
+}
+
+.btn-save-main:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+  transform: none;
+}
+
+.spinner-small {
+  width: 14px;
+  height: 14px;
+  border: 2px solid rgba(255,255,255,0.3);
+  border-top-color: white;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+.save-hint {
+  font-size: 0.7rem;
+  color: #f0883e;
+  text-align: center;
+  margin-top: 0.5rem;
+}
+
 .checkbox-item {
   display: flex;
   align-items: center;

@@ -149,6 +149,7 @@ onUnmounted(() => {
             <line x1="12" y1="17" x2="12" y2="21"/>
           </svg>
           <span>Cámaras</span>
+          <span class="nav-badge" :class="{ active: camerasOnline > 0 }">{{ camerasOnline }}</span>
         </button>
         <button 
           v-if="isSuperAdmin"
@@ -162,10 +163,6 @@ onUnmounted(() => {
           <span>Admin</span>
         </button>
       </nav>
-      <div class="status-chip" :class="{ active: camerasOnline > 0 }">
-        <span class="status-dot"></span>
-        <span class="status-text">{{ camerasOnline }} activa{{ camerasOnline !== 1 ? 's' : '' }}</span>
-      </div>
     </div>
 
     <!-- Mobile Menu Toggle -->
@@ -877,6 +874,33 @@ onUnmounted(() => {
 
 .nav-link.active svg {
   color: #a78bfa;
+}
+
+/* Badge inside nav-link */
+.nav-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1.25rem;
+  height: 1.25rem;
+  padding: 0 0.35rem;
+  background: var(--bg-elevated, #21262d);
+  border-radius: 0.375rem;
+  font-size: 0.7rem;
+  font-weight: 600;
+  color: var(--text-secondary, #8b949e);
+  margin-left: 0.25rem;
+}
+
+.nav-badge.active {
+  background: linear-gradient(135deg, #10b981, #34d399);
+  color: white;
+  animation: pulse-badge 2s infinite;
+}
+
+@keyframes pulse-badge {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.7; }
 }
 
 /* Mobile Menu Button */
