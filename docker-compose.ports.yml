@@ -1,17 +1,24 @@
-# docker-compose.ports.yml
-# Este archivo SOLO se usa en desarrollo local para exponer puertos
-# USO: docker compose -f docker-compose.yml -f docker-compose.dev.yml -f docker-compose.ports.yml up -d
+# docker-compose.local.yml
+# Este archivo SOLO se usa en desarrollo local para exponer puertos y montar volúmenes
+# USO: docker compose -f docker-compose.yml -f docker-compose.dev.yml -f docker-compose.local.yml up -d
 # NO usar en Dokploy/producción
 
 services:
   api:
     ports:
       - "8000:8000"
+    volumes:
+      - ./backend:/var/www/html
 
   frontend:
     ports:
       - "5173:5173"
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
 
   ai_worker:
     ports:
       - "5000:5000"
+    volumes:
+      - ./ai_engine:/app
