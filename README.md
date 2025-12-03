@@ -44,7 +44,7 @@ Utilizamos una estrategia de ramas estricta para garantizar la estabilidad en pr
 
 | Rama Git | Entorno | Configuración Docker | Propósito |
 | :--- | :--- | :--- | :--- |
-| `development` | **Local / Staging** | `docker-compose.yml` + `docker-compose.dev.yml` | Desarrollo activo, pruebas, hot-reloading. |
+| `development` | **Local / Staging** | `docker-compose.yml` + `docker-compose.dev.yml.local` | Desarrollo activo, pruebas, hot-reloading. |
 | `main` | **Producción** | `docker-compose.yml` (Base) | Versión estable, optimizada, sin herramientas de dev. |
 
 -----
@@ -60,11 +60,11 @@ Para trabajar en tu máquina con **Hot Reloading** (ver cambios al instante) y h
 
 ### 2\. Configuración Inicial
 
-Asegúrate de tener el archivo `docker-compose.dev.yml` (no incluido en el repo por defecto, créalo si no existe para habilitar volúmenes espejo):
+Asegúrate de tener el archivo `docker-compose.dev.yml.local` (no incluido en el repo por defecto, créalo si no existe para habilitar volúmenes espejo):
 
 ```bash
 # Levantar el entorno de desarrollo (fusiona config base + dev)
-docker-compose -f docker-compose.yml -f docker-compose.dev.yml up -d
+docker-compose -f docker-compose.yml -f docker-compose.dev.yml.local up -d
 ```
 
 ### 3\. Accesos Locales
@@ -117,7 +117,7 @@ MYSQL_ROOT_PASSWORD=secret_secure_password
 REDIS_HOST=redis
 REDIS_PORT=6379
   
-Note: Avoid exposing internal services like Redis on the host in production/Dokploy. We intentionally don't publish the Redis host port in `docker-compose.yml` to prevent port collisions with other system services. Configure the host side mapping only in dev (docker-compose.dev.yml) if you need host access.
+Note: Avoid exposing internal services like Redis on the host in production/Dokploy. We intentionally don't publish the Redis host port in `docker-compose.yml` to prevent port collisions with other system services. Configure the host side mapping only in dev (docker-compose.dev.yml.local) if you need host access.
 
 # Laravel
 APP_ENV=production
@@ -137,7 +137,7 @@ WORKER_API_KEY=your_worker_api_key_here
 ```text
 video-analytics-saas/
 ├── docker-compose.yml       # Configuración BASE (Producción)
-├── docker-compose.dev.yml   # Configuración DEV (Local override)
+├── docker-compose.dev.yml.local   # Configuración DEV (Local override)
 ├── backend/                 # Código Laravel (API)
 │   ├── app/Jobs/            # Jobs que envían tareas a Python
 │   └── Dockerfile           # PHP 8.2 FPM
@@ -177,15 +177,15 @@ Estás en la rama development. Para trabajar, necesitas fusionar el archivo base
 Bash+
 
 # Levanta usando ambos archivos
-COMPOSE_PROFILES=dev docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build
+COMPOSE_PROFILES=dev docker compose -f docker-compose.yml -f docker-compose.dev.yml.local up -d --build
 
-Nota: En vez de usar `docker compose -f docker-compose.yml -f docker-compose.dev.yml up`, ejecuta el comando con `COMPOSE_PROFILES=dev` para que los overrides (puertos y volúmenes orientados a dev) solo se apliquen cuando los quieras usar. Esto evita que servicios de dev expongan puertos en hosts compartidos como Dokploy.
+Nota: En vez de usar `docker compose -f docker-compose.yml -f docker-compose.dev.yml.local up`, ejecuta el comando con `COMPOSE_PROFILES=dev` para que los overrides (puertos y volúmenes orientados a dev) solo se apliquen cuando los quieras usar. Esto evita que servicios de dev expongan puertos en hosts compartidos como Dokploy.
 Tip: Crea un alias en tu terminal o un archivo Makefile para no escribir eso siempre. Por ejemplo, make dev.
 
 B. En Dockploy (Entorno de Staging / Pruebas)
 Aquí quieres ver cómo se comporta la rama development en un servidor real.
 
-⚠️ Nota importante: **No** incluyas `docker-compose.dev.yml` en el comando de despliegue dentro de Dockploy o tu CI/CD. El archivo `docker-compose.dev.yml` contiene ajustes para el entorno local (puertos publicados, volúmenes espejo, debug). Si lo incluyes en la ejecución del compose dentro de Dokploy, podrías provocar conflictos de puertos (por ejemplo el `api` intentando publicar 8000) o exponer servicios internos innecesarios.
+⚠️ Nota importante: **No** incluyas `docker-compose.dev.yml.local` en el comando de despliegue dentro de Dockploy o tu CI/CD. El archivo `docker-compose.dev.yml.local` contiene ajustes para el entorno local (puertos publicados, volúmenes espejo, debug). Si lo incluyes en la ejecución del compose dentro de Dokploy, podrías provocar conflictos de puertos (por ejemplo el `api` intentando publicar 8000) o exponer servicios internos innecesarios.
 Si necesitas exponer puertos específicos o usar overrides en Dockploy, hazlo mediante variables de entorno o mediante un `docker-compose.prod.yml` exclusivo de producción que use puertos/proxies adecuados.
 
 En Dockploy, crea un Nuevo Proyecto (ej: video-saas-staging).
@@ -196,8 +196,8 @@ Branch: Selecciona development.
 
 Despliega.
 
-¿Qué pasa aquí? Como Dockploy ejecuta docker-compose up estándar, *debería* ignorar el archivo `docker-compose.dev.yml`.
-⚠️ Nota importante: **No** incluyas `docker-compose.dev.yml` en el comando de despliegue dentro de Dockploy o tu CI/CD. El archivo `docker-compose.dev.yml` contiene ajustes para el entorno local (puertos publicados, volúmenes espejo, debug). Si lo incluyes en la ejecución del compose dentro de Dokploy, podrías provocar conflictos de puertos (por ejemplo el `api` intentando publicar 8000) o exponer servicios internos innecesarios.
+¿Qué pasa aquí? Como Dockploy ejecuta docker-compose up estándar, *debería* ignorar el archivo `docker-compose.dev.yml.local`.
+⚠️ Nota importante: **No** incluyas `docker-compose.dev.yml.local` en el comando de despliegue dentro de Dockploy o tu CI/CD. El archivo `docker-compose.dev.yml.local` contiene ajustes para el entorno local (puertos publicados, volúmenes espejo, debug). Si lo incluyes en la ejecución del compose dentro de Dokploy, podrías provocar conflictos de puertos (por ejemplo el `api` intentando publicar 8000) o exponer servicios internos innecesarios.
 Si necesitas exponer puertos específicos o usar overrides en Dockploy, hazlo mediante variables de entorno o mediante un `docker-compose.prod.yml` exclusivo de producción que use puertos/proxies adecuados.
 
 Resultado: Se desplegará la versión de desarrollo, pero usando contenedores construidos (build) igual que en producción. ¡Perfecto para probar antes de pasar a Main!
@@ -218,7 +218,7 @@ Bash
 git checkout -b development
 
 # 2. Agregar tu archivo de configuración dev (si quieres compartirlo con el equipo)
-git add docker-compose.dev.yml
+git add docker-compose.dev.yml.local
 git commit -m "chore: add development environment config"
 git push -u origin development
 
@@ -238,7 +238,7 @@ git merge development
 git push origin main
 # (Aquí Dockploy 'Producción' se actualiza)
 Resumen Visual
-Tu PC: Corre development + docker-compose.dev.yml.
+Tu PC: Corre development + docker-compose.dev.yml.local.
 
 Dockploy (Staging): Corre development (solo docker-compose.yml).
 
@@ -325,7 +325,7 @@ Transicionar a worker pool / Kubernetes Job que procese streams en paralelo y us
 Tests:
 Añadir E2E test de overlay también espera que el canvas muestre el bbox (el test actual solo verifica lista). Puedo extender el E2E con una verificación visual del canvas o con assertions en DOM (lista).
 Prod compose / deploy:
-He dejado recomendaciones en README acerca de no usar docker-compose.dev.yml en Dockploy; si quieres, puedo crear docker-compose.prod.yml que haga build estático del frontend (Nginx) y sea safe para production.
+He dejado recomendaciones en README acerca de no usar docker-compose.dev.yml.local en Dockploy; si quieres, puedo crear docker-compose.prod.yml que haga build estático del frontend (Nginx) y sea safe para production.
 Cleanup:
 Eliminar api/test/worker-env debug route cuando termines de comprobar la env.
 
