@@ -27,26 +27,52 @@ SFACE_PATH = os.path.join(MODELS_DIR, "face_recognition_sface_2021dec.onnx")
 depth_service = DepthService()
 
 def download_file(url, dest):
-    if os.path.exists(dest): return
+    if os.path.exists(dest): return True
     print(f"⬇️ Downloading {os.path.basename(dest)}...")
     try:
-        r = requests.get(url, stream=True)
+        r = requests.get(url, stream=True, timeout=30)
         r.raise_for_status()
+        # Create parent directory if needed
+        os.makedirs(os.path.dirname(dest), exist_ok=True)
         with open(dest, 'wb') as f:
             for chunk in r.iter_content(chunk_size=8192):
                 f.write(chunk)
         print(f"✅ Downloaded {os.path.basename(dest)}")
+        return True
     except Exception as e:
         print(f"❌ Failed to download {dest}: {e}")
+        return False
 
-# Download models on import/startup
-download_file("https://github.com/opencv/opencv_zoo/raw/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx", YUNET_PATH)
-download_file("https://github.com/opencv/opencv_zoo/raw/main/models/face_recognition_sface/face_recognition_sface_2021dec.onnx", SFACE_PATH)
+# Download models on import/startup (non-blocking)
+yunet_ok = download_file("https://github.com/opencv/opencv_zoo/raw/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx", YUNET_PATH)
+sface_ok = download_file("https://github.com/opencv/opencv_zoo/raw/main/models/face_recognition_sface/face_recognition_sface_2021dec.onnx", SFACE_PATH)
 
-# Initialize Face Models (Lazy load or global?)
-# We'll initialize detector per thread/frame size, or global if size is fixed. 
-# YuNet requires input size. We'll handle it in the loop.
-face_recognizer = cv2.FaceRecognizerSF.create(SFACE_PATH, "")
+# Initialize Face Models (Lazy - will be None if models unavailable)
+face_recognizer = None
+FACE_RECOGNITION_AVAILABLE = False
+
+def init_face_recognizer():
+    """Initialize face recognizer if model is available."""
+    global face_recognizer, FACE_RECOGNITION_AVAILABLE
+    if face_recognizer is not None:
+        return FACE_RECOGNITION_AVAILABLE
+    
+    if os.path.exists(SFACE_PATH):
+        try:
+            face_recognizer = cv2.FaceRecognizerSF.create(SFACE_PATH, "")
+            FACE_RECOGNITION_AVAILABLE = True
+            print("✅ Face recognizer initialized")
+        except Exception as e:
+            print(f"⚠️ Face recognizer unavailable: {e}")
+            FACE_RECOGNITION_AVAILABLE = False
+    else:
+        print("⚠️ Face recognition model not found - feature disabled")
+        FACE_RECOGNITION_AVAILABLE = False
+    
+    return FACE_RECOGNITION_AVAILABLE
+
+# Try to init on startup (but don't fail if unavailable)
+init_face_recognizer()
 
 # Permitir CORS para que el Frontend pueda ver el video
 app.add_middleware(
@@ -245,8 +271,8 @@ def stream_thread(camera_id, url):
             except Exception as e:
                 print(f"⚠️ Depth error: {e}")
 
-        # Face Recognition Logic
-        if face_enabled:
+        # Face Recognition Logic (only if models are available)
+        if face_enabled and os.path.exists(YUNET_PATH):
             try:
                 h, w, _ = frame.shape
                 # Instantiate detector for current frame size
@@ -260,15 +286,16 @@ def stream_thread(camera_id, url):
                         box = face[0:4].astype(np.int32)
                         score = face[-1]
                         
-                        # Extract face embedding using SFace
-                        try:
-                            # Crop and align face for embedding
-                            face_aligned = face_recognizer.alignCrop(frame, face)
-                            embedding = face_recognizer.feature(face_aligned)
-                            embedding_list = embedding.flatten().tolist()
-                        except Exception as emb_err:
-                            print(f"⚠️ Embedding error: {emb_err}")
-                            embedding_list = None
+                        # Extract face embedding using SFace (if available)
+                        embedding_list = None
+                        if FACE_RECOGNITION_AVAILABLE and face_recognizer is not None:
+                            try:
+                                # Crop and align face for embedding
+                                face_aligned = face_recognizer.alignCrop(frame, face)
+                                embedding = face_recognizer.feature(face_aligned)
+                                embedding_list = embedding.flatten().tolist()
+                            except Exception as emb_err:
+                                print(f"⚠️ Embedding error: {emb_err}")
                         
                         # Crop face image for storage
                         face_crop = None
@@ -549,7 +576,12 @@ def health_check():
     """Simple health endpoint for the worker process. This returns the list of active streams and a basic OK."""
     with global_state['lock']:
         active_ids = [cam_id for cam_id, stream in global_state['streams'].items() if stream.get('active', False)]
-    return { 'status': 'ok', 'active_streams': active_ids }
+    return { 
+        'status': 'ok', 
+        'active_streams': active_ids,
+        'face_detection_available': os.path.exists(YUNET_PATH),
+        'face_recognition_available': FACE_RECOGNITION_AVAILABLE
+    }
 
 
 @app.get('/models')

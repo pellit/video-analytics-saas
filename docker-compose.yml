@@ -53,8 +53,8 @@ services:
         # ⚠️ WARNING: Only set to 'true' for testing - Ultralytics has AGPL-3.0 license
         - ENABLE_ULTRALYTICS=${ENABLE_ULTRALYTICS:-false}
       volumes:
-        # Mount ONNX model file (must be generated first with export_yolonas.py)
-        - ./ai_engine/models:/app/models:ro
+        # Mount models volume (read-write to allow downloads)
+        - ./ai_engine/models:/app/models
       # Worker is internal by default in production - do not publish to avoid host port conflicts
       depends_on:
         - redis
