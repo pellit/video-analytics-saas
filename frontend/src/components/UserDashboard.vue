@@ -45,6 +45,69 @@ const showAdd = ref(false)
 const newCam = ref({ name: '', url: '' })
 const showFacePanel = ref(false) // Face recognition panel visibility
 
+// Fullscreen HUD mode
+const isFullscreen = ref(false)
+const fullscreenStats = ref({
+  fps: 0,
+  objectsDetected: 0,
+  personsCount: 0,
+  vehiclesCount: 0,
+  facesCount: 0,
+  nearestDistance: null,
+  uptime: 0,
+  alertsCount: 0
+})
+
+// Toggle fullscreen HUD mode
+const toggleFullscreen = () => {
+  isFullscreen.value = !isFullscreen.value
+  if (isFullscreen.value) {
+    document.body.style.overflow = 'hidden'
+  } else {
+    document.body.style.overflow = ''
+  }
+}
+
+// Exit fullscreen on Escape key
+const handleKeydown = (e) => {
+  if (e.key === 'Escape' && isFullscreen.value) {
+    toggleFullscreen()
+  }
+}
+
+onMounted(() => {
+  document.addEventListener('keydown', handleKeydown)
+})
+
+onUnmounted(() => {
+  document.removeEventListener('keydown', handleKeydown)
+  document.body.style.overflow = ''
+})
+
+// Update fullscreen stats from detections
+const updateFullscreenStats = (detection) => {
+  const label = detection.event || detection.label || ''
+  
+  // Count by type
+  if (label.toLowerCase().includes('person')) {
+    fullscreenStats.value.personsCount++
+  }
+  if (['car', 'truck', 'bus', 'motorcycle', 'bicycle'].some(v => label.toLowerCase().includes(v))) {
+    fullscreenStats.value.vehiclesCount++
+  }
+  if (label.toLowerCase().includes('face')) {
+    fullscreenStats.value.facesCount++
+  }
+  
+  fullscreenStats.value.objectsDetected = detections.value.length
+  fullscreenStats.value.alertsCount = alerts.value.length
+  
+  // Update nearest distance from BEV
+  if (detection.bev_data?.nearest_distance) {
+    fullscreenStats.value.nearestDistance = detection.bev_data.nearest_distance
+  }
+}
+
 // Initialize detection_classes with all available classes if null/empty
 const initializeCameraDefaults = (camera) => {
   if (!camera.detection_classes || camera.detection_classes.length === 0) {
@@ -511,6 +574,9 @@ const initSSE = () => {
         if (data.bev_data) {
           processBEVData(data)
         }
+        
+        // Update fullscreen stats
+        updateFullscreenStats(data)
       }
     } catch (e) {}
   })
@@ -646,13 +712,17 @@ const saveProfile = async () => {
 
       <div class="video-grid">
         <!-- Video Feed -->
-        <div class="video-box">
+        <div class="video-box" @dblclick="toggleFullscreen" :title="isProcessing ? 'Doble clic para pantalla completa' : ''">
             <iframe v-if="isProcessing && isYouTube && showVideo" :src="activeStreamUrl" frameborder="0" allow="autoplay; encrypted-media; picture-in-picture" allowfullscreen class="stream"></iframe>
             <div v-else-if="isProcessing && showVideo" class="stream-wrapper">
               <img :src="activeStreamUrl" class="stream" @load="onStreamLoad" @error="onStreamError" />
               <div v-if="streamLoadError" class="stream-error">
                 <p>No se pudo cargar el stream.</p>
                 <small>{{ streamErrorUrl }}</small>
+              </div>
+              <!-- Fullscreen hint -->
+              <div class="fullscreen-hint" v-if="!isFullscreen">
+                <span>⛶ Doble clic para HUD</span>
               </div>
             </div>
             <div v-else class="placeholder">
@@ -889,6 +959,112 @@ const saveProfile = async () => {
             </button>
           </div>
         </div>
+      </div>
+    </Transition>
+
+    <!-- Fullscreen HUD Overlay -->
+    <Transition name="fade">
+      <div v-if="isFullscreen && isProcessing" class="hud-overlay" @dblclick="toggleFullscreen">
+        <!-- Video Background -->
+        <img :src="activeStreamUrl" class="hud-video" />
+        
+        <!-- Close Button -->
+        <button class="hud-close" @click.stop="toggleFullscreen">✕</button>
+        
+        <!-- Top Bar - Camera Info -->
+        <div class="hud-top-bar">
+          <div class="hud-camera-info">
+            <span class="hud-camera-name">{{ activeCamera?.name }}</span>
+            <span class="hud-status live">● EN VIVO</span>
+          </div>
+          <div class="hud-time">
+            {{ new Date().toLocaleTimeString() }}
+          </div>
+        </div>
+        
+        <!-- Left Panel - Detection Stats -->
+        <div class="hud-panel hud-left">
+          <div class="hud-stat-group">
+            <div class="hud-stat">
+              <span class="hud-stat-icon">👤</span>
+              <div class="hud-stat-data">
+                <span class="hud-stat-value">{{ fullscreenStats.personsCount }}</span>
+                <span class="hud-stat-label">Personas</span>
+              </div>
+              <div class="hud-stat-bar">
+                <div class="hud-stat-fill" :style="{ width: Math.min(fullscreenStats.personsCount * 10, 100) + '%' }"></div>
+              </div>
+            </div>
+            <div class="hud-stat">
+              <span class="hud-stat-icon">🚗</span>
+              <div class="hud-stat-data">
+                <span class="hud-stat-value">{{ fullscreenStats.vehiclesCount }}</span>
+                <span class="hud-stat-label">Vehículos</span>
+              </div>
+              <div class="hud-stat-bar">
+                <div class="hud-stat-fill vehicles" :style="{ width: Math.min(fullscreenStats.vehiclesCount * 15, 100) + '%' }"></div>
+              </div>
+            </div>
+            <div class="hud-stat">
+              <span class="hud-stat-icon">😊</span>
+              <div class="hud-stat-data">
+                <span class="hud-stat-value">{{ fullscreenStats.facesCount }}</span>
+                <span class="hud-stat-label">Rostros</span>
+              </div>
+              <div class="hud-stat-bar">
+                <div class="hud-stat-fill faces" :style="{ width: Math.min(fullscreenStats.facesCount * 20, 100) + '%' }"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+        
+        <!-- Right Panel - Alerts & Events -->
+        <div class="hud-panel hud-right">
+          <div class="hud-section-title">
+            <span class="hud-icon">⚠️</span> Eventos Recientes
+          </div>
+          <div class="hud-events-list">
+            <div v-for="(det, i) in detections.slice(0, 5)" :key="i" class="hud-event">
+              <span class="hud-event-icon">{{ det.event?.includes('person') ? '👤' : det.event?.includes('face') ? '😊' : '📦' }}</span>
+              <span class="hud-event-text">{{ det.event || det.label }}</span>
+              <span class="hud-event-time">{{ new Date().toLocaleTimeString() }}</span>
+            </div>
+            <div v-if="detections.length === 0" class="hud-event empty">
+              Sin eventos recientes
+            </div>
+          </div>
+        </div>
+        
+        <!-- Bottom Bar - Quick Stats -->
+        <div class="hud-bottom-bar">
+          <div class="hud-quick-stat">
+            <span class="hud-qs-label">OBJETOS</span>
+            <span class="hud-qs-value">{{ detections.length }}</span>
+          </div>
+          <div class="hud-quick-stat">
+            <span class="hud-qs-label">ALERTAS</span>
+            <span class="hud-qs-value">{{ alerts.length }}</span>
+          </div>
+          <div class="hud-quick-stat" v-if="fullscreenStats.nearestDistance">
+            <span class="hud-qs-label">DISTANCIA</span>
+            <span class="hud-qs-value">{{ fullscreenStats.nearestDistance.toFixed(1) }}m</span>
+          </div>
+          <div class="hud-quick-stat">
+            <span class="hud-qs-label">MODELO</span>
+            <span class="hud-qs-value">{{ activeCamera?.detection_model || 'YOLO-NAS' }}</span>
+          </div>
+        </div>
+        
+        <!-- Mini BEV Map (Bottom Right) -->
+        <div class="hud-minimap" v-if="activeCamera?.bev_enabled && bevData.objects.length > 0">
+          <canvas ref="hudBevCanvas" width="150" height="150"></canvas>
+        </div>
+        
+        <!-- Corner decorations -->
+        <div class="hud-corner hud-corner-tl"></div>
+        <div class="hud-corner hud-corner-tr"></div>
+        <div class="hud-corner hud-corner-bl"></div>
+        <div class="hud-corner hud-corner-br"></div>
       </div>
     </Transition>
 
@@ -1926,6 +2102,385 @@ input:checked + .slider:before {
   
   .sidebar {
     max-height: 150px;
+  }
+}
+
+/* ===========================================
+   FULLSCREEN HUD STYLES (Gaming/Fortnite Style)
+   =========================================== */
+
+.fullscreen-hint {
+  position: absolute;
+  bottom: 12px;
+  right: 12px;
+  background: rgba(0, 0, 0, 0.6);
+  padding: 6px 12px;
+  border-radius: 4px;
+  font-size: 0.75rem;
+  color: rgba(255, 255, 255, 0.7);
+  pointer-events: none;
+  backdrop-filter: blur(4px);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.hud-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 9999;
+  background: #000;
+  cursor: crosshair;
+}
+
+.hud-video {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.hud-close {
+  position: absolute;
+  top: 20px;
+  right: 20px;
+  width: 40px;
+  height: 40px;
+  background: rgba(0, 0, 0, 0.5);
+  border: 2px solid rgba(255, 255, 255, 0.3);
+  border-radius: 50%;
+  color: #fff;
+  font-size: 1.2rem;
+  cursor: pointer;
+  transition: all 0.2s;
+  z-index: 10;
+}
+
+.hud-close:hover {
+  background: rgba(255, 50, 50, 0.7);
+  border-color: #ff5555;
+  transform: scale(1.1);
+}
+
+/* Top Bar */
+.hud-top-bar {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 50px;
+  background: linear-gradient(180deg, rgba(0,0,0,0.7) 0%, transparent 100%);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0 80px 0 30px;
+}
+
+.hud-camera-info {
+  display: flex;
+  align-items: center;
+  gap: 15px;
+}
+
+.hud-camera-name {
+  font-size: 1.1rem;
+  font-weight: 600;
+  color: #fff;
+  text-shadow: 0 2px 4px rgba(0,0,0,0.5);
+}
+
+.hud-status {
+  font-size: 0.8rem;
+  padding: 4px 10px;
+  border-radius: 4px;
+  font-weight: 600;
+}
+
+.hud-status.live {
+  background: rgba(255, 50, 50, 0.3);
+  color: #ff5555;
+  border: 1px solid rgba(255, 50, 50, 0.5);
+  animation: pulse-live 2s infinite;
+}
+
+@keyframes pulse-live {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.6; }
+}
+
+.hud-time {
+  font-size: 1rem;
+  color: rgba(255, 255, 255, 0.8);
+  font-family: 'Courier New', monospace;
+  font-weight: 600;
+}
+
+/* Side Panels */
+.hud-panel {
+  position: absolute;
+  top: 80px;
+  width: 250px;
+  background: linear-gradient(135deg, rgba(0,0,0,0.6) 0%, rgba(0,0,0,0.3) 100%);
+  backdrop-filter: blur(10px);
+  border-radius: 8px;
+  padding: 15px;
+  border: 1px solid rgba(100, 200, 255, 0.2);
+}
+
+.hud-left {
+  left: 20px;
+}
+
+.hud-right {
+  right: 80px;
+  max-height: calc(100vh - 200px);
+  overflow-y: auto;
+}
+
+.hud-stat-group {
+  display: flex;
+  flex-direction: column;
+  gap: 15px;
+}
+
+.hud-stat {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px;
+  background: rgba(0, 0, 0, 0.3);
+  border-radius: 6px;
+  border-left: 3px solid #4af;
+}
+
+.hud-stat-icon {
+  font-size: 1.5rem;
+}
+
+.hud-stat-data {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+}
+
+.hud-stat-value {
+  font-size: 1.4rem;
+  font-weight: 700;
+  color: #fff;
+  line-height: 1;
+}
+
+.hud-stat-label {
+  font-size: 0.7rem;
+  color: rgba(255, 255, 255, 0.6);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.hud-stat-bar {
+  width: 40px;
+  height: 6px;
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.hud-stat-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #4af, #0ff);
+  border-radius: 3px;
+  transition: width 0.3s ease;
+}
+
+.hud-stat-fill.vehicles {
+  background: linear-gradient(90deg, #fa4, #ff0);
+}
+
+.hud-stat-fill.faces {
+  background: linear-gradient(90deg, #f4a, #f0f);
+}
+
+/* Events List */
+.hud-section-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.8);
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  margin-bottom: 12px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.hud-events-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.hud-event {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  background: rgba(0, 0, 0, 0.3);
+  border-radius: 4px;
+  border-left: 2px solid #4af;
+  font-size: 0.8rem;
+}
+
+.hud-event.empty {
+  color: rgba(255, 255, 255, 0.4);
+  font-style: italic;
+  border-left-color: rgba(255, 255, 255, 0.2);
+}
+
+.hud-event-icon {
+  font-size: 1rem;
+}
+
+.hud-event-text {
+  flex: 1;
+  color: #fff;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.hud-event-time {
+  font-size: 0.7rem;
+  color: rgba(255, 255, 255, 0.5);
+  font-family: 'Courier New', monospace;
+}
+
+/* Bottom Bar */
+.hud-bottom-bar {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 60px;
+  background: linear-gradient(0deg, rgba(0,0,0,0.7) 0%, transparent 100%);
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 40px;
+  padding: 0 30px;
+}
+
+.hud-quick-stat {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+}
+
+.hud-qs-label {
+  font-size: 0.65rem;
+  color: rgba(255, 255, 255, 0.5);
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+
+.hud-qs-value {
+  font-size: 1.1rem;
+  font-weight: 700;
+  color: #4af;
+  text-shadow: 0 0 10px rgba(68, 170, 255, 0.5);
+}
+
+/* Mini Map */
+.hud-minimap {
+  position: absolute;
+  bottom: 80px;
+  right: 20px;
+  width: 150px;
+  height: 150px;
+  background: rgba(0, 0, 0, 0.6);
+  border: 2px solid rgba(100, 200, 255, 0.3);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.hud-minimap canvas {
+  width: 100%;
+  height: 100%;
+}
+
+/* Corner Decorations */
+.hud-corner {
+  position: absolute;
+  width: 50px;
+  height: 50px;
+  border: 2px solid rgba(100, 200, 255, 0.4);
+  pointer-events: none;
+}
+
+.hud-corner-tl {
+  top: 60px;
+  left: 10px;
+  border-right: none;
+  border-bottom: none;
+  border-radius: 8px 0 0 0;
+}
+
+.hud-corner-tr {
+  top: 60px;
+  right: 10px;
+  border-left: none;
+  border-bottom: none;
+  border-radius: 0 8px 0 0;
+}
+
+.hud-corner-bl {
+  bottom: 70px;
+  left: 10px;
+  border-right: none;
+  border-top: none;
+  border-radius: 0 0 0 8px;
+}
+
+.hud-corner-br {
+  bottom: 70px;
+  right: 10px;
+  border-left: none;
+  border-top: none;
+  border-radius: 0 0 8px 0;
+}
+
+/* Fade transition */
+.fade-enter-active, .fade-leave-active {
+  transition: opacity 0.3s ease;
+}
+
+.fade-enter-from, .fade-leave-to {
+  opacity: 0;
+}
+
+/* HUD responsive */
+@media (max-width: 768px) {
+  .hud-panel {
+    width: 180px;
+    padding: 10px;
+  }
+  
+  .hud-left {
+    left: 10px;
+  }
+  
+  .hud-right {
+    right: 10px;
+  }
+  
+  .hud-stat-value {
+    font-size: 1.1rem;
+  }
+  
+  .hud-bottom-bar {
+    gap: 20px;
   }
 }
 </style>
