@@ -362,6 +362,8 @@ def redis_listener_loop():
                     with global_state['lock']:
                         if cam_id in global_state['streams']:
                             global_state['streams'][cam_id]['active'] = False
+                            global_state['streams'][cam_id]['current_frame'] = None  # Clear frame to stop showing old data
+                    print(f"🛑 Stream {cam_id} marked as stopped")
             except Exception as e:
                 print(f"Error procesando mensaje Redis: {e}")
 
@@ -411,7 +413,9 @@ def video_feed(camera_id: str = None):
 @app.get('/health')
 def health_check():
     """Simple health endpoint for the worker process. This returns the list of active streams and a basic OK."""
-    return { 'status': 'ok', 'active_streams': list(global_state['streams'].keys()) }
+    with global_state['lock']:
+        active_ids = [cam_id for cam_id, stream in global_state['streams'].items() if stream.get('active', False)]
+    return { 'status': 'ok', 'active_streams': active_ids }
 
 @app.on_event("startup")
 def startup_event():

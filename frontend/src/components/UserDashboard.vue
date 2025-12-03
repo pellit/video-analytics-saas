@@ -1028,7 +1028,7 @@ const saveProfile = async () => {
   grid-template-columns: 1fr 320px;
   gap: 1px;
   background-color: #30363d;
-  height: 55vh;
+  min-height: 55vh;
 }
 .video-box {
   background-color: #0d1117;
@@ -1036,9 +1036,34 @@ const saveProfile = async () => {
   display: flex;
   justify-content: center;
   align-items: center;
+  min-height: 300px;
+  overflow: hidden;
 }
-.stream-wrapper { width: 100%; height: 100%; position: relative; }
-.stream { width: 100%; height: 100%; object-fit: contain; }
+.stream-wrapper { 
+  width: 100%; 
+  height: 100%; 
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+}
+.stream { 
+  width: 100%; 
+  height: 100%; 
+  object-fit: contain;
+  position: absolute;
+  top: 0;
+  left: 0;
+}
+iframe.stream {
+  border: none;
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+}
 .placeholder { color: #666; text-align: center; }
 
 /* Control Panel */
@@ -1609,6 +1634,12 @@ input:checked + .slider:before {
 @media (max-width: 1200px) {
   .video-grid {
     grid-template-columns: 1fr;
+    min-height: auto;
+  }
+  
+  .video-box {
+    min-height: 40vh;
+    aspect-ratio: 16/9;
   }
   
   .control-panel {
@@ -1692,7 +1723,17 @@ input:checked + .slider:before {
   }
   
   .video-box {
-    min-height: 250px;
+    min-height: 200px;
+    aspect-ratio: 16/9;
+    width: 100%;
+  }
+  
+  .stream, iframe.stream {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
   }
   
   .control-panel {
