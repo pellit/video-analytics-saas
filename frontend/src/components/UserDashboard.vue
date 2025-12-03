@@ -751,12 +751,13 @@ const saveProfile = async () => {
             <div class="setting-group" v-if="activeCamera.detection_enabled">
               <label>Modelo</label>
               <select v-model="activeCamera.detection_model" class="dark-select">
-                  <option value="yolo_nas_s">YOLO-NAS Small (Rápido) ⭐</option>
+                  <option value="onnx">ONNX (⚡ Más Rápido) ⭐</option>
+                  <option value="yolo_nas_s">YOLO-NAS Small</option>
                   <option value="yolo_nas_m">YOLO-NAS Medium</option>
                   <option value="yolo_nas_l">YOLO-NAS Large (Preciso)</option>
                   <option value="rt_detr">RT-DETR (Transformer)</option>
               </select>
-              <small class="model-note">✅ Modelos con licencia Apache 2.0</small>
+              <small class="model-note">✅ Modelos con licencia Apache 2.0 | ONNX es 2-3x más rápido en CPU</small>
             </div>
 
             <div class="setting-group" v-if="activeCamera.detection_enabled">

@@ -12,13 +12,14 @@ from .base import BaseDetector
 
 class ModelType(str, Enum):
     """Available model types."""
-    YOLO_NAS = "yolo_nas"      # Default, Apache 2.0 license
+    ONNX = "onnx"              # ONNX Runtime - FASTEST for CPU (recommended)
+    YOLO_NAS = "yolo_nas"      # super-gradients, Apache 2.0 license
     RT_DETR = "rt_detr"        # HuggingFace transformers
     ULTRALYTICS = "ultralytics" # DISABLED by default (AGPL-3.0)
 
 
-# Default model to use
-DEFAULT_MODEL = ModelType.YOLO_NAS
+# Default model to use - ONNX is fastest for CPU
+DEFAULT_MODEL = ModelType.ONNX
 
 
 class ModelFactory:
@@ -66,10 +67,23 @@ class ModelFactory:
         
         # Convert string to enum if needed
         if isinstance(model_type, str):
-            model_type = ModelType(model_type.lower())
+            try:
+                model_type = ModelType(model_type.lower())
+            except ValueError:
+                # Fallback: map old names to new
+                model_type_map = {
+                    'yolo_nas_s': ModelType.ONNX,
+                    'yolo_nas_m': ModelType.YOLO_NAS,
+                    'yolo_nas_l': ModelType.YOLO_NAS,
+                }
+                model_type = model_type_map.get(model_type.lower(), DEFAULT_MODEL)
         
         # Lazy import to avoid loading all models
-        if model_type == ModelType.YOLO_NAS:
+        if model_type == ModelType.ONNX:
+            from .onnx_yolonas import ONNXYOLONASDetector
+            return ONNXYOLONASDetector(model_path=model_path, device=device)
+        
+        elif model_type == ModelType.YOLO_NAS:
             from .yolo_nas import YOLONASDetector
             return YOLONASDetector(model_name=model_path, device=device)
         
@@ -97,12 +111,27 @@ class ModelFactory:
         Create detector from environment variables.
         
         Environment variables:
-            DETECTION_MODEL: Model type ('yolo_nas', 'rt_detr', 'ultralytics')
-            DETECTION_MODEL_PATH: Path to model weights (optional, defaults to yolo_nas_s)
+            DETECTION_MODEL: Model type ('onnx', 'yolo_nas', 'rt_detr', 'ultralytics')
+            DETECTION_MODEL_PATH: Path to model weights (optional)
             ENABLE_ULTRALYTICS: 'true' to enable ultralytics (testing only)
         """
         model_type_str = os.environ.get('DETECTION_MODEL', DEFAULT_MODEL.value)
         model_path = os.environ.get('DETECTION_MODEL_PATH', '').strip() or None
+        
+        # Check for ONNX model file first (highest priority)
+        onnx_paths = [
+            model_path,
+            "yolo_nas_s.onnx",
+            "models/yolo_nas_s.onnx",
+            "/app/models/yolo_nas_s.onnx",
+        ]
+        
+        onnx_found = any(p and os.path.exists(p) for p in onnx_paths if p)
+        
+        # If ONNX file exists and no specific model type is set, use ONNX
+        if onnx_found and model_type_str in ['onnx', 'yolo_nas', DEFAULT_MODEL.value]:
+            print("[ModelFactory] ONNX model found - using optimized ONNX runtime")
+            return cls.create(model_type=ModelType.ONNX, model_path=model_path, device=device)
         
         try:
             model_type = ModelType(model_type_str.lower())
@@ -126,13 +155,21 @@ class ModelFactory:
             Dict with model info including license and status
         """
         return {
+            ModelType.ONNX.value: {
+                'name': 'YOLO-NAS ONNX',
+                'library': 'onnxruntime',
+                'license': 'Apache 2.0',
+                'status': 'ENABLED (⚡ FASTEST - Recommended for CPU)',
+                'variants': ['yolo_nas_s.onnx', 'yolo_nas_m.onnx', 'yolo_nas_l.onnx'],
+                'description': 'ONNX optimized YOLO-NAS. 2-3x faster than PyTorch on CPU. Smallest Docker image.'
+            },
             ModelType.YOLO_NAS.value: {
                 'name': 'YOLO-NAS',
                 'library': 'super-gradients',
                 'license': 'Apache 2.0',
-                'status': 'ENABLED (Recommended)',
+                'status': 'ENABLED',
                 'variants': ['yolo_nas_s', 'yolo_nas_m', 'yolo_nas_l'],
-                'description': 'State-of-the-art YOLO model by Deci AI. Best balance of speed and accuracy.'
+                'description': 'State-of-the-art YOLO model by Deci AI. Requires super-gradients library.'
             },
             ModelType.RT_DETR.value: {
                 'name': 'RT-DETR',

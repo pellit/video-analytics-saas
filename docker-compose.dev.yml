@@ -29,8 +29,11 @@ services:
       REDIS_HOST: ${REDIS_HOST:-redis}
       BACKEND_API_URL: ${BACKEND_API_URL:-http://api:8000}
       WORKER_API_KEY: ${WORKER_API_KEY}
-      # Model configuration for development
-      DETECTION_MODEL: ${DETECTION_MODEL:-yolo_nas}
-      DETECTION_MODEL_PATH: ${DETECTION_MODEL_PATH:-yolo_nas_s}
+      # Model configuration - ONNX is fastest for CPU
+      DETECTION_MODEL: ${DETECTION_MODEL:-onnx}
+      DETECTION_MODEL_PATH: ${DETECTION_MODEL_PATH:-}
       # ⚠️ Set to 'true' only for testing Ultralytics (AGPL-3.0 license)
       ENABLE_ULTRALYTICS: ${ENABLE_ULTRALYTICS:-false}
+    volumes:
+      # Mount ONNX model file
+      - ./ai_engine/models:/app/models:ro

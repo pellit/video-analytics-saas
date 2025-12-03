@@ -47,11 +47,14 @@ services:
         - PYTHONUNBUFFERED=1
         - BACKEND_API_URL=http://api:8000
         - WORKER_API_KEY=${WORKER_API_KEY}
-        # Model configuration (default: yolo_nas for production - Apache 2.0 license)
-        - DETECTION_MODEL=${DETECTION_MODEL:-yolo_nas}
-        - DETECTION_MODEL_PATH=${DETECTION_MODEL_PATH:-yolo_nas_s}
+        # Model configuration - ONNX is fastest for CPU (2-3x speedup)
+        - DETECTION_MODEL=${DETECTION_MODEL:-onnx}
+        - DETECTION_MODEL_PATH=${DETECTION_MODEL_PATH:-}
         # ⚠️ WARNING: Only set to 'true' for testing - Ultralytics has AGPL-3.0 license
         - ENABLE_ULTRALYTICS=${ENABLE_ULTRALYTICS:-false}
+      volumes:
+        # Mount ONNX model file (must be generated first with export_yolonas.py)
+        - ./ai_engine/models:/app/models:ro
       # Worker is internal by default in production - do not publish to avoid host port conflicts
       depends_on:
         - redis

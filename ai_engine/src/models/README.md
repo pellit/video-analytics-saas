@@ -4,32 +4,52 @@ Este módulo proporciona una capa de abstracción para diferentes modelos de det
 
 ## Modelos Disponibles
 
-### 1. YOLO-NAS (Predeterminado) ✅ RECOMENDADO
+### 1. ONNX Runtime ⚡ RECOMENDADO (Más rápido)
 
-**Librería:** `super-gradients` (Deci AI)  
+**Librería:** `onnxruntime`  
 **Licencia:** Apache 2.0  
 **Estado:** HABILITADO por defecto
 
-YOLO-NAS es un modelo de detección de objetos de última generación desarrollado por Deci AI. Ofrece el mejor equilibrio entre velocidad y precisión.
+ONNX Runtime es la opción más eficiente para CPU:
+- **2-3x más rápido** que PyTorch directo
+- Docker image mucho más pequeño
+- Sin dependencias pesadas (PyTorch/TensorFlow)
+
+**Uso:**
+```bash
+# 1. Generar el modelo ONNX (una sola vez, en local)
+pip install super-gradients onnx
+python export_yolonas.py
+
+# 2. Copiar yolo_nas_s.onnx a ai_engine/models/
+```
+
+### 2. YOLO-NAS ✅ HABILITADO
+
+**Librería:** `super-gradients` (Deci AI)  
+**Licencia:** Apache 2.0  
+**Estado:** HABILITADO (fallback si no hay ONNX)
+
+YOLO-NAS es un modelo de detección de objetos de última generación desarrollado por Deci AI.
 
 **Variantes disponibles:**
 - `yolo_nas_s` - Pequeño (más rápido)
 - `yolo_nas_m` - Mediano (equilibrado)
 - `yolo_nas_l` - Grande (más preciso)
 
-### 2. RT-DETR ✅ HABILITADO
+### 3. RT-DETR ✅ HABILITADO
 
 **Librería:** `transformers` (HuggingFace)  
 **Licencia:** Apache 2.0  
 **Estado:** HABILITADO
 
-RT-DETR es un detector de objetos en tiempo real basado en la arquitectura DETR (DEtection TRansformer). Ofrece excelente precisión con rendimiento en tiempo real.
+RT-DETR es un detector basado en Transformers con excelente precisión.
 
 **Variantes disponibles:**
 - `PekingU/rtdetr_r50vd` - ResNet-50 backbone
 - `PekingU/rtdetr_r101vd` - ResNet-101 backbone
 
-### 3. Ultralytics YOLO ⚠️ DESHABILITADO
+### 4. Ultralytics YOLO ⚠️ DESHABILITADO
 
 **Librería:** `ultralytics`  
 **Licencia:** AGPL-3.0 (⚠️ RESTRICTIVA)  
@@ -38,26 +58,17 @@ RT-DETR es un detector de objetos en tiempo real basado en la arquitectura DETR 
 > ⚠️ **ADVERTENCIA LEGAL:** La licencia AGPL-3.0 requiere:
 > - Distribución de código fuente abierto si se usa en producción
 > - Licencia comercial de Ultralytics para uso propietario
-> 
-> **Solo habilitar para pruebas/desarrollo.**
-
-**Variantes disponibles:**
-- `yolov8n.pt` - Nano
-- `yolov8s.pt` - Small
-- `yolov8m.pt` - Medium
-- `yolov8l.pt` - Large
-- `yolov8x.pt` - XLarge
 
 ## Configuración
 
 ### Variables de Entorno
 
 ```bash
-# Seleccionar modelo (predeterminado: yolo_nas)
-DETECTION_MODEL=yolo_nas          # Opciones: yolo_nas, rt_detr, ultralytics
+# Seleccionar modelo (predeterminado: onnx)
+DETECTION_MODEL=onnx              # Opciones: onnx, yolo_nas, rt_detr, ultralytics
 
 # Ruta personalizada del modelo (opcional)
-DETECTION_MODEL_PATH=yolo_nas_m   # Variante específica
+DETECTION_MODEL_PATH=yolo_nas_s.onnx
 
 # Habilitar ultralytics (solo para pruebas)
 ENABLE_ULTRALYTICS=true           # ⚠️ Solo desarrollo
@@ -69,8 +80,23 @@ ENABLE_ULTRALYTICS=true           # ⚠️ Solo desarrollo
 services:
   ai_engine:
     environment:
-      - DETECTION_MODEL=yolo_nas
-      - DETECTION_MODEL_PATH=yolo_nas_s
+      - DETECTION_MODEL=onnx
+    volumes:
+      - ./ai_engine/models:/app/models:ro
+```
+
+## Exportar Modelo ONNX
+
+```bash
+# Instalar dependencias (solo para exportar)
+pip install super-gradients onnx
+
+# Exportar modelo
+python export_yolonas.py --size small --input-size 640
+
+# Opciones:
+#   --size small|medium|large
+#   --input-size 640 (estándar) o 320 (máxima velocidad)
 ```
 
 ## Uso Programático
