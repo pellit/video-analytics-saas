@@ -58,4 +58,10 @@ class User extends Authenticatable
     {
         return $this->hasManyThrough(Alert::class, Camera::class);
     }
+
+    // Relación con API Keys
+    public function apiKeys()
+    {
+        return $this->hasMany(ApiKey::class);
+    }
 }

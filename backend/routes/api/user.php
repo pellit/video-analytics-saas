@@ -36,3 +36,11 @@ Route::post('/alerts', [\App\Http\Controllers\AlertController::class, 'store']);
 Route::put('/alerts/{alert}', [\App\Http\Controllers\AlertController::class, 'update']);
 Route::delete('/alerts/{alert}', [\App\Http\Controllers\AlertController::class, 'destroy']);
 Route::get('/alerts/recent', [\App\Http\Controllers\AlertController::class, 'recent']);
+
+// API Keys Management (for users to manage their own keys)
+Route::get('/api-keys', [\App\Http\Controllers\ApiKeyController::class, 'index']);
+Route::post('/api-keys', [\App\Http\Controllers\ApiKeyController::class, 'store']);
+Route::get('/api-keys/{id}', [\App\Http\Controllers\ApiKeyController::class, 'show']);
+Route::patch('/api-keys/{id}', [\App\Http\Controllers\ApiKeyController::class, 'update']);
+Route::delete('/api-keys/{id}', [\App\Http\Controllers\ApiKeyController::class, 'destroy']);
+Route::post('/api-keys/{id}/regenerate', [\App\Http\Controllers\ApiKeyController::class, 'regenerate']);

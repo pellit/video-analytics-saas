@@ -23,6 +23,24 @@ Route::get('/test/worker-env', function (\Illuminate\Http\Request $r) {
 // SSE stream for real-time detections and alerts (Outside auth middleware to support EventSource query param auth)
 Route::get('/sse/stream', [\App\Http\Controllers\SseController::class, 'stream']);
 
+// ==========================================================================
+// External API v1 (API Key authenticated) - For third-party applications
+// ==========================================================================
+use App\Http\Controllers\ExternalApiController;
+
+Route::prefix('v1')->middleware('api.key')->group(function () {
+    // Single frame analysis
+    Route::post('/analyze/frame', [ExternalApiController::class, 'analyzeFrame']);
+    
+    // Batch frame analysis
+    Route::post('/analyze/batch', [ExternalApiController::class, 'analyzeBatch']);
+    
+    // Stream analysis (async)
+    Route::post('/analyze/stream', [ExternalApiController::class, 'analyzeStream']);
+    Route::get('/analyze/status/{sessionId}', [ExternalApiController::class, 'getStatus']);
+    Route::delete('/analyze/status/{sessionId}', [ExternalApiController::class, 'stopSession']);
+});
+
 // 2. Cargar Rutas Protegidas de Usuario
 // Aplicamos el middleware de autenticación a todo este grupo
 Route::middleware('auth:sanctum')->group(function () {

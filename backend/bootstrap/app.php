@@ -12,9 +12,10 @@ return Application::configure(basePath: dirname(__DIR__))
         health: '/up',
     )
     ->withMiddleware(function (Middleware $middleware) {
-        // 👇 AGREGA ESTO AQUÍ: Registramos el alias 'superadmin'
+        // Registramos los alias de middleware
         $middleware->alias([
             'superadmin' => \App\Http\Middleware\CheckSuperAdmin::class,
+            'api.key' => \App\Http\Middleware\AuthenticateApiKey::class,
         ]);
     })
     ->withExceptions(function (Exceptions $exceptions) {
