@@ -139,6 +139,71 @@
                   📊 Reportes
                 </button>
               </div>
+
+              <!-- Image History Section -->
+              <div class="sidebar-history">
+                <div class="history-header">
+                  <h5>📜 Historial de Cambios</h5>
+                  <button 
+                    v-if="!loadingHistory" 
+                    class="btn-icon-sm" 
+                    @click="loadZoneHistory(sidebarSelectedZone)"
+                    title="Actualizar historial"
+                  >
+                    🔄
+                  </button>
+                </div>
+                
+                <div v-if="loadingHistory" class="history-loading">
+                  <div class="spinner-sm"></div>
+                  <span>Cargando historial...</span>
+                </div>
+                
+                <div v-else-if="zoneImageHistory.length === 0" class="history-empty">
+                  <span>Sin historial de imágenes</span>
+                </div>
+                
+                <div v-else class="history-timeline">
+                  <div 
+                    v-for="(img, idx) in zoneImageHistory" 
+                    :key="img.id" 
+                    class="history-item"
+                    :class="{ 
+                      'has-changes': img.changes_detected && Object.keys(img.changes_detected).length > 0,
+                      'failed': img.status === 'failed'
+                    }"
+                    @click="selectHistoryImage(img)"
+                  >
+                    <div class="history-thumb">
+                      <img 
+                        v-if="img.image_path" 
+                        :src="getImageUrl(img.image_path)"
+                      />
+                      <div v-else class="thumb-placeholder-sm">
+                        {{ img.status === 'pending' ? '⏳' : img.status === 'processing' ? '⚙️' : '❌' }}
+                      </div>
+                    </div>
+                    <div class="history-info">
+                      <span class="history-date">{{ formatDate(img.captured_at || img.created_at) }}</span>
+                      <span class="history-status" :class="img.status">
+                        {{ getStatusLabel(img.status) }}
+                      </span>
+                      <span v-if="img.changes_detected" class="history-changes">
+                        {{ getChangeSummary(img.changes_detected) }}
+                      </span>
+                    </div>
+                    <div v-if="idx < zoneImageHistory.length - 1 && img.image_path" class="history-compare">
+                      <button 
+                        class="btn-compare" 
+                        @click.stop="compareImages(img, zoneImageHistory[idx + 1])"
+                        title="Comparar con anterior"
+                      >
+                        ⇄
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </div>
             </div>
             
             <!-- All zones thumbnails -->
@@ -172,6 +237,33 @@
           </div>
         </div>
       </Transition>
+
+      <!-- Image Comparison Modal -->
+      <div v-if="showCompareModal" class="modal-overlay" @click.self="showCompareModal = false">
+        <div class="modal-content modal-compare">
+          <div class="modal-header">
+            <h3>🔍 Comparar Imágenes</h3>
+            <button class="btn-close" @click="showCompareModal = false">✕</button>
+          </div>
+          <div class="compare-container">
+            <div class="compare-image">
+              <h4>Anterior</h4>
+              <img v-if="compareOldImage?.image_path" :src="getImageUrl(compareOldImage.image_path)" />
+              <span class="compare-date">{{ formatDate(compareOldImage?.captured_at) }}</span>
+            </div>
+            <div class="compare-divider">→</div>
+            <div class="compare-image">
+              <h4>Actual</h4>
+              <img v-if="compareNewImage?.image_path" :src="getImageUrl(compareNewImage.image_path)" />
+              <span class="compare-date">{{ formatDate(compareNewImage?.captured_at) }}</span>
+            </div>
+          </div>
+          <div v-if="compareNewImage?.changes_detected" class="compare-changes">
+            <h4>Cambios Detectados</h4>
+            <pre>{{ JSON.stringify(compareNewImage.changes_detected, null, 2) }}</pre>
+          </div>
+        </div>
+      </div>
     </div>
 
     <!-- Zones Grid View -->
@@ -468,6 +560,13 @@ const mapAddMode = ref(false)
 // Sidebar state
 const showImagesSidebar = ref(true)
 const sidebarSelectedZone = ref(null)
+
+// History state
+const zoneImageHistory = ref([])
+const loadingHistory = ref(false)
+const showCompareModal = ref(false)
+const compareOldImage = ref(null)
+const compareNewImage = ref(null)
 
 // Map state for modal
 const mapContainer = ref(null)
@@ -1109,6 +1208,74 @@ const selectZoneInSidebar = (zone) => {
   if (globalMap && zone.latitude && zone.longitude) {
     globalMap.setView([zone.latitude, zone.longitude], 14)
   }
+  
+  // Load zone history
+  loadZoneHistory(zone)
+}
+
+// Load zone image history
+const loadZoneHistory = async (zone) => {
+  if (!zone) return
+  
+  loadingHistory.value = true
+  zoneImageHistory.value = []
+  
+  try {
+    const response = await fetch(`${props.apiUrl}/satellite/zones/${zone.id}/images`, {
+      headers: {
+        'Authorization': `Bearer ${props.token}`,
+        'Accept': 'application/json'
+      }
+    })
+    
+    if (response.ok) {
+      const data = await response.json()
+      zoneImageHistory.value = data.data || data || []
+    }
+  } catch (error) {
+    console.error('Error loading zone history:', error)
+  } finally {
+    loadingHistory.value = false
+  }
+}
+
+// Select history image to view
+const selectHistoryImage = (img) => {
+  if (img.image_path) {
+    // Could show in main image area or open modal
+    emit('toast', { type: 'info', message: `Imagen del ${formatDate(img.captured_at || img.created_at)}` })
+  }
+}
+
+// Compare two images
+const compareImages = (newImg, oldImg) => {
+  compareNewImage.value = newImg
+  compareOldImage.value = oldImg
+  showCompareModal.value = true
+}
+
+// Get status label
+const getStatusLabel = (status) => {
+  const labels = {
+    'pending': '⏳ Pendiente',
+    'processing': '⚙️ Procesando',
+    'completed': '✅ Completado',
+    'failed': '❌ Error'
+  }
+  return labels[status] || status
+}
+
+// Get change summary
+const getChangeSummary = (changes) => {
+  if (!changes) return ''
+  if (changes.similarity_score !== undefined) {
+    const diff = 100 - (changes.similarity_score * 100)
+    return `${diff.toFixed(1)}% cambios`
+  }
+  if (changes.changes_detected) {
+    return '🔴 Cambios detectados'
+  }
+  return '🟢 Sin cambios'
 }
 
 // Open image viewer for a zone
@@ -1187,7 +1354,10 @@ watch(zones, (newZones) => {
   if (newZones.length > 0 && !sidebarSelectedZone.value) {
     // Select first zone with image, or just first zone
     const zoneWithImage = newZones.find(z => z.last_image_path)
-    sidebarSelectedZone.value = zoneWithImage || newZones[0]
+    const selectedZone = zoneWithImage || newZones[0]
+    sidebarSelectedZone.value = selectedZone
+    // Load history for the selected zone
+    loadZoneHistory(selectedZone)
   }
 }, { immediate: true })
 </script>
@@ -2240,5 +2410,245 @@ watch(zones, (newZones) => {
 .fab-btn.active {
   background: linear-gradient(135deg, #4CAF50, #45a049);
   color: white;
+}
+
+/* History Section Styles */
+.sidebar-history {
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.history-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+.history-header h5 {
+  margin: 0;
+  font-size: 13px;
+  color: rgba(255, 255, 255, 0.8);
+}
+
+.btn-icon-sm {
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 14px;
+  padding: 4px;
+  opacity: 0.7;
+  transition: opacity 0.2s;
+}
+
+.btn-icon-sm:hover {
+  opacity: 1;
+}
+
+.history-loading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: rgba(255, 255, 255, 0.6);
+  font-size: 12px;
+  padding: 12px 0;
+}
+
+.spinner-sm {
+  width: 16px;
+  height: 16px;
+  border: 2px solid rgba(255, 255, 255, 0.2);
+  border-top-color: #4CAF50;
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+}
+
+.history-empty {
+  color: rgba(255, 255, 255, 0.5);
+  font-size: 12px;
+  text-align: center;
+  padding: 16px 0;
+}
+
+.history-timeline {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+.history-item {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  padding: 8px;
+  background: rgba(0, 0, 0, 0.2);
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  border: 1px solid transparent;
+}
+
+.history-item:hover {
+  background: rgba(0, 0, 0, 0.3);
+}
+
+.history-item.has-changes {
+  border-color: rgba(239, 68, 68, 0.5);
+  background: rgba(239, 68, 68, 0.1);
+}
+
+.history-item.failed {
+  opacity: 0.6;
+}
+
+.history-thumb {
+  width: 48px;
+  height: 48px;
+  border-radius: 6px;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+.history-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.thumb-placeholder-sm {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.3);
+  font-size: 18px;
+}
+
+.history-info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.history-date {
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.9);
+}
+
+.history-status {
+  font-size: 10px;
+  color: rgba(255, 255, 255, 0.6);
+}
+
+.history-status.completed {
+  color: #4CAF50;
+}
+
+.history-status.failed {
+  color: #ef4444;
+}
+
+.history-status.processing {
+  color: #f59e0b;
+}
+
+.history-changes {
+  font-size: 10px;
+  color: #ef4444;
+  font-weight: 500;
+}
+
+.history-compare {
+  flex-shrink: 0;
+}
+
+.btn-compare {
+  background: rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  color: #fff;
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 14px;
+  transition: all 0.2s;
+}
+
+.btn-compare:hover {
+  background: rgba(255, 255, 255, 0.2);
+}
+
+/* Compare Modal */
+.modal-compare {
+  max-width: 900px;
+  width: 95%;
+}
+
+.compare-container {
+  display: flex;
+  gap: 16px;
+  align-items: center;
+  padding: 16px 0;
+}
+
+.compare-image {
+  flex: 1;
+  text-align: center;
+}
+
+.compare-image h4 {
+  margin: 0 0 8px;
+  font-size: 14px;
+  color: rgba(255, 255, 255, 0.8);
+}
+
+.compare-image img {
+  width: 100%;
+  max-height: 400px;
+  object-fit: contain;
+  border-radius: 8px;
+}
+
+.compare-date {
+  display: block;
+  margin-top: 8px;
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.6);
+}
+
+.compare-divider {
+  font-size: 24px;
+  color: rgba(255, 255, 255, 0.5);
+  flex-shrink: 0;
+}
+
+.compare-changes {
+  margin-top: 16px;
+  padding: 16px;
+  background: rgba(0, 0, 0, 0.2);
+  border-radius: 8px;
+}
+
+.compare-changes h4 {
+  margin: 0 0 12px;
+  font-size: 14px;
+}
+
+.compare-changes pre {
+  margin: 0;
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.8);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
 }
 </style>
