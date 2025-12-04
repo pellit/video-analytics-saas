@@ -50,5 +50,3 @@ __all__ = [
     "compare_images_from_base64",
     "compare_images_from_paths",
 ]
-    "init_hybrid_analyzer"
-]
