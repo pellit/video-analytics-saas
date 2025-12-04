@@ -153,6 +153,10 @@ const initializeCameraDefaults = (camera) => {
   camera.depth_enabled = camera.depth_enabled ?? false
   camera.bev_enabled = camera.bev_enabled ?? false
   camera.tracking = camera.tracking ?? false
+  // FPS and overlay defaults
+  camera.analysis_fps = camera.analysis_fps ?? 5
+  camera.show_analysis_overlay = camera.show_analysis_overlay ?? true
+  camera.confidence_threshold = camera.confidence_threshold ?? 0.5
   return camera
 }
 
@@ -388,7 +392,10 @@ const updateCameraSettings = async (camera) => {
       face_recognition_enabled: camera.face_recognition_enabled,
       depth_enabled: camera.depth_enabled,
       bev_enabled: camera.bev_enabled,
-      tracking: camera.tracking 
+      tracking: camera.tracking,
+      analysis_fps: camera.analysis_fps,
+      show_analysis_overlay: camera.show_analysis_overlay,
+      confidence_threshold: camera.confidence_threshold
     }
     
     console.log('Guardando configuración:', payload)
@@ -963,6 +970,50 @@ const saveProfile = async () => {
                       <option value="yolo_nas_m">YOLO-NAS M</option>
                       <option value="rt_detr">RT-DETR</option>
                     </select>
+                  </div>
+
+                  <!-- Analysis FPS Control -->
+                  <div class="setting-row">
+                    <span class="setting-label">FPS de Análisis</span>
+                    <div class="fps-control">
+                      <input 
+                        type="range" 
+                        v-model.number="activeCamera.analysis_fps" 
+                        min="1" 
+                        max="30" 
+                        step="1"
+                        class="fps-slider"
+                      />
+                      <span class="fps-value">{{ activeCamera.analysis_fps || 5 }} fps</span>
+                    </div>
+                  </div>
+                  <p class="setting-hint">
+                    Menos FPS = Menor consumo de CPU. Recomendado: 5-10 fps para vigilancia.
+                  </p>
+
+                  <!-- Confidence Threshold -->
+                  <div class="setting-row">
+                    <span class="setting-label">Umbral de Confianza</span>
+                    <div class="fps-control">
+                      <input 
+                        type="range" 
+                        v-model.number="activeCamera.confidence_threshold" 
+                        min="0.1" 
+                        max="0.95" 
+                        step="0.05"
+                        class="fps-slider"
+                      />
+                      <span class="fps-value">{{ ((activeCamera.confidence_threshold || 0.5) * 100).toFixed(0) }}%</span>
+                    </div>
+                  </div>
+
+                  <!-- Show Overlay Toggle -->
+                  <div class="setting-row">
+                    <label class="toggle-switch">
+                      <input type="checkbox" v-model="activeCamera.show_analysis_overlay">
+                      <span class="toggle-slider"></span>
+                    </label>
+                    <span class="setting-label">Mostrar overlay (FPS/Modelo)</span>
                   </div>
                   
                   <div class="setting-row classes-row">
@@ -1869,6 +1920,63 @@ iframe.stream {
   background: #252526;
   padding: 0.15rem 0.4rem;
   border-radius: 0.25rem;
+}
+
+/* FPS Control Styles */
+.fps-control {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex: 1;
+}
+
+.fps-slider {
+  flex: 1;
+  -webkit-appearance: none;
+  appearance: none;
+  height: 6px;
+  background: #333;
+  border-radius: 3px;
+  outline: none;
+}
+
+.fps-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 16px;
+  height: 16px;
+  background: linear-gradient(135deg, #1f6feb, #388bfd);
+  border-radius: 50%;
+  cursor: pointer;
+  transition: transform 0.15s ease;
+}
+
+.fps-slider::-webkit-slider-thumb:hover {
+  transform: scale(1.2);
+}
+
+.fps-slider::-moz-range-thumb {
+  width: 16px;
+  height: 16px;
+  background: linear-gradient(135deg, #1f6feb, #388bfd);
+  border-radius: 50%;
+  cursor: pointer;
+  border: none;
+}
+
+.fps-value {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: #58a6ff;
+  min-width: 50px;
+  text-align: right;
+}
+
+.setting-hint {
+  font-size: 0.7rem;
+  color: #6e7681;
+  margin: 0.25rem 0 0.75rem;
+  line-height: 1.3;
 }
 
 .class-buttons {

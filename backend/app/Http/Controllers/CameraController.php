@@ -43,6 +43,9 @@ class CameraController extends Controller
             'depth_enabled' => 'sometimes|boolean',
             'bev_enabled' => 'sometimes|boolean',
             'tracking' => 'sometimes|boolean',
+            'analysis_fps' => 'sometimes|integer|min:1|max:60',
+            'show_analysis_overlay' => 'sometimes|boolean',
+            'confidence_threshold' => 'sometimes|numeric|min:0.1|max:1.0',
         ]);
         $camera->update($validated);
         return response()->json($camera);
@@ -65,7 +68,10 @@ class CameraController extends Controller
             'face_recognition_enabled' => $camera->face_recognition_enabled,
             'depth_enabled' => $camera->depth_enabled,
             'bev_enabled' => $camera->bev_enabled,
-            'tracking' => $camera->tracking ?? false  // Enviar opción de tracking
+            'tracking' => $camera->tracking ?? false,  // Enviar opción de tracking
+            'analysis_fps' => $camera->analysis_fps ?? 5,  // FPS de análisis
+            'show_analysis_overlay' => $camera->show_analysis_overlay ?? true,
+            'confidence_threshold' => $camera->confidence_threshold ?? 0.5,
         ]);
         Redis::publish('video_control', $message);
 

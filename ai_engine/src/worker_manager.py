@@ -231,10 +231,73 @@ def get_stream_url(youtube_url):
         print(f"❌ Error yt-dlp: {e}")
         return youtube_url
 
+
+def add_analysis_overlay(frame, analysis_fps, model_name, tracking_enabled=False, analyzing=True):
+    """
+    Add an overlay to the frame showing analysis FPS and model info.
+    
+    Args:
+        frame: The video frame
+        analysis_fps: Current analysis FPS
+        model_name: Name of the detection model
+        tracking_enabled: Whether tracking is enabled
+        analyzing: Whether this frame is being analyzed
+    
+    Returns:
+        Frame with overlay
+    """
+    h, w = frame.shape[:2]
+    
+    # Create semi-transparent overlay background
+    overlay = frame.copy()
+    
+    # Background rectangle (top-left corner)
+    bg_height = 70
+    bg_width = 220
+    cv2.rectangle(overlay, (5, 5), (bg_width, bg_height), (0, 0, 0), -1)
+    
+    # Blend overlay with original frame
+    alpha = 0.7
+    cv2.addWeighted(overlay, alpha, frame, 1 - alpha, 0, frame)
+    
+    # Text settings
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    font_scale = 0.5
+    thickness = 1
+    
+    # Line 1: Model name
+    model_text = f"Model: {model_name}"
+    if tracking_enabled:
+        model_text += " + Track"
+    cv2.putText(frame, model_text, (10, 25), font, font_scale, (255, 255, 255), thickness)
+    
+    # Line 2: Analysis FPS
+    fps_color = (0, 255, 0) if analysis_fps >= 3 else (0, 255, 255) if analysis_fps >= 1 else (0, 0, 255)
+    fps_text = f"Analysis FPS: {analysis_fps:.1f}"
+    cv2.putText(frame, fps_text, (10, 45), font, font_scale, fps_color, thickness)
+    
+    # Line 3: Status indicator
+    if analyzing:
+        status_text = "● ANALYZING"
+        status_color = (0, 255, 0)  # Green
+    else:
+        status_text = "○ STREAMING"
+        status_color = (200, 200, 200)  # Gray
+    cv2.putText(frame, status_text, (10, 65), font, font_scale, status_color, thickness)
+    
+    return frame
+
 def stream_thread(camera_id, url):
     print(f"🚀 Iniciando stream thread para camera {camera_id}")
     cap = None
     last_url = None
+    
+    # Frame skipping variables
+    frame_count = 0
+    last_analysis_time = time.time()
+    actual_analysis_fps = 0
+    fps_update_counter = 0
+    fps_samples = []
 
     while True:
         with global_state['lock']:
@@ -262,6 +325,7 @@ def stream_thread(camera_id, url):
             
             cap = cv2.VideoCapture(real_url)
             last_url = current_url
+            frame_count = 0
             
             # Verificación extra
             if not cap.isOpened():
@@ -281,12 +345,18 @@ def stream_thread(camera_id, url):
             time.sleep(0.1)
             continue
 
-        # Get config
+        frame_count += 1
+
+        # Get config including FPS settings
         detection_classes = []
         face_enabled = False
         depth_enabled = False
         bev_enabled = False
         tracking_enabled = False
+        analysis_fps = 5  # Default: analyze 5 frames per second
+        show_overlay = True
+        model_name = "YOLOv8"
+        
         with global_state['lock']:
             stream = global_state['streams'].get(str(camera_id))
             if stream:
@@ -295,6 +365,54 @@ def stream_thread(camera_id, url):
                 depth_enabled = stream.get('depth_enabled', False)
                 bev_enabled = stream.get('bev_enabled', False)
                 tracking_enabled = stream.get('tracking_enabled', False)
+                analysis_fps = stream.get('analysis_fps', 5)
+                show_overlay = stream.get('show_overlay', True)
+                model_name = stream.get('model_name', 'YOLOv8')
+
+        # Get video FPS to calculate frame skip
+        video_fps = cap.get(cv2.CAP_PROP_FPS)
+        if video_fps <= 0:
+            video_fps = 30  # Default assumption
+        
+        # Calculate how many frames to skip
+        # If video is 30fps and we want to analyze 5fps, skip 5 frames (30/5 - 1)
+        frame_skip = max(1, int(video_fps / analysis_fps))
+        
+        # Determine if we should analyze this frame
+        should_analyze = (frame_count % frame_skip == 0)
+        
+        # If not analyzing, just update frame with overlay and continue
+        if not should_analyze:
+            # Still show the frame but with cached detections
+            annotated_frame = frame.copy()
+            
+            # Add overlay if enabled
+            if show_overlay:
+                annotated_frame = add_analysis_overlay(
+                    annotated_frame, 
+                    actual_analysis_fps, 
+                    model_name,
+                    tracking_enabled,
+                    analyzing=False
+                )
+            
+            # Update current frame
+            with global_state['lock']:
+                stream = global_state['streams'].get(str(camera_id))
+                if stream:
+                    stream['current_frame'] = annotated_frame
+            continue
+        
+        # Track actual analysis FPS
+        current_time = time.time()
+        time_diff = current_time - last_analysis_time
+        if time_diff > 0:
+            instant_fps = 1.0 / time_diff
+            fps_samples.append(instant_fps)
+            if len(fps_samples) > 10:
+                fps_samples.pop(0)
+            actual_analysis_fps = sum(fps_samples) / len(fps_samples)
+        last_analysis_time = current_time
 
         # Inferencia con modelo abstracto
         classes_indices = None
@@ -530,6 +648,16 @@ def stream_thread(camera_id, url):
             except Exception as e:
                 print(f"⚠️ Face detection error: {e}")
 
+        # Add overlay before storing frame
+        if show_overlay:
+            annotated_frame = add_analysis_overlay(
+                annotated_frame, 
+                actual_analysis_fps, 
+                model_name,
+                tracking_enabled,
+                analyzing=True
+            )
+
         with global_state['lock']:
             stream = global_state['streams'].get(str(camera_id))
             if stream is not None:
@@ -591,8 +719,13 @@ def redis_listener_loop():
                     depth_enabled = data.get('depth_enabled', False)
                     bev_enabled = data.get('bev_enabled', False)
                     tracking_enabled = data.get('tracking', False)  # Tracking option
+                    analysis_fps = data.get('analysis_fps', 5)  # Default 5 FPS
+                    show_overlay = data.get('show_analysis_overlay', True)
+                    confidence_threshold = data.get('confidence_threshold', 0.5)
+                    model_name = data.get('model', 'YOLOv8')
                     
                     print(f"🎯 Config - Classes: {len(detection_classes) if detection_classes else 'all'}, Face: {face_enabled}, Depth: {depth_enabled}, BEV: {bev_enabled}, Tracking: {tracking_enabled}")
+                    print(f"📊 Analysis FPS: {analysis_fps}, Overlay: {show_overlay}, Confidence: {confidence_threshold}")
                     
                     with global_state['lock']:
                         if cam_id not in global_state['streams']:
@@ -606,7 +739,11 @@ def redis_listener_loop():
                                 'face_enabled': face_enabled,
                                 'depth_enabled': depth_enabled,
                                 'bev_enabled': bev_enabled,
-                                'tracking_enabled': tracking_enabled
+                                'tracking_enabled': tracking_enabled,
+                                'analysis_fps': analysis_fps,
+                                'show_overlay': show_overlay,
+                                'confidence_threshold': confidence_threshold,
+                                'model_name': model_name
                             }
                         else:
                             global_state['streams'][cam_id]['active'] = True
@@ -616,6 +753,10 @@ def redis_listener_loop():
                             global_state['streams'][cam_id]['depth_enabled'] = depth_enabled
                             global_state['streams'][cam_id]['bev_enabled'] = bev_enabled
                             global_state['streams'][cam_id]['tracking_enabled'] = tracking_enabled
+                            global_state['streams'][cam_id]['analysis_fps'] = analysis_fps
+                            global_state['streams'][cam_id]['show_overlay'] = show_overlay
+                            global_state['streams'][cam_id]['confidence_threshold'] = confidence_threshold
+                            global_state['streams'][cam_id]['model_name'] = model_name
                         
                         # Launch thread if missing
                         if not global_state['streams'][cam_id].get('thread'):
@@ -623,7 +764,6 @@ def redis_listener_loop():
                             global_state['streams'][cam_id]['thread'] = t
                             t.start()
                     # Allow workers to send a model name (eg. 'yolov8n' or 'yolov8n.pt')
-                    model_name = data.get('model')
                     if model_name:
                         try:
                             # Only reload if model name is different from current
