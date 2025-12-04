@@ -35,56 +35,143 @@
     </div>
 
     <!-- Global Map View (Default) -->
-    <div v-if="viewMode === 'map'" class="global-map-container">
-      <div id="global-satellite-map" ref="globalMapContainer" class="global-map"></div>
-      
-      <!-- Map Search -->
-      <div class="map-search-overlay">
-        <input 
-          v-model="searchQuery" 
-          @keyup.enter="searchLocation"
-          type="text" 
-          placeholder="🔍 Buscar ubicación..." 
-          class="map-search-input"
-        />
-        <button v-if="searchQuery" class="search-btn" @click="searchLocation">
-          Buscar
-        </button>
-      </div>
-      
-      <!-- Zone Info Popup -->
-      <div v-if="selectedZoneOnMap" class="zone-info-popup">
-        <button class="popup-close" @click="selectedZoneOnMap = null">✕</button>
-        <h4>{{ selectedZoneOnMap.name }}</h4>
-        <img 
-          v-if="selectedZoneOnMap.last_image_path" 
-          :src="getImageUrl(selectedZoneOnMap.last_image_path)" 
-          class="popup-image"
-        />
-        <div v-else class="popup-no-image">Sin imagen</div>
-        <div class="popup-info">
-          <span>📍 {{ formatCoords(selectedZoneOnMap.latitude, selectedZoneOnMap.longitude) }}</span>
-          <span>📏 Radio: {{ selectedZoneOnMap.radius_km }} km</span>
-        </div>
-        <div class="popup-actions">
-          <button class="btn-sm btn-primary" @click="analyzeZone(selectedZoneOnMap)">
-            🔍 Analizar
-          </button>
-          <button class="btn-sm btn-secondary" @click="goToZone(selectedZoneOnMap)">
-            📷 Ver Imagen
+    <div v-if="viewMode === 'map'" class="map-layout">
+      <!-- Map Container -->
+      <div class="global-map-container" :class="{ 'with-sidebar': showImagesSidebar }">
+        <div id="global-satellite-map" ref="globalMapContainer" class="global-map"></div>
+        
+        <!-- Map Search -->
+        <div class="map-search-overlay">
+          <input 
+            v-model="searchQuery" 
+            @keyup.enter="searchLocation"
+            type="text" 
+            placeholder="🔍 Buscar ubicación..." 
+            class="map-search-input"
+          />
+          <button v-if="searchQuery" class="search-btn" @click="searchLocation">
+            Buscar
           </button>
         </div>
+        
+        <!-- Zone Info Popup -->
+        <div v-if="selectedZoneOnMap" class="zone-info-popup">
+          <button class="popup-close" @click="selectedZoneOnMap = null">✕</button>
+          <h4>{{ selectedZoneOnMap.name }}</h4>
+          <img 
+            v-if="selectedZoneOnMap.last_image_path" 
+            :src="getImageUrl(selectedZoneOnMap.last_image_path)" 
+            class="popup-image"
+          />
+          <div v-else class="popup-no-image">Sin imagen</div>
+          <div class="popup-info">
+            <span>📍 {{ formatCoords(selectedZoneOnMap.latitude, selectedZoneOnMap.longitude) }}</span>
+            <span>📏 Radio: {{ selectedZoneOnMap.radius_km }} km</span>
+          </div>
+          <div class="popup-actions">
+            <button class="btn-sm btn-primary" @click="analyzeZone(selectedZoneOnMap)">
+              🔍 Analizar
+            </button>
+            <button class="btn-sm btn-secondary" @click="viewZoneInSidebar(selectedZoneOnMap)">
+              📷 Ver Imagen
+            </button>
+          </div>
+        </div>
+        
+        <!-- Quick Add Button on Map -->
+        <div class="map-fab-actions">
+          <button class="fab-btn" @click="enableMapAddMode" title="Agregar zona desde mapa">
+            ➕
+          </button>
+          <button class="fab-btn" @click="centerOnUserLocation" title="Mi ubicación">
+            🎯
+          </button>
+          <button 
+            class="fab-btn" 
+            :class="{ active: showImagesSidebar }"
+            @click="showImagesSidebar = !showImagesSidebar" 
+            title="Panel de imágenes"
+          >
+            🖼️
+          </button>
+        </div>
       </div>
-      
-      <!-- Quick Add Button on Map -->
-      <div class="map-fab-actions">
-        <button class="fab-btn" @click="enableMapAddMode" title="Agregar zona desde mapa">
-          ➕
-        </button>
-        <button class="fab-btn" @click="centerOnUserLocation" title="Mi ubicación">
-          🎯
-        </button>
-      </div>
+
+      <!-- Images Sidebar -->
+      <Transition name="slide">
+        <div v-if="showImagesSidebar" class="images-sidebar">
+          <div class="sidebar-header">
+            <h4>🛰️ Imágenes Sentinel</h4>
+            <button class="btn-close" @click="showImagesSidebar = false">✕</button>
+          </div>
+          
+          <div class="sidebar-content">
+            <!-- Selected zone image -->
+            <div v-if="sidebarSelectedZone" class="sidebar-zone-detail">
+              <h5>{{ sidebarSelectedZone.name }}</h5>
+              <div class="sidebar-image-container">
+                <img 
+                  v-if="sidebarSelectedZone.last_image_path"
+                  :src="getImageUrl(sidebarSelectedZone.last_image_path)"
+                  @click="openImageViewer(sidebarSelectedZone)"
+                  class="sidebar-main-image"
+                />
+                <div v-else class="sidebar-no-image">
+                  <span>🛰️</span>
+                  <p>Sin imagen disponible</p>
+                  <button class="btn-sm btn-primary" @click="analyzeZone(sidebarSelectedZone)">
+                    Obtener imagen
+                  </button>
+                </div>
+              </div>
+              <div class="sidebar-zone-info">
+                <span>📍 {{ formatCoords(sidebarSelectedZone.latitude, sidebarSelectedZone.longitude) }}</span>
+                <span>📏 Radio: {{ sidebarSelectedZone.radius_km }} km</span>
+                <span v-if="sidebarSelectedZone.last_capture">
+                  📅 {{ formatDate(sidebarSelectedZone.last_capture) }}
+                </span>
+              </div>
+              <div class="sidebar-actions">
+                <button class="btn-sm btn-primary" @click="analyzeZone(sidebarSelectedZone)">
+                  🔄 Actualizar
+                </button>
+                <button class="btn-sm btn-secondary" @click="openReportsModal(sidebarSelectedZone)">
+                  📊 Reportes
+                </button>
+              </div>
+            </div>
+            
+            <!-- All zones thumbnails -->
+            <div class="sidebar-zones-list">
+              <h5>Todas las Zonas</h5>
+              <div class="sidebar-thumbs-grid">
+                <div 
+                  v-for="zone in zones" 
+                  :key="zone.id" 
+                  class="sidebar-thumb"
+                  :class="{ 
+                    active: sidebarSelectedZone?.id === zone.id,
+                    'has-alerts': zone.unread_alerts_count > 0
+                  }"
+                  @click="selectZoneInSidebar(zone)"
+                >
+                  <img 
+                    v-if="zone.last_image_path" 
+                    :src="getImageUrl(zone.last_image_path)"
+                  />
+                  <div v-else class="thumb-placeholder">
+                    🛰️
+                  </div>
+                  <span class="thumb-label">{{ zone.name }}</span>
+                  <span v-if="zone.unread_alerts_count" class="thumb-badge">
+                    {{ zone.unread_alerts_count }}
+                  </span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </Transition>
     </div>
 
     <!-- Zones Grid View -->
@@ -377,6 +464,10 @@ const globalMapMarkers = ref([])
 const selectedZoneOnMap = ref(null)
 const searchQuery = ref('')
 const mapAddMode = ref(false)
+
+// Sidebar state
+const showImagesSidebar = ref(true)
+const sidebarSelectedZone = ref(null)
 
 // Map state for modal
 const mapContainer = ref(null)
@@ -804,6 +895,18 @@ const formatCoords = (lat, lon) => {
   return `${Math.abs(lat).toFixed(4)}°${latDir}, ${Math.abs(lon).toFixed(4)}°${lonDir}`
 }
 
+const formatDate = (dateStr) => {
+  if (!dateStr) return ''
+  const date = new Date(dateStr)
+  return date.toLocaleDateString('es-ES', {
+    day: '2-digit',
+    month: 'short',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit'
+  })
+}
+
 const formatTimeAgo = (dateStr) => {
   if (!dateStr) return ''
   const date = new Date(dateStr)
@@ -986,6 +1089,41 @@ const goToZone = (zone) => {
   // TODO: Could open image viewer modal here
 }
 
+// View zone in sidebar
+const viewZoneInSidebar = (zone) => {
+  sidebarSelectedZone.value = zone
+  showImagesSidebar.value = true
+  selectedZoneOnMap.value = null
+  
+  // Pan map to zone
+  if (globalMap && zone.latitude && zone.longitude) {
+    globalMap.setView([zone.latitude, zone.longitude], 14)
+  }
+}
+
+// Select zone in sidebar
+const selectZoneInSidebar = (zone) => {
+  sidebarSelectedZone.value = zone
+  
+  // Pan map to zone
+  if (globalMap && zone.latitude && zone.longitude) {
+    globalMap.setView([zone.latitude, zone.longitude], 14)
+  }
+}
+
+// Open image viewer for a zone
+const openImageViewer = (zone) => {
+  // Could open fullscreen modal here
+  emit('toast', { type: 'info', message: `Imagen de ${zone.name}` })
+}
+
+// Open reports modal for a zone
+const openReportsModal = (zone) => {
+  // This could open the existing reports functionality
+  emit('toast', { type: 'info', message: `Reportes de ${zone.name}` })
+  // Switch to grid view and scroll to zone's reports if available
+}
+
 // Watch zones changes to update markers
 watch(zones, () => {
   if (globalMap) {
@@ -993,11 +1131,42 @@ watch(zones, () => {
   }
 }, { deep: true })
 
-// Watch viewMode to init global map
+// Destroy global map
+const destroyGlobalMap = () => {
+  if (globalMap) {
+    // Clear markers first
+    globalMapMarkers.value.forEach(m => {
+      try {
+        globalMap.removeLayer(m)
+      } catch (e) {
+        // Ignore
+      }
+    })
+    globalMapMarkers.value = []
+    
+    // Remove map
+    try {
+      globalMap.remove()
+    } catch (e) {
+      console.warn('Error removing map:', e)
+    }
+    globalMap = null
+  }
+}
+
+// Watch viewMode to init/destroy global map
 watch(viewMode, async (newMode) => {
-  if (newMode === 'map' && !globalMap) {
+  if (newMode === 'map') {
+    // Always recreate map when switching to map view
     await nextTick()
-    initGlobalMap()
+    destroyGlobalMap()
+    await nextTick()
+    setTimeout(() => {
+      initGlobalMap()
+    }, 100)
+  } else {
+    // Destroy map when switching away
+    destroyGlobalMap()
   }
 })
 
@@ -1012,17 +1181,39 @@ onMounted(() => {
     }
   }, 100)
 })
+
+// Auto-select first zone with image when zones load
+watch(zones, (newZones) => {
+  if (newZones.length > 0 && !sidebarSelectedZone.value) {
+    // Select first zone with image, or just first zone
+    const zoneWithImage = newZones.find(z => z.last_image_path)
+    sidebarSelectedZone.value = zoneWithImage || newZones[0]
+  }
+}, { immediate: true })
 </script>
 
 <style scoped>
+/* Map Layout */
+.map-layout {
+  display: flex;
+  gap: 16px;
+  height: calc(100vh - 200px);
+  min-height: 400px;
+}
+
 /* Global Map Styles */
 .global-map-container {
   position: relative;
-  height: calc(100vh - 200px);
+  flex: 1;
+  height: 100%;
   min-height: 400px;
   border-radius: 12px;
   overflow: hidden;
-  margin-bottom: 1rem;
+  transition: all 0.3s ease;
+}
+
+.global-map-container.with-sidebar {
+  flex: 0 0 calc(100% - 350px);
 }
 
 .global-map {
@@ -1843,5 +2034,211 @@ onMounted(() => {
 
 :deep(.leaflet-popup-tip) {
   background: rgba(30, 30, 50, 0.95);
+}
+
+/* Images Sidebar */
+.images-sidebar {
+  width: 330px;
+  flex-shrink: 0;
+  background: rgba(30, 30, 45, 0.95);
+  backdrop-filter: blur(20px);
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.sidebar-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 16px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.sidebar-header h4 {
+  margin: 0;
+  font-size: 16px;
+  color: #fff;
+}
+
+.sidebar-header .btn-close {
+  background: none;
+  border: none;
+  color: rgba(255, 255, 255, 0.7);
+  cursor: pointer;
+  font-size: 18px;
+  padding: 4px;
+}
+
+.sidebar-header .btn-close:hover {
+  color: #fff;
+}
+
+.sidebar-content {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px;
+}
+
+.sidebar-zone-detail {
+  margin-bottom: 20px;
+}
+
+.sidebar-zone-detail h5 {
+  margin: 0 0 12px;
+  color: #fff;
+  font-size: 14px;
+}
+
+.sidebar-image-container {
+  border-radius: 8px;
+  overflow: hidden;
+  margin-bottom: 12px;
+}
+
+.sidebar-main-image {
+  width: 100%;
+  aspect-ratio: 4/3;
+  object-fit: cover;
+  cursor: pointer;
+  transition: transform 0.3s ease;
+}
+
+.sidebar-main-image:hover {
+  transform: scale(1.02);
+}
+
+.sidebar-no-image {
+  width: 100%;
+  aspect-ratio: 4/3;
+  background: rgba(0, 0, 0, 0.3);
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  gap: 12px;
+  color: rgba(255, 255, 255, 0.5);
+  border-radius: 8px;
+}
+
+.sidebar-no-image span {
+  font-size: 48px;
+}
+
+.sidebar-no-image p {
+  margin: 0;
+  font-size: 14px;
+}
+
+.sidebar-zone-info {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.7);
+  margin-bottom: 12px;
+}
+
+.sidebar-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.sidebar-zones-list {
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+  padding-top: 16px;
+}
+
+.sidebar-zones-list h5 {
+  margin: 0 0 12px;
+  color: rgba(255, 255, 255, 0.7);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.sidebar-thumbs-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 8px;
+}
+
+.sidebar-thumb {
+  position: relative;
+  border-radius: 8px;
+  overflow: hidden;
+  cursor: pointer;
+  border: 2px solid transparent;
+  transition: all 0.2s ease;
+}
+
+.sidebar-thumb.active {
+  border-color: #4CAF50;
+}
+
+.sidebar-thumb.has-alerts {
+  border-color: #ef4444;
+}
+
+.sidebar-thumb img {
+  width: 100%;
+  aspect-ratio: 1;
+  object-fit: cover;
+}
+
+.thumb-placeholder {
+  width: 100%;
+  aspect-ratio: 1;
+  background: rgba(0, 0, 0, 0.3);
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  font-size: 24px;
+}
+
+.thumb-label {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  background: rgba(0, 0, 0, 0.7);
+  padding: 4px 6px;
+  font-size: 10px;
+  color: #fff;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.thumb-badge {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  background: #ef4444;
+  color: white;
+  font-size: 10px;
+  padding: 2px 6px;
+  border-radius: 10px;
+  font-weight: bold;
+}
+
+/* Sidebar Transition */
+.slide-enter-active,
+.slide-leave-active {
+  transition: all 0.3s ease;
+}
+
+.slide-enter-from,
+.slide-leave-to {
+  opacity: 0;
+  transform: translateX(100%);
+}
+
+/* FAB Button Active State */
+.fab-btn.active {
+  background: linear-gradient(135deg, #4CAF50, #45a049);
+  color: white;
 }
 </style>
