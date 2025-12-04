@@ -1,5 +1,5 @@
 <script setup>
-import { ref, onMounted, computed } from 'vue'
+import { ref, onMounted, computed, onUnmounted } from 'vue'
 import NavBar from './NavBar.vue'
 
 const props = defineProps(['token', 'user'])
@@ -11,6 +11,119 @@ const apiKeys = ref([])
 const isLoading = ref(true)
 const showApiSection = ref(true)
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000/api'
+
+// Worker URL for AI Engine endpoints
+const getWorkerUrl = () => {
+    if (import.meta.env.VITE_STREAM_URL) {
+        return import.meta.env.VITE_STREAM_URL.replace('/video_feed', '')
+    }
+    return 'http://localhost:5000'
+}
+const WORKER_URL = getWorkerUrl()
+
+// --- Model Management State ---
+const showModelsSection = ref(true)
+const modelsInfo = ref(null)
+const exportStatus = ref(null)
+const selectedModelType = ref('yolo_nas_s')
+const selectedInputSize = ref(640)
+const isExporting = ref(false)
+let exportPollInterval = null
+
+// Load models info
+const loadModelsInfo = async () => {
+    try {
+        const res = await fetch(`${WORKER_URL}/models/export/available`)
+        if (res.ok) {
+            modelsInfo.value = await res.json()
+        }
+    } catch (e) {
+        console.error('Error loading models info:', e)
+    }
+}
+
+// Check export status
+const checkExportStatus = async () => {
+    try {
+        const res = await fetch(`${WORKER_URL}/models/export/status`)
+        if (res.ok) {
+            exportStatus.value = await res.json()
+            
+            // Stop polling if export completed or errored
+            if (exportStatus.value.status === 'completed' || exportStatus.value.status === 'error') {
+                stopExportPolling()
+                await loadModelsInfo() // Refresh models list
+            }
+        }
+    } catch (e) {
+        console.error('Error checking export status:', e)
+    }
+}
+
+// Start export
+const startExport = async (force = false) => {
+    isExporting.value = true
+    try {
+        const endpoint = force ? '/models/export/force' : '/models/export/start'
+        const res = await fetch(`${WORKER_URL}${endpoint}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                model_type: selectedModelType.value,
+                input_size: selectedInputSize.value
+            })
+        })
+        
+        const data = await res.json()
+        
+        if (data.success) {
+            // Start polling for status
+            startExportPolling()
+        } else if (data.warning) {
+            // Model already exists, ask for confirmation
+            if (confirm(`${data.warning}\n\n¿Desea sobreescribir el modelo existente?`)) {
+                await startExport(true)
+            }
+        } else {
+            alert(`Error: ${data.error}`)
+        }
+    } catch (e) {
+        console.error('Error starting export:', e)
+        alert(`Error iniciando exportación: ${e.message}`)
+    } finally {
+        isExporting.value = false
+    }
+}
+
+// Reload model after export
+const reloadModel = async () => {
+    try {
+        const res = await fetch(`${WORKER_URL}/models/reload`, { method: 'POST' })
+        const data = await res.json()
+        
+        if (data.success) {
+            alert(`✅ Modelo recargado: ${data.model}`)
+            await loadModelsInfo()
+        } else {
+            alert(`Error: ${data.error}`)
+        }
+    } catch (e) {
+        alert(`Error recargando modelo: ${e.message}`)
+    }
+}
+
+const startExportPolling = () => {
+    stopExportPolling()
+    exportPollInterval = setInterval(checkExportStatus, 2000)
+    checkExportStatus() // Immediate first check
+}
+
+const stopExportPolling = () => {
+    if (exportPollInterval) {
+        clearInterval(exportPollInterval)
+        exportPollInterval = null
+    }
+}
 
 onMounted(async () => {
   try {
@@ -33,11 +146,18 @@ onMounted(async () => {
       const keysData = await keysRes.json()
       apiKeys.value = keysData.keys || []
     }
+    
+    // Load models info
+    await loadModelsInfo()
   } catch (e) {
     console.error('Error loading stats:', e)
   } finally {
     isLoading.value = false
   }
+})
+
+onUnmounted(() => {
+    stopExportPolling()
 })
 
 const toggleApiKey = async (keyId) => {
@@ -60,6 +180,11 @@ const formatNumber = (num) => {
   if (num >= 1000000) return (num / 1000000).toFixed(1) + 'M'
   if (num >= 1000) return (num / 1000).toFixed(1) + 'K'
   return num?.toString() || '0'
+}
+
+const formatBytes = (mb) => {
+  if (mb >= 1024) return (mb / 1024).toFixed(1) + ' GB'
+  return mb?.toFixed(1) + ' MB'
 }
 
 const navNotifications = computed(() => [])
@@ -219,6 +344,129 @@ const navNotifications = computed(() => [])
               <span class="empty-icon">🔌</span>
               <p>No hay API keys registradas</p>
               <p class="empty-hint">Las apps de terceros pueden solicitar acceso a la API para enviar videos a analizar</p>
+            </div>
+          </div>
+        </section>
+
+        <!-- Model Management Section -->
+        <section class="section models-section">
+          <div class="section-header">
+            <h2>🤖 Gestión de Modelos IA</h2>
+            <button class="btn-toggle" @click="showModelsSection = !showModelsSection">
+              {{ showModelsSection ? '▼' : '▶' }}
+            </button>
+          </div>
+
+          <div v-if="showModelsSection" class="models-content">
+            <!-- Current Model Status -->
+            <div class="model-status-card">
+              <div class="status-header">
+                <span class="status-icon">📦</span>
+                <span class="status-title">Modelos ONNX Instalados</span>
+              </div>
+              
+              <div v-if="modelsInfo?.installed && Object.keys(modelsInfo.installed).length > 0" class="installed-models">
+                <div v-for="(info, name) in modelsInfo.installed" :key="name" class="model-item installed">
+                  <div class="model-icon">✅</div>
+                  <div class="model-details">
+                    <span class="model-name">{{ name }}.onnx</span>
+                    <span class="model-size">{{ formatBytes(info.size_mb) }}</span>
+                    <span v-if="info.validated" class="model-validated">Validado ✓</span>
+                  </div>
+                  <button class="btn-reload" @click="reloadModel" title="Cargar este modelo">
+                    🔄 Cargar
+                  </button>
+                </div>
+              </div>
+              
+              <div v-else class="no-models">
+                <span class="warning-icon">⚠️</span>
+                <p>No hay modelos ONNX instalados</p>
+                <p class="hint">Exporte un modelo YOLO-NAS para máxima velocidad en CPU</p>
+              </div>
+            </div>
+
+            <!-- Export New Model -->
+            <div class="export-section">
+              <h3>🚀 Exportar Modelo YOLO-NAS a ONNX</h3>
+              <p class="export-description">
+                ONNX es 2-3x más rápido que PyTorch en CPU. Recomendado para producción.
+              </p>
+
+              <div class="export-form">
+                <div class="form-group">
+                  <label>Modelo:</label>
+                  <select v-model="selectedModelType" :disabled="isExporting">
+                    <option value="yolo_nas_s">YOLO-NAS Small (~12M params) - Recomendado CPU</option>
+                    <option value="yolo_nas_m">YOLO-NAS Medium (~32M params) - Balanceado</option>
+                    <option value="yolo_nas_l">YOLO-NAS Large (~44M params) - Más preciso</option>
+                  </select>
+                </div>
+
+                <div class="form-group">
+                  <label>Tamaño de entrada:</label>
+                  <select v-model="selectedInputSize" :disabled="isExporting">
+                    <option :value="320">320x320 - Más rápido</option>
+                    <option :value="416">416x416 - Balanceado</option>
+                    <option :value="512">512x512 - Mejor detalle</option>
+                    <option :value="640">640x640 - Máxima precisión</option>
+                  </select>
+                </div>
+
+                <button 
+                  class="btn-export" 
+                  @click="startExport(false)"
+                  :disabled="isExporting || (exportStatus?.status === 'exporting')"
+                >
+                  {{ isExporting ? '⏳ Iniciando...' : '🚀 Exportar Modelo' }}
+                </button>
+              </div>
+
+              <!-- Export Progress -->
+              <div v-if="exportStatus && ['starting', 'importing', 'downloading', 'preparing', 'exporting', 'verifying'].includes(exportStatus.status)" class="export-progress">
+                <div class="progress-header">
+                  <span class="progress-icon">⏳</span>
+                  <span class="progress-status">{{ exportStatus.status }}</span>
+                </div>
+                <div class="progress-bar-container">
+                  <div class="progress-bar" :style="{ width: exportStatus.progress + '%' }"></div>
+                </div>
+                <span class="progress-percent">{{ exportStatus.progress }}%</span>
+              </div>
+
+              <!-- Export Complete -->
+              <div v-if="exportStatus?.status === 'completed'" class="export-complete">
+                <span class="complete-icon">✅</span>
+                <span class="complete-text">Exportación completada</span>
+                <div v-if="exportStatus.model_info" class="model-result">
+                  <span>Archivo: {{ exportStatus.model_info.size_mb }} MB</span>
+                  <span v-if="exportStatus.model_info.validated">Validación: OK</span>
+                </div>
+                <button class="btn-reload-after" @click="reloadModel">
+                  🔄 Cargar modelo ahora
+                </button>
+              </div>
+
+              <!-- Export Error -->
+              <div v-if="exportStatus?.status === 'error'" class="export-error">
+                <span class="error-icon">❌</span>
+                <span class="error-text">{{ exportStatus.error }}</span>
+                <button class="btn-retry-export" @click="startExport(true)">
+                  🔄 Reintentar
+                </button>
+              </div>
+            </div>
+
+            <!-- Available Models Info -->
+            <div v-if="modelsInfo?.available" class="available-models">
+              <h4>📋 Modelos Disponibles</h4>
+              <div class="models-grid">
+                <div v-for="(info, name) in modelsInfo.available" :key="name" class="model-info-card">
+                  <span class="model-name">{{ info.name }}</span>
+                  <span class="model-desc">{{ info.description }}</span>
+                  <span class="model-rec">📌 {{ info.recommended_for }}</span>
+                </div>
+              </div>
             </div>
           </div>
         </section>
@@ -782,5 +1030,370 @@ const navNotifications = computed(() => [])
   .api-stat-card {
     padding: 0.75rem;
   }
+}
+
+/* --- Models Section Styles --- */
+.models-section {
+  margin-top: 2rem;
+}
+
+.models-content {
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+}
+
+.model-status-card {
+  background: linear-gradient(135deg, #161b22 0%, #21262d 100%);
+  border: 1px solid #30363d;
+  border-radius: 0.75rem;
+  padding: 1.25rem;
+}
+
+.status-header {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 1rem;
+}
+
+.status-icon {
+  font-size: 1.25rem;
+}
+
+.status-title {
+  font-weight: 600;
+  color: #e6edf3;
+}
+
+.installed-models {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.model-item {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: 0.75rem 1rem;
+  background: rgba(35, 134, 54, 0.1);
+  border: 1px solid #238636;
+  border-radius: 0.5rem;
+}
+
+.model-icon {
+  font-size: 1.25rem;
+}
+
+.model-details {
+  flex-grow: 1;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 1rem;
+  align-items: center;
+}
+
+.model-name {
+  font-weight: 600;
+  color: #58a6ff;
+}
+
+.model-size {
+  color: #8b949e;
+  font-size: 0.875rem;
+}
+
+.model-validated {
+  color: #3fb950;
+  font-size: 0.8rem;
+  background: rgba(63, 185, 80, 0.1);
+  padding: 0.125rem 0.5rem;
+  border-radius: 0.25rem;
+}
+
+.btn-reload {
+  background: #238636;
+  color: white;
+  border: none;
+  padding: 0.5rem 0.75rem;
+  border-radius: 0.375rem;
+  cursor: pointer;
+  font-size: 0.8rem;
+  transition: all 0.2s;
+}
+
+.btn-reload:hover {
+  background: #2ea043;
+}
+
+.no-models {
+  text-align: center;
+  padding: 1.5rem;
+  color: #8b949e;
+}
+
+.warning-icon {
+  font-size: 2rem;
+  display: block;
+  margin-bottom: 0.5rem;
+}
+
+.no-models .hint {
+  font-size: 0.85rem;
+  opacity: 0.7;
+  margin-top: 0.25rem;
+}
+
+.export-section {
+  background: linear-gradient(135deg, #161b22 0%, #1c2128 100%);
+  border: 1px solid #30363d;
+  border-radius: 0.75rem;
+  padding: 1.25rem;
+}
+
+.export-section h3 {
+  color: #e6edf3;
+  margin-bottom: 0.5rem;
+}
+
+.export-description {
+  color: #8b949e;
+  font-size: 0.9rem;
+  margin-bottom: 1rem;
+}
+
+.export-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+  align-items: flex-end;
+}
+
+.form-group {
+  flex: 1;
+  min-width: 200px;
+}
+
+.form-group label {
+  display: block;
+  color: #8b949e;
+  font-size: 0.85rem;
+  margin-bottom: 0.375rem;
+}
+
+.form-group select {
+  width: 100%;
+  background: #0d1117;
+  color: #e6edf3;
+  border: 1px solid #30363d;
+  border-radius: 0.375rem;
+  padding: 0.625rem 0.75rem;
+  font-size: 0.9rem;
+}
+
+.form-group select:focus {
+  border-color: #58a6ff;
+  outline: none;
+}
+
+.btn-export {
+  background: linear-gradient(135deg, #238636, #2ea043);
+  color: white;
+  border: none;
+  padding: 0.75rem 1.5rem;
+  border-radius: 0.5rem;
+  cursor: pointer;
+  font-weight: 500;
+  font-size: 0.95rem;
+  transition: all 0.2s;
+  white-space: nowrap;
+}
+
+.btn-export:hover:not(:disabled) {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(35, 134, 54, 0.3);
+}
+
+.btn-export:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.export-progress {
+  margin-top: 1rem;
+  padding: 1rem;
+  background: rgba(88, 166, 255, 0.1);
+  border: 1px solid #58a6ff;
+  border-radius: 0.5rem;
+}
+
+.progress-header {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.5rem;
+}
+
+.progress-icon {
+  animation: pulse 1.5s infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+.progress-status {
+  color: #58a6ff;
+  font-weight: 500;
+  text-transform: capitalize;
+}
+
+.progress-bar-container {
+  background: #21262d;
+  border-radius: 0.25rem;
+  height: 8px;
+  overflow: hidden;
+}
+
+.progress-bar {
+  height: 100%;
+  background: linear-gradient(90deg, #58a6ff, #79c0ff);
+  border-radius: 0.25rem;
+  transition: width 0.3s ease;
+}
+
+.progress-percent {
+  display: block;
+  text-align: right;
+  color: #8b949e;
+  font-size: 0.8rem;
+  margin-top: 0.25rem;
+}
+
+.export-complete {
+  margin-top: 1rem;
+  padding: 1rem;
+  background: rgba(63, 185, 80, 0.1);
+  border: 1px solid #3fb950;
+  border-radius: 0.5rem;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.complete-icon {
+  font-size: 1.5rem;
+}
+
+.complete-text {
+  color: #3fb950;
+  font-weight: 600;
+}
+
+.model-result {
+  flex-basis: 100%;
+  display: flex;
+  gap: 1rem;
+  color: #8b949e;
+  font-size: 0.85rem;
+}
+
+.btn-reload-after {
+  margin-left: auto;
+  background: #238636;
+  color: white;
+  border: none;
+  padding: 0.5rem 1rem;
+  border-radius: 0.375rem;
+  cursor: pointer;
+  font-size: 0.9rem;
+  transition: all 0.2s;
+}
+
+.btn-reload-after:hover {
+  background: #2ea043;
+}
+
+.export-error {
+  margin-top: 1rem;
+  padding: 1rem;
+  background: rgba(248, 81, 73, 0.1);
+  border: 1px solid #f85149;
+  border-radius: 0.5rem;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.export-error .error-icon {
+  font-size: 1.5rem;
+}
+
+.export-error .error-text {
+  flex: 1;
+  color: #f85149;
+}
+
+.btn-retry-export {
+  background: #da3633;
+  color: white;
+  border: none;
+  padding: 0.5rem 1rem;
+  border-radius: 0.375rem;
+  cursor: pointer;
+  font-size: 0.9rem;
+  transition: all 0.2s;
+}
+
+.btn-retry-export:hover {
+  background: #f85149;
+}
+
+.available-models {
+  background: #161b22;
+  border: 1px solid #30363d;
+  border-radius: 0.75rem;
+  padding: 1rem;
+}
+
+.available-models h4 {
+  color: #e6edf3;
+  margin-bottom: 0.75rem;
+}
+
+.models-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+  gap: 1rem;
+}
+
+.model-info-card {
+  background: #0d1117;
+  border: 1px solid #30363d;
+  border-radius: 0.5rem;
+  padding: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.375rem;
+}
+
+.model-info-card .model-name {
+  font-weight: 600;
+  color: #58a6ff;
+}
+
+.model-info-card .model-desc {
+  color: #8b949e;
+  font-size: 0.85rem;
+}
+
+.model-info-card .model-rec {
+  color: #7ee787;
+  font-size: 0.8rem;
+  margin-top: 0.25rem;
 }
 </style>

@@ -620,6 +620,161 @@ def model_info():
     }
 
 
+# --- Model Export Service ---
+from .export_model import (
+    export_yolo_nas, 
+    get_export_status, 
+    list_models as list_export_models,
+    check_onnx_model,
+    get_available_models
+)
+
+# Export task running in background
+_export_task = None
+_export_lock = threading.Lock()
+
+
+@app.get('/models/export/available')
+def models_export_available():
+    """List available models for export and installed ONNX models."""
+    return list_export_models()
+
+
+@app.get('/models/export/status')
+def models_export_status():
+    """Get current export status."""
+    status = get_export_status()
+    with _export_lock:
+        status['task_running'] = _export_task is not None and _export_task.is_alive()
+    return status
+
+
+@app.post('/models/export/start')
+def models_export_start(data: dict):
+    """
+    Start exporting a YOLO-NAS model to ONNX format.
+    
+    Expects:
+        {
+            "model_type": "yolo_nas_s",  // or yolo_nas_m, yolo_nas_l
+            "input_size": 640            // 320, 416, 512, or 640
+        }
+    """
+    global _export_task
+    
+    model_type = data.get('model_type', 'yolo_nas_s')
+    input_size = data.get('input_size', 640)
+    
+    # Validate params
+    if model_type not in ['yolo_nas_s', 'yolo_nas_m', 'yolo_nas_l']:
+        return {"error": f"Invalid model_type: {model_type}", "success": False}
+    
+    if input_size not in [320, 416, 512, 640]:
+        return {"error": f"Invalid input_size: {input_size}", "success": False}
+    
+    with _export_lock:
+        if _export_task is not None and _export_task.is_alive():
+            return {"error": "Export already in progress", "success": False}
+        
+        # Check if model already exists
+        existing = check_onnx_model(model_type)
+        if existing.get('exists'):
+            return {
+                "warning": f"Model {model_type}.onnx already exists ({existing['size_mb']} MB)",
+                "existing": existing,
+                "message": "Use force=true to overwrite"
+            }
+        
+        # Start export in background thread
+        def run_export():
+            try:
+                export_yolo_nas(model_type, input_size)
+            except Exception as e:
+                print(f"❌ Export thread error: {e}")
+        
+        _export_task = threading.Thread(target=run_export, daemon=True)
+        _export_task.start()
+        
+        return {
+            "success": True,
+            "message": f"Started export of {model_type} with input size {input_size}",
+            "status_url": "/models/export/status"
+        }
+
+
+@app.post('/models/export/force')
+def models_export_force(data: dict):
+    """
+    Force export (overwrite existing model).
+    
+    Expects:
+        {
+            "model_type": "yolo_nas_s",
+            "input_size": 640
+        }
+    """
+    global _export_task
+    
+    model_type = data.get('model_type', 'yolo_nas_s')
+    input_size = data.get('input_size', 640)
+    
+    with _export_lock:
+        if _export_task is not None and _export_task.is_alive():
+            return {"error": "Export already in progress", "success": False}
+        
+        # Delete existing model if present
+        onnx_path = os.path.join(MODELS_DIR, f"{model_type}.onnx")
+        if os.path.exists(onnx_path):
+            os.remove(onnx_path)
+            print(f"🗑️ Removed existing model: {onnx_path}")
+        
+        def run_export():
+            try:
+                export_yolo_nas(model_type, input_size)
+            except Exception as e:
+                print(f"❌ Export thread error: {e}")
+        
+        _export_task = threading.Thread(target=run_export, daemon=True)
+        _export_task.start()
+        
+        return {
+            "success": True,
+            "message": f"Started forced export of {model_type}",
+            "status_url": "/models/export/status"
+        }
+
+
+@app.post('/models/reload')
+def models_reload():
+    """
+    Reload detection model (useful after exporting new ONNX model).
+    """
+    global model, class_names
+    
+    try:
+        print("🔄 Reloading detection model...")
+        new_model = get_detector()
+        
+        if new_model and new_model.is_loaded:
+            model = new_model
+            class_names = getattr(model, 'class_names', [])
+            return {
+                "success": True,
+                "model": model.__class__.__name__,
+                "message": "Model reloaded successfully"
+            }
+        else:
+            return {
+                "success": False,
+                "error": "Failed to load new model"
+            }
+    except Exception as e:
+        return {
+            "success": False,
+            "error": str(e)
+        }
+
+
 # --- Satellite Service ---
 satellite_service = get_satellite_service()
 
