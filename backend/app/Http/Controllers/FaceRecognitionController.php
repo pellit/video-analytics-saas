@@ -184,6 +184,48 @@ class FaceRecognitionController extends Controller
     }
 
     /**
+     * Get face detections for a specific camera.
+     */
+    public function getDetectionsByCamera(Request $request, $cameraId)
+    {
+        $limit = min($request->query('limit', 20), 100);
+        $identified = $request->query('identified'); // 'true', 'false', or null for all
+
+        $query = FaceDetection::with('knownFace:id,name')
+            ->where('camera_id', $cameraId)
+            ->orderBy('created_at', 'desc');
+
+        if ($identified === 'true') {
+            $query->identified();
+        } elseif ($identified === 'false') {
+            $query->unidentified();
+        }
+
+        $detections = $query->limit($limit)->get()->map(function ($det) {
+            return [
+                'id' => $det->id,
+                'camera_id' => $det->camera_id,
+                'confidence' => $det->confidence,
+                'similarity_score' => $det->similarity_score,
+                'face_image_url' => $det->face_image_path 
+                    ? Storage::url($det->face_image_path) 
+                    : null,
+                'face_image_base64' => null, // Not stored, only realtime
+                'bbox' => $det->bbox,
+                'identified' => $det->identified,
+                'matched_name' => $det->knownFace ? $det->knownFace->name : null,
+                'known_face' => $det->knownFace ? [
+                    'id' => $det->knownFace->id,
+                    'name' => $det->knownFace->name,
+                ] : null,
+                'created_at' => $det->created_at,
+            ];
+        });
+
+        return response()->json(['detections' => $detections]);
+    }
+
+    /**
      * Get recent face detections for a camera (unidentified faces for labeling).
      */
     public function getRecentDetections(Request $request)

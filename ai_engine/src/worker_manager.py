@@ -3,6 +3,7 @@ import json
 import time
 import threading
 import base64
+import asyncio
 import cv2
 import redis
 import numpy as np
@@ -86,6 +87,68 @@ def init_face_recognizer():
         FACE_RECOGNITION_AVAILABLE = False
     
     return FACE_RECOGNITION_AVAILABLE
+
+
+def non_max_suppression_faces(faces, iou_threshold=0.4):
+    """
+    Apply Non-Maximum Suppression to remove duplicate face detections.
+    
+    Args:
+        faces: List of face arrays [x, y, w, h, landmarks..., score]
+        iou_threshold: IoU threshold for suppression
+    
+    Returns:
+        List of filtered face detections
+    """
+    if not faces or len(faces) == 0:
+        return []
+    
+    # Convert to numpy array
+    faces_arr = np.array(faces)
+    
+    # Extract boxes and scores
+    boxes = faces_arr[:, 0:4]  # x, y, w, h
+    scores = faces_arr[:, -1]  # confidence score
+    
+    # Convert to x1, y1, x2, y2 format
+    x1 = boxes[:, 0]
+    y1 = boxes[:, 1]
+    x2 = boxes[:, 0] + boxes[:, 2]
+    y2 = boxes[:, 1] + boxes[:, 3]
+    
+    # Sort by score (descending)
+    indices = np.argsort(scores)[::-1]
+    
+    keep = []
+    while len(indices) > 0:
+        i = indices[0]
+        keep.append(i)
+        
+        if len(indices) == 1:
+            break
+        
+        # Compute IoU with remaining boxes
+        xx1 = np.maximum(x1[i], x1[indices[1:]])
+        yy1 = np.maximum(y1[i], y1[indices[1:]])
+        xx2 = np.minimum(x2[i], x2[indices[1:]])
+        yy2 = np.minimum(y2[i], y2[indices[1:]])
+        
+        w = np.maximum(0, xx2 - xx1)
+        h = np.maximum(0, yy2 - yy1)
+        
+        intersection = w * h
+        area_i = (x2[i] - x1[i]) * (y2[i] - y1[i])
+        area_others = (x2[indices[1:]] - x1[indices[1:]]) * (y2[indices[1:]] - y1[indices[1:]])
+        union = area_i + area_others - intersection
+        
+        iou = intersection / (union + 1e-6)
+        
+        # Keep boxes with IoU below threshold
+        remaining = np.where(iou <= iou_threshold)[0]
+        indices = indices[remaining + 1]
+    
+    return [faces[i] for i in keep]
+
 
 # Try to init on startup (but don't fail if unavailable)
 init_face_recognizer()
@@ -301,19 +364,58 @@ def stream_thread(camera_id, url):
                 print(f"⚠️ Depth error: {e}")
 
         # Face Recognition Logic (only if models are available)
+        # Multi-scale detection for better results with different face sizes
         if face_enabled and os.path.exists(YUNET_PATH):
             try:
                 h, w, _ = frame.shape
-                # Instantiate detector for current frame size
-                face_detector = cv2.FaceDetectorYN.create(YUNET_PATH, "", (w, h))
+                all_faces = []
                 
-                # Detect
-                retval, faces = face_detector.detect(frame)
-                if faces is not None:
+                # Multi-scale detection: try different scales for better detection
+                # Scales: original, 1.5x upscale for small faces, 0.75x for performance
+                scales = [1.0]  # Base scale
+                
+                # Add upscale for small faces if frame is large enough
+                if min(h, w) > 400:
+                    scales.append(1.5)  # Upscale to detect small faces
+                if min(h, w) > 600:
+                    scales.append(0.5)  # Downscale for very large faces
+                
+                for scale in scales:
+                    if scale == 1.0:
+                        scaled_frame = frame
+                        sh, sw = h, w
+                    else:
+                        sw, sh = int(w * scale), int(h * scale)
+                        scaled_frame = cv2.resize(frame, (sw, sh), interpolation=cv2.INTER_LINEAR)
+                    
+                    # Create detector for this scale
+                    face_detector = cv2.FaceDetectorYN.create(YUNET_PATH, "", (sw, sh))
+                    face_detector.setScoreThreshold(0.6)  # Lower threshold for better recall
+                    
+                    # Detect faces
+                    retval, faces = face_detector.detect(scaled_frame)
+                    
+                    if faces is not None:
+                        for face in faces:
+                            # Scale back coordinates to original frame size
+                            if scale != 1.0:
+                                face_scaled = face.copy()
+                                face_scaled[0:4] = face_scaled[0:4] / scale  # x, y, w, h
+                                face_scaled[4:14] = face_scaled[4:14] / scale  # landmarks
+                                all_faces.append(face_scaled)
+                            else:
+                                all_faces.append(face)
+                
+                # Remove duplicate detections (NMS-like)
+                faces = non_max_suppression_faces(all_faces, iou_threshold=0.4) if all_faces else None
+                
+                if faces is not None and len(faces) > 0:
                     for face in faces:
+                        # Convert to numpy array if needed
+                        face = np.array(face) if not isinstance(face, np.ndarray) else face
                         # Face format: x1, y1, w, h, x_re, y_re, x_le, y_le, x_nt, y_nt, x_rcm, y_rcm, x_lcm, y_lcm, score
                         box = face[0:4].astype(np.int32)
-                        score = face[-1]
+                        score = float(face[-1])
                         
                         # Extract face embedding using SFace (if available)
                         embedding_list = None
@@ -601,6 +703,53 @@ def health_check():
         'face_detection_available': os.path.exists(YUNET_PATH),
         'face_recognition_available': FACE_RECOGNITION_AVAILABLE
     }
+
+
+# Face events SSE endpoint
+@app.get('/events/faces')
+async def face_events_sse(camera_id: int = None):
+    """
+    Server-Sent Events endpoint for real-time face detection updates.
+    Subscribes to Redis pub/sub for face_detected events.
+    """
+    async def event_generator():
+        pubsub = r.pubsub()
+        pubsub.subscribe('detections')
+        
+        try:
+            yield f"data: {json.dumps({'event': 'connected', 'camera_id': camera_id})}\n\n"
+            
+            while True:
+                message = pubsub.get_message(timeout=1.0)
+                if message and message['type'] == 'message':
+                    try:
+                        data = json.loads(message['data'])
+                        # Filter for face events only
+                        if data.get('event') == 'face_detected':
+                            # Filter by camera if specified
+                            if camera_id is None or data.get('camera_id') == camera_id:
+                                yield f"data: {json.dumps(data)}\n\n"
+                    except json.JSONDecodeError:
+                        pass
+                else:
+                    # Send keepalive
+                    yield f": keepalive\n\n"
+                
+                await asyncio.sleep(0.1)
+        finally:
+            pubsub.unsubscribe('detections')
+            pubsub.close()
+    
+    from fastapi.responses import StreamingResponse
+    return StreamingResponse(
+        event_generator(),
+        media_type='text/event-stream',
+        headers={
+            'Cache-Control': 'no-cache',
+            'Connection': 'keep-alive',
+            'X-Accel-Buffering': 'no'
+        }
+    )
 
 
 @app.get('/models')

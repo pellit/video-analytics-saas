@@ -36,6 +36,9 @@ Route::post('/cameras/{camera}/apply-recommendations', [SceneAnalysisController:
 Route::get('/cameras/{id}/detections', [\App\Http\Controllers\DetectionController::class, 'index']);
 Route::post('/cameras/{id}/detections', [\App\Http\Controllers\DetectionController::class, 'store']);
 
+// Detecciones de rostros por cámara
+Route::get('/cameras/{id}/face-detections', [\App\Http\Controllers\FaceRecognitionController::class, 'getDetectionsByCamera']);
+
 // Alert Rules (user-specific)
 Route::get('/alerts', [\App\Http\Controllers\AlertController::class, 'index']);
 Route::post('/alerts', [\App\Http\Controllers\AlertController::class, 'store']);

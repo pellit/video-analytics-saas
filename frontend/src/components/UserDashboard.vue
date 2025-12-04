@@ -2,6 +2,7 @@
 import { ref, onMounted, computed, watch, nextTick, onUnmounted } from 'vue'
 import NavBar from './NavBar.vue'
 import FaceRecognitionPanel from './FaceRecognitionPanel.vue'
+import FaceDetectionPIP from './FaceDetectionPIP.vue'
 import ToastNotification from './ToastNotification.vue'
 import SatellitePanel from './SatellitePanel.vue'
 import SatelliteReportsPanel from './SatelliteReportsPanel.vue'
@@ -101,6 +102,17 @@ const closeToast = () => {
 // Handler for child component toast events
 const handleToast = ({ message, type }) => {
   showToast(message, type)
+}
+
+// Face detection PIP handlers
+const handleFaceSelected = (face) => {
+  console.log('Face selected:', face)
+  // Could open detail view or highlight in stream
+}
+
+const handleFaceIdentified = ({ face, identity }) => {
+  console.log('Face identified:', face, identity)
+  showToast(`Rostro identificado como "${identity.name}"`, 'success')
 }
 
 // Settings panel accordion state
@@ -1136,6 +1148,18 @@ const saveProfile = async () => {
           />
         </div>
       </div>
+
+      <!-- Face Detection PIP (Picture-in-Picture) -->
+      <FaceDetectionPIP
+        v-if="activeCamera?.face_recognition_enabled && isProcessing"
+        :camera-id="activeCamera?.id"
+        :token="token"
+        :max-visible="5"
+        :show-empty="true"
+        @face-selected="handleFaceSelected"
+        @face-identified="handleFaceIdentified"
+        @notification="handleToast"
+      />
 
     </div>
     

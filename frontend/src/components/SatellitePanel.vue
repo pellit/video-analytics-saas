@@ -3,9 +3,29 @@
     <!-- Header -->
     <div class="panel-header">
       <h3>🛰️ Zonas Satelitales</h3>
-      <button class="btn-add" @click="openAddZoneModal" :disabled="!serviceAvailable">
-        <span class="icon">+</span> Nueva Zona
-      </button>
+      <div class="header-actions">
+        <div class="view-toggle">
+          <button 
+            class="view-btn" 
+            :class="{ active: viewMode === 'map' }" 
+            @click="viewMode = 'map'"
+            title="Vista de mapa"
+          >
+            🗺️
+          </button>
+          <button 
+            class="view-btn" 
+            :class="{ active: viewMode === 'grid' }" 
+            @click="viewMode = 'grid'"
+            title="Vista de tarjetas"
+          >
+            📋
+          </button>
+        </div>
+        <button class="btn-add" @click="openAddZoneModal" :disabled="!serviceAvailable">
+          <span class="icon">+</span> Nueva Zona
+        </button>
+      </div>
     </div>
 
     <!-- Service Status -->
@@ -14,8 +34,61 @@
       <span>Servicio satelital no configurado. Configura SENTINEL_CLIENT_ID y SENTINEL_CLIENT_SECRET.</span>
     </div>
 
-    <!-- Zones Grid -->
-    <div class="zones-grid">
+    <!-- Global Map View (Default) -->
+    <div v-if="viewMode === 'map'" class="global-map-container">
+      <div id="global-satellite-map" ref="globalMapContainer" class="global-map"></div>
+      
+      <!-- Map Search -->
+      <div class="map-search-overlay">
+        <input 
+          v-model="searchQuery" 
+          @keyup.enter="searchLocation"
+          type="text" 
+          placeholder="🔍 Buscar ubicación..." 
+          class="map-search-input"
+        />
+        <button v-if="searchQuery" class="search-btn" @click="searchLocation">
+          Buscar
+        </button>
+      </div>
+      
+      <!-- Zone Info Popup -->
+      <div v-if="selectedZoneOnMap" class="zone-info-popup">
+        <button class="popup-close" @click="selectedZoneOnMap = null">✕</button>
+        <h4>{{ selectedZoneOnMap.name }}</h4>
+        <img 
+          v-if="selectedZoneOnMap.last_image_path" 
+          :src="getImageUrl(selectedZoneOnMap.last_image_path)" 
+          class="popup-image"
+        />
+        <div v-else class="popup-no-image">Sin imagen</div>
+        <div class="popup-info">
+          <span>📍 {{ formatCoords(selectedZoneOnMap.latitude, selectedZoneOnMap.longitude) }}</span>
+          <span>📏 Radio: {{ selectedZoneOnMap.radius_km }} km</span>
+        </div>
+        <div class="popup-actions">
+          <button class="btn-sm btn-primary" @click="analyzeZone(selectedZoneOnMap)">
+            🔍 Analizar
+          </button>
+          <button class="btn-sm btn-secondary" @click="goToZone(selectedZoneOnMap)">
+            📷 Ver Imagen
+          </button>
+        </div>
+      </div>
+      
+      <!-- Quick Add Button on Map -->
+      <div class="map-fab-actions">
+        <button class="fab-btn" @click="enableMapAddMode" title="Agregar zona desde mapa">
+          ➕
+        </button>
+        <button class="fab-btn" @click="centerOnUserLocation" title="Mi ubicación">
+          🎯
+        </button>
+      </div>
+    </div>
+
+    <!-- Zones Grid View -->
+    <div v-else class="zones-grid">
       <div 
         v-for="zone in zones" 
         :key="zone.id" 
@@ -296,7 +369,16 @@ const deleting = ref(false)
 const zoneToDelete = ref(null)
 const serviceAvailable = ref(true)
 
-// Map state
+// View mode state
+const viewMode = ref('map') // 'map' or 'grid'
+const globalMapContainer = ref(null)
+let globalMap = null
+const globalMapMarkers = ref([])
+const selectedZoneOnMap = ref(null)
+const searchQuery = ref('')
+const mapAddMode = ref(false)
+
+// Map state for modal
 const mapContainer = ref(null)
 let map = null
 let marker = null
@@ -749,14 +831,401 @@ const getUniqueDetections = (detections) => {
   return Object.values(unique)
 }
 
+// Initialize global map
+const initGlobalMap = async () => {
+  try {
+    const L = await loadLeaflet()
+    
+    await nextTick()
+    
+    if (!globalMapContainer.value) return
+    
+    // Create map centered on world view
+    globalMap = L.map(globalMapContainer.value, {
+      center: [20, 0],  // World center
+      zoom: 2,
+      zoomControl: true,
+      worldCopyJump: true
+    })
+    
+    // Add satellite base layer (default)
+    const satellite = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+      attribution: '© Esri',
+      maxZoom: 19
+    }).addTo(globalMap)
+    
+    // Add street layer option
+    const streets = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      attribution: '© OpenStreetMap',
+      maxZoom: 19
+    })
+    
+    // Layer control
+    const baseMaps = {
+      "🛰️ Satélite": satellite,
+      "🗺️ Mapa": streets
+    }
+    L.control.layers(baseMaps).addTo(globalMap)
+    
+    // Add existing zones as markers
+    updateGlobalMapMarkers()
+    
+    // Click handler for adding new zone from map
+    globalMap.on('click', (e) => {
+      if (mapAddMode.value) {
+        const { lat, lng } = e.latlng
+        newZone.value.latitude = parseFloat(lat.toFixed(6))
+        newZone.value.longitude = parseFloat(lng.toFixed(6))
+        mapAddMode.value = false
+        openAddZoneModal()
+      }
+    })
+    
+  } catch (error) {
+    console.error('Error loading global map:', error)
+  }
+}
+
+// Update markers on global map
+const updateGlobalMapMarkers = () => {
+  if (!globalMap || !window.L) return
+  
+  const L = window.L
+  
+  // Clear existing markers
+  globalMapMarkers.value.forEach(m => globalMap.removeLayer(m))
+  globalMapMarkers.value = []
+  
+  // Add markers for each zone
+  zones.value.forEach(zone => {
+    if (zone.latitude && zone.longitude) {
+      // Create custom icon
+      const icon = L.divIcon({
+        className: 'zone-marker',
+        html: `<div class="zone-marker-inner">${zone.unread_alerts_count > 0 ? '🔴' : '🟢'}</div>`,
+        iconSize: [30, 30],
+        iconAnchor: [15, 15]
+      })
+      
+      const markerObj = L.marker([zone.latitude, zone.longitude], { icon })
+        .addTo(globalMap)
+        .on('click', () => {
+          selectedZoneOnMap.value = zone
+        })
+      
+      // Add circle for radius
+      const circleObj = L.circle([zone.latitude, zone.longitude], {
+        radius: zone.radius_km * 1000, // km to m
+        color: zone.unread_alerts_count > 0 ? '#ef4444' : '#22c55e',
+        fillOpacity: 0.1,
+        weight: 2
+      }).addTo(globalMap)
+      
+      globalMapMarkers.value.push(markerObj)
+      globalMapMarkers.value.push(circleObj)
+    }
+  })
+}
+
+// Search location using Nominatim
+const searchLocation = async () => {
+  if (!searchQuery.value.trim() || !globalMap) return
+  
+  try {
+    const response = await fetch(
+      `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(searchQuery.value)}`
+    )
+    const results = await response.json()
+    
+    if (results.length > 0) {
+      const { lat, lon, display_name } = results[0]
+      globalMap.setView([parseFloat(lat), parseFloat(lon)], 12)
+      
+      emit('toast', { type: 'success', message: `Ubicación encontrada: ${display_name.split(',')[0]}` })
+    } else {
+      emit('toast', { type: 'warning', message: 'No se encontró la ubicación' })
+    }
+  } catch (e) {
+    console.error('Search error:', e)
+    emit('toast', { type: 'error', message: 'Error al buscar ubicación' })
+  }
+}
+
+// Enable add mode on map
+const enableMapAddMode = () => {
+  mapAddMode.value = true
+  emit('toast', { type: 'info', message: 'Haz clic en el mapa para agregar una zona' })
+}
+
+// Center on user location
+const centerOnUserLocation = () => {
+  if (!globalMap) return
+  
+  if (navigator.geolocation) {
+    navigator.geolocation.getCurrentPosition(
+      (position) => {
+        const { latitude, longitude } = position.coords
+        globalMap.setView([latitude, longitude], 12)
+      },
+      (error) => {
+        console.error('Geolocation error:', error)
+        emit('toast', { type: 'error', message: 'No se pudo obtener tu ubicación' })
+      }
+    )
+  } else {
+    emit('toast', { type: 'warning', message: 'Geolocalización no disponible' })
+  }
+}
+
+// Go to zone (show image modal)
+const goToZone = (zone) => {
+  if (globalMap && zone.latitude && zone.longitude) {
+    globalMap.setView([zone.latitude, zone.longitude], 14)
+  }
+  selectedZoneOnMap.value = null
+  // TODO: Could open image viewer modal here
+}
+
+// Watch zones changes to update markers
+watch(zones, () => {
+  if (globalMap) {
+    updateGlobalMapMarkers()
+  }
+}, { deep: true })
+
+// Watch viewMode to init global map
+watch(viewMode, async (newMode) => {
+  if (newMode === 'map' && !globalMap) {
+    await nextTick()
+    initGlobalMap()
+  }
+})
+
 // Lifecycle
 onMounted(() => {
   loadZones()
   checkServiceStatus()
+  // Init global map after a small delay
+  setTimeout(() => {
+    if (viewMode.value === 'map') {
+      initGlobalMap()
+    }
+  }, 100)
 })
 </script>
 
 <style scoped>
+/* Global Map Styles */
+.global-map-container {
+  position: relative;
+  height: calc(100vh - 200px);
+  min-height: 400px;
+  border-radius: 12px;
+  overflow: hidden;
+  margin-bottom: 1rem;
+}
+
+.global-map {
+  width: 100%;
+  height: 100%;
+  z-index: 1;
+}
+
+.map-search-overlay {
+  position: absolute;
+  top: 10px;
+  left: 50px;
+  z-index: 1000;
+  display: flex;
+  gap: 8px;
+}
+
+.map-search-input {
+  width: 280px;
+  padding: 10px 16px;
+  background: rgba(30, 30, 45, 0.95);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 8px;
+  color: #fff;
+  font-size: 14px;
+  backdrop-filter: blur(10px);
+}
+
+.map-search-input::placeholder {
+  color: rgba(255, 255, 255, 0.5);
+}
+
+.map-search-input:focus {
+  outline: none;
+  border-color: #4CAF50;
+}
+
+.search-btn {
+  padding: 10px 16px;
+  background: linear-gradient(135deg, #4CAF50, #45a049);
+  color: white;
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 14px;
+}
+
+.zone-info-popup {
+  position: absolute;
+  bottom: 20px;
+  left: 20px;
+  z-index: 1000;
+  background: rgba(30, 30, 45, 0.95);
+  backdrop-filter: blur(20px);
+  border-radius: 12px;
+  padding: 16px;
+  min-width: 250px;
+  max-width: 300px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+}
+
+.popup-close {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  background: none;
+  border: none;
+  color: rgba(255, 255, 255, 0.7);
+  cursor: pointer;
+  font-size: 16px;
+}
+
+.zone-info-popup h4 {
+  margin: 0 0 12px;
+  color: #fff;
+  font-size: 16px;
+}
+
+.popup-image {
+  width: 100%;
+  height: 120px;
+  object-fit: cover;
+  border-radius: 8px;
+  margin-bottom: 12px;
+}
+
+.popup-no-image {
+  width: 100%;
+  height: 120px;
+  background: rgba(255, 255, 255, 0.05);
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: rgba(255, 255, 255, 0.4);
+  margin-bottom: 12px;
+}
+
+.popup-info {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.7);
+  margin-bottom: 12px;
+}
+
+.popup-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.btn-sm {
+  padding: 8px 12px;
+  font-size: 12px;
+  border-radius: 6px;
+  border: none;
+  cursor: pointer;
+}
+
+.btn-sm.btn-primary {
+  background: linear-gradient(135deg, #4CAF50, #45a049);
+  color: white;
+}
+
+.btn-sm.btn-secondary {
+  background: rgba(255, 255, 255, 0.1);
+  color: rgba(255, 255, 255, 0.8);
+}
+
+.map-fab-actions {
+  position: absolute;
+  bottom: 20px;
+  right: 20px;
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.fab-btn {
+  width: 50px;
+  height: 50px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #4CAF50, #45a049);
+  color: white;
+  border: none;
+  font-size: 20px;
+  cursor: pointer;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+  transition: transform 0.2s, box-shadow 0.2s;
+}
+
+.fab-btn:hover {
+  transform: scale(1.1);
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.4);
+}
+
+/* Zone marker styles */
+:deep(.zone-marker) {
+  background: transparent !important;
+  border: none !important;
+}
+
+:deep(.zone-marker-inner) {
+  font-size: 20px;
+  text-shadow: 0 2px 4px rgba(0, 0, 0, 0.5);
+}
+
+/* Header styles */
+.header-actions {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+}
+
+.view-toggle {
+  display: flex;
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.view-btn {
+  padding: 8px 12px;
+  background: transparent;
+  border: none;
+  color: rgba(255, 255, 255, 0.6);
+  cursor: pointer;
+  font-size: 16px;
+  transition: all 0.2s;
+}
+
+.view-btn.active {
+  background: rgba(255, 255, 255, 0.2);
+  color: #fff;
+}
+
+.view-btn:hover:not(.active) {
+  background: rgba(255, 255, 255, 0.1);
+}
+
 .satellite-panel {
   padding: 1rem;
 }
