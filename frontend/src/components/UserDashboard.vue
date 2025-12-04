@@ -3,6 +3,7 @@ import { ref, onMounted, computed, watch, nextTick, onUnmounted } from 'vue'
 import NavBar from './NavBar.vue'
 import FaceRecognitionPanel from './FaceRecognitionPanel.vue'
 import ToastNotification from './ToastNotification.vue'
+import SatellitePanel from './SatellitePanel.vue'
 
 const props = defineProps(['token', 'user'])
 const emit = defineEmits(['logout', 'navigate'])
@@ -45,6 +46,7 @@ const isProcessing = ref(false)
 const showAdd = ref(false)
 const newCam = ref({ name: '', url: '' })
 const showFacePanel = ref(false) // Face recognition panel visibility
+const activeView = ref('cameras') // 'cameras' | 'satellite'
 
 // Fullscreen HUD mode
 const isFullscreen = ref(false)
@@ -94,6 +96,10 @@ const showToast = (message, type = 'success') => {
 }
 const closeToast = () => {
   toast.value.show = false
+}
+// Handler for child component toast events
+const handleToast = ({ message, type }) => {
+  showToast(message, type)
 }
 
 // Settings panel accordion state
@@ -690,24 +696,60 @@ const saveProfile = async () => {
     />
     
     <div class="dashboard-user control-center">
-      <!-- Sidebar / Camera List -->
+      <!-- Sidebar / Navigation -->
       <div class="sidebar">
-        <div class="sidebar-header">
-          <h3>🎥 Cámaras</h3>
-          <button @click="showAdd = true" class="btn-icon" title="Añadir Cámara">+</button>
+        <!-- View Tabs -->
+        <div class="view-tabs">
+          <button 
+            class="view-tab" 
+            :class="{ active: activeView === 'cameras' }"
+            @click="activeView = 'cameras'"
+          >
+            🎥 Cámaras
+          </button>
+          <button 
+            class="view-tab" 
+            :class="{ active: activeView === 'satellite' }"
+            @click="activeView = 'satellite'"
+          >
+            🛰️ Satélite
+          </button>
         </div>
-        <div class="cam-list">
-          <div v-for="cam in cameras" :key="cam.id" 
-               class="cam-item" :class="{active: activeCamera?.id === cam.id}"
-               @click="activeCamera = cam">
-               <span class="status-dot" :class="{online: isCameraRunning(cam.id)}"></span>
-               {{ cam.name }}
+        
+        <!-- Camera List (when cameras view active) -->
+        <template v-if="activeView === 'cameras'">
+          <div class="sidebar-header">
+            <h3>🎥 Cámaras</h3>
+            <button @click="showAdd = true" class="btn-icon" title="Añadir Cámara">+</button>
           </div>
-        </div>
+          <div class="cam-list">
+            <div v-for="cam in cameras" :key="cam.id" 
+                 class="cam-item" :class="{active: activeCamera?.id === cam.id}"
+                 @click="activeCamera = cam">
+                 <span class="status-dot" :class="{online: isCameraRunning(cam.id)}"></span>
+                 {{ cam.name }}
+            </div>
+          </div>
+        </template>
+        
+        <!-- Satellite Info (when satellite view active) -->
+        <template v-if="activeView === 'satellite'">
+          <div class="sidebar-header">
+            <h3>🛰️ Satélite</h3>
+          </div>
+          <div class="satellite-info">
+            <p class="info-text">Monitoreo de zonas con imágenes satelitales de Sentinel-2.</p>
+            <ul class="feature-list">
+              <li>✓ Resolución 10m</li>
+              <li>✓ Actualización cada 5 días</li>
+              <li>✓ Detección automática</li>
+            </ul>
+          </div>
+        </template>
     </div>
 
-    <!-- Main Content -->
-    <div class="main-content" v-if="activeCamera">
+    <!-- Main Content: Cameras -->
+    <div class="main-content" v-if="activeView === 'cameras' && activeCamera">
       <header class="control-header">
         <div class="header-left">
           <h2>{{ activeCamera.name }}</h2>
@@ -980,9 +1022,18 @@ const saveProfile = async () => {
 
     </div>
     
-    <!-- Empty State -->
-    <div v-else class="empty-state">
+    <!-- Empty State for Cameras -->
+    <div v-else-if="activeView === 'cameras'" class="empty-state">
       <p>Seleccione una cámara para comenzar</p>
+    </div>
+    
+    <!-- Satellite View -->
+    <div class="main-content satellite-view" v-if="activeView === 'satellite'">
+      <SatellitePanel 
+        :api-url="API_URL"
+        :token="token"
+        @toast="handleToast"
+      />
     </div>
 
     <!-- Add Camera Modal -->
@@ -1177,6 +1228,79 @@ const saveProfile = async () => {
   display: flex;
   flex-direction: column;
 }
+
+/* View Tabs */
+.view-tabs {
+  display: flex;
+  border-bottom: 1px solid #30363d;
+}
+
+.view-tab {
+  flex: 1;
+  padding: 0.75rem 0.5rem;
+  background: transparent;
+  border: none;
+  color: #8b949e;
+  font-size: 0.85rem;
+  cursor: pointer;
+  transition: all 0.2s;
+  position: relative;
+}
+
+.view-tab:hover {
+  color: #c9d1d9;
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.view-tab.active {
+  color: #58a6ff;
+  background: rgba(88, 166, 255, 0.1);
+}
+
+.view-tab.active::after {
+  content: '';
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: #58a6ff;
+}
+
+/* Satellite Info */
+.satellite-info {
+  padding: 1rem;
+}
+
+.satellite-info .info-text {
+  font-size: 0.85rem;
+  color: #8b949e;
+  margin-bottom: 1rem;
+  line-height: 1.5;
+}
+
+.feature-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.feature-list li {
+  font-size: 0.8rem;
+  color: #7ee787;
+  padding: 0.4rem 0;
+  border-bottom: 1px solid rgba(48, 54, 61, 0.5);
+}
+
+.feature-list li:last-child {
+  border-bottom: none;
+}
+
+/* Satellite View */
+.satellite-view {
+  padding: 0;
+}
+
 .sidebar-header {
   padding: 1rem;
   display: flex;
