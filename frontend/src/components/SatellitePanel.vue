@@ -1113,6 +1113,12 @@ const updateGlobalMapMarkers = () => {
         .addTo(globalMap)
         .on('click', () => {
           selectedZoneOnMap.value = zone
+          // Zoom to zone with appropriate level based on radius
+          const zoomLevel = getZoomLevelForRadius(zone.radius_km)
+          globalMap.setView([zone.latitude, zone.longitude], zoomLevel, { animate: true })
+          // Also select in sidebar
+          sidebarSelectedZone.value = zone
+          loadZoneHistory(zone)
         })
       
       // Add circle for radius
@@ -1127,6 +1133,19 @@ const updateGlobalMapMarkers = () => {
       globalMapMarkers.value.push(circleObj)
     }
   })
+}
+
+// Calculate appropriate zoom level based on radius
+const getZoomLevelForRadius = (radiusKm) => {
+  // Approximate zoom levels for different radii
+  // At zoom 16, ~2.4km viewport at equator
+  if (radiusKm <= 0.5) return 16
+  if (radiusKm <= 1) return 15
+  if (radiusKm <= 2) return 14
+  if (radiusKm <= 5) return 13
+  if (radiusKm <= 10) return 12
+  if (radiusKm <= 20) return 11
+  return 10
 }
 
 // Search location using Nominatim

@@ -17,6 +17,7 @@ use App\Http\Controllers\WorkerController;
 Route::post('/worker/detections', [WorkerController::class, 'postDetection']);
 Route::post('/worker/face-detection', [\App\Http\Controllers\FaceRecognitionController::class, 'recordDetection']);
 Route::post('/worker/satellite-result', [\App\Http\Controllers\SatelliteController::class, 'storeWorkerResult']);
+Route::post('/worker/satellite-thumbnail', [\App\Http\Controllers\SatelliteController::class, 'storeThumbnail']);
 
 Route::get('/test/worker-env', function (\Illuminate\Http\Request $r) {
     return response()->json(['env' => env('WORKER_API_KEY'), 'header' => $r->header('X-WORKER-KEY')]);

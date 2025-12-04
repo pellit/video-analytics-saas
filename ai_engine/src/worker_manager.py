@@ -1410,6 +1410,163 @@ def hybrid_analyze_satellite_zone(data: dict):
         return {"success": False, "error": str(e)}
 
 
+def get_map_thumbnail(lat: float, lon: float, radius_km: float = 1.0, zoom: int = None) -> Optional[np.ndarray]:
+    """
+    Generate a static map thumbnail using OpenStreetMap tiles.
+    
+    Args:
+        lat: Latitude
+        lon: Longitude
+        radius_km: Radius in kilometers
+        zoom: Zoom level (auto-calculated if None)
+    
+    Returns:
+        Map image as numpy array or None
+    """
+    import math
+    
+    # Calculate zoom level based on radius if not provided
+    if zoom is None:
+        # Approximate zoom level for radius
+        # At zoom 16, 1 tile ≈ 2.4km at equator
+        # zoom = log2(40075 * cos(lat) / (radius_km * 2 * 256))
+        zoom = int(16 - math.log2(radius_km * 2))
+        zoom = max(10, min(18, zoom))  # Clamp between 10 and 18
+    
+    # Convert lat/lon to tile coordinates
+    def lat_lon_to_tile(lat, lon, zoom):
+        lat_rad = math.radians(lat)
+        n = 2.0 ** zoom
+        x = int((lon + 180.0) / 360.0 * n)
+        y = int((1.0 - math.asinh(math.tan(lat_rad)) / math.pi) / 2.0 * n)
+        return x, y
+    
+    try:
+        tile_x, tile_y = lat_lon_to_tile(lat, lon, zoom)
+        
+        # Get 3x3 tiles for better coverage
+        tiles = []
+        for dy in [-1, 0, 1]:
+            row = []
+            for dx in [-1, 0, 1]:
+                # Use multiple tile servers for reliability
+                tile_servers = [
+                    f"https://tile.openstreetmap.org/{zoom}/{tile_x + dx}/{tile_y + dy}.png",
+                    f"https://a.tile.openstreetmap.org/{zoom}/{tile_x + dx}/{tile_y + dy}.png",
+                    f"https://b.tile.openstreetmap.org/{zoom}/{tile_x + dx}/{tile_y + dy}.png",
+                ]
+                
+                tile_img = None
+                for url in tile_servers:
+                    try:
+                        headers = {'User-Agent': 'VideoAnalyticsSaaS/1.0 (contact@example.com)'}
+                        response = requests.get(url, headers=headers, timeout=10)
+                        if response.status_code == 200:
+                            img_array = np.frombuffer(response.content, dtype=np.uint8)
+                            tile_img = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
+                            if tile_img is not None:
+                                break
+                    except Exception as e:
+                        continue
+                
+                if tile_img is None:
+                    # Use placeholder gray tile
+                    tile_img = np.ones((256, 256, 3), dtype=np.uint8) * 128
+                
+                row.append(tile_img)
+            tiles.append(row)
+        
+        # Combine tiles into one image
+        rows = [np.hstack(row) for row in tiles]
+        combined = np.vstack(rows)
+        
+        # Crop to center 512x512
+        h, w = combined.shape[:2]
+        center_y, center_x = h // 2, w // 2
+        crop_size = 256  # Output size
+        
+        y1 = center_y - crop_size
+        y2 = center_y + crop_size
+        x1 = center_x - crop_size
+        x2 = center_x + crop_size
+        
+        cropped = combined[y1:y2, x1:x2]
+        
+        # Resize to standard thumbnail size
+        thumbnail = cv2.resize(cropped, (512, 512))
+        
+        # Add marker at center
+        center = (256, 256)
+        # Draw marker shadow
+        cv2.circle(thumbnail, (center[0] + 2, center[1] + 2), 8, (0, 0, 0), -1)
+        # Draw red marker
+        cv2.circle(thumbnail, center, 8, (0, 0, 255), -1)
+        cv2.circle(thumbnail, center, 8, (255, 255, 255), 2)
+        
+        # Draw radius circle (approximate)
+        # pixels_per_km at this zoom ≈ 256 / (40075 * cos(lat) / 2^zoom) * 1000
+        pixels_per_km = (2 ** zoom) * 256 / (40075 * math.cos(math.radians(lat))) * 1000
+        radius_pixels = int(radius_km * pixels_per_km / 3)  # Divided by 3 because we have 3x3 tiles
+        
+        if radius_pixels > 10 and radius_pixels < 250:
+            cv2.circle(thumbnail, center, radius_pixels, (0, 255, 0), 2)
+        
+        return thumbnail
+        
+    except Exception as e:
+        print(f"Error generating map thumbnail: {e}")
+        return None
+
+
+def generate_zone_thumbnail(data: dict):
+    """Generate and save a thumbnail for a satellite zone."""
+    zone_id = data.get('zone_id')
+    lat = data.get('lat')
+    lon = data.get('lon')
+    radius_km = data.get('radius_km', 1.0)
+    
+    print(f"🖼️ Generating thumbnail for zone {zone_id} at ({lat}, {lon})")
+    
+    try:
+        # Generate map thumbnail
+        thumbnail = get_map_thumbnail(lat, lon, radius_km)
+        
+        if thumbnail is None:
+            print(f"⚠️ Could not generate thumbnail for zone {zone_id}")
+            return
+        
+        # Encode to base64
+        _, img_encoded = cv2.imencode('.jpg', thumbnail, [cv2.IMWRITE_JPEG_QUALITY, 85])
+        image_base64 = base64.b64encode(img_encoded).decode('utf-8')
+        
+        # Send to backend
+        backend_url = os.environ.get('BACKEND_API_URL', 'http://localhost:8000')
+        worker_key = os.environ.get('WORKER_API_KEY')
+        
+        result = {
+            'zone_id': zone_id,
+            'thumbnail_base64': image_base64,
+            'type': 'thumbnail'
+        }
+        
+        if worker_key:
+            try:
+                resp = requests.post(
+                    f"{backend_url}/api/worker/satellite-thumbnail",
+                    json=result,
+                    headers={'X-WORKER-KEY': worker_key, 'Content-Type': 'application/json'},
+                    timeout=10
+                )
+                print(f"📡 Thumbnail sent to backend: {resp.status_code}")
+            except Exception as e:
+                print(f"⚠️ Error sending thumbnail: {e}")
+        
+        print(f"✅ Thumbnail generated for zone {zone_id}")
+        
+    except Exception as e:
+        print(f"❌ Error generating thumbnail: {e}")
+
+
 def satellite_listener_loop():
     """Listen for satellite analysis commands on Redis."""
     print("🛰️ Escuchando Redis 'satellite_control'...")
@@ -1427,6 +1584,13 @@ def satellite_listener_loop():
                     # Run analysis in a separate thread to not block listener
                     threading.Thread(
                         target=satellite_analyze,
+                        args=(data,),
+                        daemon=True
+                    ).start()
+                elif action == 'GET_ZONE_THUMBNAIL':
+                    # Generate thumbnail for new zone
+                    threading.Thread(
+                        target=generate_zone_thumbnail,
                         args=(data,),
                         daemon=True
                     ).start()

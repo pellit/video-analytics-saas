@@ -52,6 +52,21 @@ class SatelliteController extends Controller
             'max_cloud_cover' => $validated['max_cloud_cover'] ?? 20,
         ]);
 
+        // Solicitar thumbnail inicial de la zona
+        try {
+            $command = [
+                'action' => 'GET_ZONE_THUMBNAIL',
+                'zone_id' => $zone->id,
+                'lat' => (float) $zone->latitude,
+                'lon' => (float) $zone->longitude,
+                'radius_km' => (float) $zone->radius_km,
+            ];
+            Redis::publish('satellite_control', json_encode($command));
+        } catch (\Exception $e) {
+            // No fallar si no se puede obtener el thumbnail
+            \Log::warning('Could not request zone thumbnail: ' . $e->getMessage());
+        }
+
         return response()->json($zone, 201);
     }
 
@@ -448,6 +463,51 @@ class SatelliteController extends Controller
             'message' => 'Resultado satelital guardado',
             'image_id' => $satelliteImage->id,
             'detections_count' => count($detections),
+        ], 201);
+    }
+
+    /**
+     * Recibir thumbnail de zona del worker Python
+     * Endpoint: POST /api/worker/satellite-thumbnail
+     */
+    public function storeThumbnail(Request $request): JsonResponse
+    {
+        // Validar API Key del worker
+        $workerKey = $request->header('X-WORKER-KEY');
+        $expectedKey = config('services.worker.key', env('WORKER_API_KEY'));
+        
+        if (!$workerKey || $workerKey !== $expectedKey) {
+            return response()->json(['error' => 'No autorizado'], 401);
+        }
+
+        $validated = $request->validate([
+            'zone_id' => 'required|integer|exists:satellite_zones,id',
+            'thumbnail_base64' => 'required|string',
+        ]);
+
+        $zone = SatelliteZone::find($validated['zone_id']);
+        if (!$zone) {
+            return response()->json(['error' => 'Zona no encontrada'], 404);
+        }
+
+        // Guardar thumbnail en storage
+        $imageData = base64_decode($validated['thumbnail_base64']);
+        $filename = "zone_thumb_{$zone->id}_" . time() . '.jpg';
+        $thumbnailPath = "satellite/zone_thumbs/{$filename}";
+        
+        Storage::disk('public')->put($thumbnailPath, $imageData);
+
+        // Actualizar zona con el thumbnail (usar last_image_path si no hay imagen real)
+        if (empty($zone->last_image_path)) {
+            $zone->update([
+                'last_image_path' => $thumbnailPath,
+            ]);
+        }
+
+        return response()->json([
+            'message' => 'Thumbnail guardado',
+            'zone_id' => $zone->id,
+            'thumbnail_path' => $thumbnailPath,
         ], 201);
     }
 }
