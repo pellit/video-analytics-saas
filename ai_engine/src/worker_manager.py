@@ -11,9 +11,13 @@ from fastapi import FastAPI
 from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from yt_dlp import YoutubeDL
+from pydantic import BaseModel
+from typing import Optional, List
 from .depth_service import DepthService
 from .models import get_detector, ModelFactory
 from .core.satellite import get_satellite_service, SatelliteService
+from .core.vlm import get_vlm_analyzer, init_vlm_analyzer, VLMPrompts
+from .core.hybrid import get_hybrid_analyzer, init_hybrid_analyzer, AlertSeverity
 
 app = FastAPI()
 
@@ -23,6 +27,13 @@ os.makedirs(MODELS_DIR, exist_ok=True)
 
 YUNET_PATH = os.path.join(MODELS_DIR, "face_detection_yunet_2023mar.onnx")
 SFACE_PATH = os.path.join(MODELS_DIR, "face_recognition_sface_2021dec.onnx")
+
+# VLM (Moondream) - Lazy loaded to save RAM at startup
+vlm_analyzer = None
+VLM_ENABLED = os.environ.get('ENABLE_VLM', 'true').lower() == 'true'
+
+# Hybrid Analyzer - Lazy loaded
+hybrid_analyzer = None
 
 # Initialize Services
 depth_service = DepthService()
@@ -665,6 +676,26 @@ def satellite_analyze(zone_data: dict):
                 'bbox': list(det.bbox)
             })
         
+        # --- VLM Analysis (if enabled) ---
+        vlm_analysis = None
+        enable_vlm = zone_data.get('enable_vlm', VLM_ENABLED)
+        vlm_prompt = zone_data.get('vlm_prompt', VLMPrompts.SATELLITE_GENERAL)
+        
+        if enable_vlm and VLM_ENABLED:
+            global vlm_analyzer
+            try:
+                if vlm_analyzer is None:
+                    print("🧠 Loading VLM for satellite analysis...")
+                    vlm_analyzer = init_vlm_analyzer()
+                
+                if vlm_analyzer.available:
+                    vlm_result = vlm_analyzer.analyze_image(image, vlm_prompt)
+                    if vlm_result["success"]:
+                        vlm_analysis = vlm_result["answer"]
+                        print(f"🤖 VLM: {vlm_analysis[:100]}...")
+            except Exception as e:
+                print(f"⚠️ VLM analysis skipped: {e}")
+        
         # Encode image to base64 for storage
         _, img_encoded = cv2.imencode('.jpg', image, [cv2.IMWRITE_JPEG_QUALITY, 85])
         image_base64 = base64.b64encode(img_encoded).decode('utf-8')
@@ -678,6 +709,7 @@ def satellite_analyze(zone_data: dict):
             'user_id': user_id,
             'detections': detection_results,
             'image_base64': image_base64,
+            'vlm_analysis': vlm_analysis,  # VLM interpretation
             'cloud_cover': 0.0,  # TODO: get from API response
             'captured_at': time.strftime('%Y-%m-%d %H:%M:%S')
         }
@@ -698,6 +730,7 @@ def satellite_analyze(zone_data: dict):
         r.publish('satellite_results', json.dumps({
             'zone_id': zone_id,
             'detections_count': len(detection_results),
+            'vlm_analysis': vlm_analysis,
             'status': 'completed'
         }))
         
@@ -705,12 +738,368 @@ def satellite_analyze(zone_data: dict):
             'status': 'success',
             'zone_id': zone_id,
             'detections_count': len(detection_results),
-            'detections': detection_results
+            'detections': detection_results,
+            'vlm_analysis': vlm_analysis
         }
         
     except Exception as e:
         print(f"❌ Satellite analysis error: {e}")
         return {"error": str(e), "status": "error"}
+
+
+# --- VLM (Moondream) Endpoints ---
+
+class VLMAnalyzeRequest(BaseModel):
+    """Request body for VLM analysis"""
+    image_base64: str
+    question: str = "Describe this image in detail."
+    questions: Optional[List[str]] = None
+
+
+@app.get('/vlm/status')
+def vlm_status():
+    """Check VLM (Moondream) availability and status."""
+    global vlm_analyzer
+    
+    return {
+        'enabled': VLM_ENABLED,
+        'loaded': vlm_analyzer is not None and vlm_analyzer.available,
+        'model': 'vikhyatk/moondream2',
+        'prompts': {
+            'satellite_general': VLMPrompts.SATELLITE_GENERAL,
+            'satellite_flood': VLMPrompts.SATELLITE_FLOOD,
+            'security_scene': VLMPrompts.SECURITY_SCENE
+        }
+    }
+
+
+@app.post('/vlm/analyze')
+def vlm_analyze(request: VLMAnalyzeRequest):
+    """
+    Analyze an image using Moondream VLM.
+    
+    Expects:
+        {
+            "image_base64": "base64_encoded_image",
+            "question": "What do you see in this image?",
+            "questions": ["Question 1", "Question 2"]  // Optional: for batch
+        }
+    
+    Returns:
+        {
+            "success": true,
+            "answer": "description...",
+            "answers": ["answer1", "answer2"]  // If batch
+        }
+    """
+    global vlm_analyzer
+    
+    if not VLM_ENABLED:
+        return {"success": False, "error": "VLM is disabled. Set ENABLE_VLM=true"}
+    
+    try:
+        # Lazy load VLM on first use (saves ~2GB RAM at startup)
+        if vlm_analyzer is None:
+            print("🧠 Loading VLM (first use)...")
+            vlm_analyzer = init_vlm_analyzer()
+        
+        if not vlm_analyzer.available:
+            return {"success": False, "error": "VLM failed to initialize"}
+        
+        # Decode image from base64
+        img_data = base64.b64decode(request.image_base64)
+        img_array = np.frombuffer(img_data, dtype=np.uint8)
+        image = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
+        
+        if image is None:
+            return {"success": False, "error": "Invalid image data"}
+        
+        # Batch or single question
+        if request.questions:
+            result = vlm_analyzer.batch_analyze(image, request.questions)
+            return {
+                "success": result["success"],
+                "answers": result.get("answers", []),
+                "error": result.get("error")
+            }
+        else:
+            result = vlm_analyzer.analyze_image(image, request.question)
+            return {
+                "success": result["success"],
+                "answer": result.get("answer"),
+                "error": result.get("error")
+            }
+            
+    except Exception as e:
+        print(f"❌ VLM analysis error: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.post('/vlm/validate-detection')
+def vlm_validate_detection(data: dict):
+    """
+    Validate YOLO detections using VLM.
+    Useful for reducing false positives.
+    
+    Expects:
+        {
+            "image_base64": "base64_encoded_image",
+            "detected_objects": ["person", "car", "truck"],
+            "context_prompt": "Is this a construction site?" // Optional
+        }
+    """
+    global vlm_analyzer
+    
+    if not VLM_ENABLED:
+        return {"success": False, "error": "VLM is disabled"}
+    
+    try:
+        if vlm_analyzer is None:
+            vlm_analyzer = init_vlm_analyzer()
+        
+        if not vlm_analyzer.available:
+            return {"success": False, "error": "VLM not available"}
+        
+        # Decode image
+        img_data = base64.b64decode(data.get('image_base64', ''))
+        img_array = np.frombuffer(img_data, dtype=np.uint8)
+        image = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
+        
+        if image is None:
+            return {"success": False, "error": "Invalid image"}
+        
+        detected_objects = data.get('detected_objects', [])
+        context_prompt = data.get('context_prompt')
+        
+        result = vlm_analyzer.validate_detection(image, detected_objects, context_prompt)
+        return result
+        
+    except Exception as e:
+        print(f"❌ VLM validation error: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.post('/vlm/analyze-camera-snapshot')
+def vlm_analyze_camera_snapshot(data: dict):
+    """
+    Analyze current snapshot from an active camera stream using VLM.
+    
+    Expects:
+        {
+            "camera_id": 1,
+            "question": "What is happening in this scene?"
+        }
+    """
+    global vlm_analyzer
+    
+    if not VLM_ENABLED:
+        return {"success": False, "error": "VLM is disabled"}
+    
+    camera_id = str(data.get('camera_id'))
+    question = data.get('question', VLMPrompts.SECURITY_SCENE)
+    
+    with global_state['lock']:
+        stream = global_state['streams'].get(camera_id)
+        if not stream or not stream.get('active'):
+            return {"success": False, "error": f"Camera {camera_id} not active"}
+        
+        with stream['lock']:
+            frame = stream.get('current_frame')
+    
+    if frame is None:
+        return {"success": False, "error": "No frame available"}
+    
+    try:
+        if vlm_analyzer is None:
+            vlm_analyzer = init_vlm_analyzer()
+        
+        result = vlm_analyzer.analyze_image(frame, question)
+        return {
+            "success": result["success"],
+            "camera_id": camera_id,
+            "answer": result.get("answer"),
+            "error": result.get("error")
+        }
+        
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+# --- Hybrid Analysis Endpoints (YOLO + VLM) ---
+
+@app.get('/hybrid/status')
+def hybrid_status():
+    """Check hybrid analyzer (YOLO + VLM) status."""
+    global hybrid_analyzer, vlm_analyzer
+    
+    return {
+        'available': True,
+        'detector_loaded': model is not None,
+        'vlm_enabled': VLM_ENABLED,
+        'vlm_loaded': vlm_analyzer is not None and vlm_analyzer.available,
+        'hybrid_initialized': hybrid_analyzer is not None
+    }
+
+
+@app.post('/hybrid/detect-and-validate')
+def hybrid_detect_and_validate(data: dict):
+    """
+    Detect objects with YOLO and validate with VLM.
+    Reduces false positives by cross-checking detections.
+    
+    Expects:
+        {
+            "image_base64": "...",
+            "validate_with_vlm": true,
+            "confidence_threshold": 0.5
+        }
+    """
+    global hybrid_analyzer, vlm_analyzer
+    
+    try:
+        # Lazy init hybrid analyzer
+        if hybrid_analyzer is None:
+            if vlm_analyzer is None and VLM_ENABLED:
+                vlm_analyzer = init_vlm_analyzer()
+            hybrid_analyzer = init_hybrid_analyzer(detector=model, vlm=vlm_analyzer)
+        else:
+            # Ensure components are set
+            if hybrid_analyzer.detector is None:
+                hybrid_analyzer.set_detector(model)
+            if hybrid_analyzer.vlm is None and vlm_analyzer:
+                hybrid_analyzer.set_vlm(vlm_analyzer)
+        
+        # Decode image
+        img_data = base64.b64decode(data.get('image_base64', ''))
+        img_array = np.frombuffer(img_data, dtype=np.uint8)
+        image = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
+        
+        if image is None:
+            return {"success": False, "error": "Invalid image data"}
+        
+        validate = data.get('validate_with_vlm', VLM_ENABLED)
+        threshold = data.get('confidence_threshold', 0.5)
+        
+        result = hybrid_analyzer.detect_and_validate(
+            image,
+            validate_with_vlm=validate,
+            confidence_threshold=threshold
+        )
+        
+        return {
+            "success": True,
+            **result
+        }
+        
+    except Exception as e:
+        print(f"❌ Hybrid detect error: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.post('/hybrid/smart-alert')
+def hybrid_smart_alert(data: dict):
+    """
+    Generate a smart alert with VLM context.
+    
+    Expects:
+        {
+            "image_base64": "...",
+            "detections": [...],
+            "alert_type": "person_in_restricted",
+            "camera_id": 1
+        }
+    """
+    global hybrid_analyzer, vlm_analyzer
+    
+    try:
+        if hybrid_analyzer is None:
+            if vlm_analyzer is None and VLM_ENABLED:
+                vlm_analyzer = init_vlm_analyzer()
+            hybrid_analyzer = init_hybrid_analyzer(detector=model, vlm=vlm_analyzer)
+        
+        # Decode image
+        img_data = base64.b64decode(data.get('image_base64', ''))
+        img_array = np.frombuffer(img_data, dtype=np.uint8)
+        image = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
+        
+        if image is None:
+            return {"success": False, "error": "Invalid image data"}
+        
+        detections = data.get('detections', [])
+        alert_type = data.get('alert_type', 'general')
+        camera_id = data.get('camera_id')
+        zone_id = data.get('zone_id')
+        
+        alert = hybrid_analyzer.generate_smart_alert(
+            image,
+            detections,
+            alert_type=alert_type,
+            camera_id=camera_id,
+            zone_id=zone_id
+        )
+        
+        if alert:
+            return {
+                "success": True,
+                "alert": alert.to_dict()
+            }
+        else:
+            return {
+                "success": True,
+                "alert": None,
+                "message": "No alert generated (conditions not met)"
+            }
+        
+    except Exception as e:
+        print(f"❌ Smart alert error: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.post('/hybrid/analyze-satellite-zone')
+def hybrid_analyze_satellite_zone(data: dict):
+    """
+    Comprehensive satellite zone analysis combining detection and VLM.
+    
+    Expects:
+        {
+            "image_base64": "...",
+            "zone_id": 1,
+            "analysis_type": "general"  # general, flood, construction, deforestation, agriculture
+        }
+    """
+    global hybrid_analyzer, vlm_analyzer
+    
+    try:
+        if hybrid_analyzer is None:
+            if vlm_analyzer is None and VLM_ENABLED:
+                vlm_analyzer = init_vlm_analyzer()
+            hybrid_analyzer = init_hybrid_analyzer(detector=model, vlm=vlm_analyzer)
+        
+        # Decode image
+        img_data = base64.b64decode(data.get('image_base64', ''))
+        img_array = np.frombuffer(img_data, dtype=np.uint8)
+        image = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
+        
+        if image is None:
+            return {"success": False, "error": "Invalid image data"}
+        
+        zone_id = data.get('zone_id', 0)
+        analysis_type = data.get('analysis_type', 'general')
+        
+        result = hybrid_analyzer.analyze_satellite_zone(
+            image,
+            zone_id=zone_id,
+            analysis_type=analysis_type
+        )
+        
+        return {
+            "success": True,
+            **result
+        }
+        
+    except Exception as e:
+        print(f"❌ Satellite zone analysis error: {e}")
+        return {"success": False, "error": str(e)}
 
 
 def satellite_listener_loop():

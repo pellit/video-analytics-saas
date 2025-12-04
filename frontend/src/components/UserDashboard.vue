@@ -432,6 +432,60 @@ const alerts = ref([]) // Store alerts received via SSE
 const activeWorkerStreams = ref([])
 const WORKER_URL = STREAM_URL.replace('/video_feed', '')
 
+// --- VLM Analysis State ---
+const vlmAvailable = ref(false)
+const vlmAnalyzing = ref(false)
+const vlmResult = ref(null)
+const vlmQuestion = ref('¿Qué está sucediendo en esta escena?')
+
+// Check VLM availability
+const checkVLMStatus = async () => {
+    try {
+        const res = await fetch(`${WORKER_URL}/vlm/status`)
+        if (res.ok) {
+            const data = await res.json()
+            vlmAvailable.value = data.enabled && (data.loaded || data.enabled)
+        }
+    } catch (e) {
+        vlmAvailable.value = false
+    }
+}
+
+// Analyze current camera snapshot with VLM
+const analyzeWithVLM = async () => {
+    if (!activeCamera.value || !isProcessing.value) {
+        showToast('Inicia el análisis de la cámara primero', 'warning')
+        return
+    }
+    
+    vlmAnalyzing.value = true
+    vlmResult.value = null
+    
+    try {
+        const res = await fetch(`${WORKER_URL}/vlm/analyze-camera-snapshot`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                camera_id: activeCamera.value.id,
+                question: vlmQuestion.value
+            })
+        })
+        
+        const data = await res.json()
+        
+        if (data.success) {
+            vlmResult.value = data.answer
+            showToast('Análisis VLM completado', 'success')
+        } else {
+            showToast(data.error || 'Error en análisis VLM', 'error')
+        }
+    } catch (e) {
+        showToast(`Error: ${e.message}`, 'error')
+    } finally {
+        vlmAnalyzing.value = false
+    }
+}
+
 const fetchWorkerStatus = async () => {
     try {
         const res = await fetch(`${WORKER_URL}/health`)
@@ -446,7 +500,10 @@ const fetchWorkerStatus = async () => {
 
 // Poll worker status every 5 seconds
 setInterval(fetchWorkerStatus, 5000)
-onMounted(fetchWorkerStatus)
+onMounted(() => {
+    fetchWorkerStatus()
+    checkVLMStatus()
+})
 
 const isCameraRunning = (id) => activeWorkerStreams.value.includes(String(id))
 
@@ -770,12 +827,48 @@ const saveProfile = async () => {
              <button @click="showVideo = !showVideo" class="btn-secondary">
               {{ showVideo ? 'Ocultar Video' : 'Ver Video' }}
             </button>
+            <!-- VLM Analysis Button -->
+            <button 
+              v-if="vlmAvailable"
+              @click="analyzeWithVLM" 
+              class="btn-vlm" 
+              :disabled="vlmAnalyzing"
+              title="Analizar escena con IA (Moondream)"
+            >
+              <i class="icon">{{ vlmAnalyzing ? '⏳' : '🤖' }}</i> 
+              {{ vlmAnalyzing ? 'Analizando...' : 'Analizar IA' }}
+            </button>
             <button @click="toggleAnalysis(false)" class="btn-stop">
               <i class="icon">⏹</i> Detener
             </button>
           </template>
         </div>
       </header>
+
+      <!-- VLM Analysis Result Panel -->
+      <div v-if="vlmResult" class="vlm-result-panel">
+        <div class="vlm-header">
+          <span class="vlm-icon">🤖</span>
+          <span class="vlm-title">Análisis de IA (Moondream2)</span>
+          <button @click="vlmResult = null" class="vlm-close">✕</button>
+        </div>
+        <div class="vlm-content">
+          <p class="vlm-question"><strong>Pregunta:</strong> {{ vlmQuestion }}</p>
+          <p class="vlm-answer">{{ vlmResult }}</p>
+        </div>
+        <div class="vlm-actions">
+          <input 
+            v-model="vlmQuestion" 
+            type="text" 
+            placeholder="Hacer otra pregunta..."
+            class="vlm-input"
+            @keyup.enter="analyzeWithVLM"
+          />
+          <button @click="analyzeWithVLM" class="btn-vlm-small" :disabled="vlmAnalyzing">
+            {{ vlmAnalyzing ? '...' : 'Preguntar' }}
+          </button>
+        </div>
+      </div>
 
       <div class="video-grid">
         <!-- Video Feed -->
@@ -2016,6 +2109,124 @@ input:checked + .slider:before {
   transform: translateY(-1px);
   box-shadow: 0 4px 12px rgba(248, 81, 73, 0.3);
 }
+
+/* VLM Analysis Button */
+.btn-vlm {
+  background: linear-gradient(135deg, #8957e5, #a371f7);
+  color: white;
+  border: none;
+  padding: 0.5rem 1rem;
+  border-radius: 0.5rem;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-weight: 500;
+  font-size: 0.875rem;
+  transition: all 0.2s ease;
+}
+.btn-vlm:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(137, 87, 229, 0.4);
+}
+.btn-vlm:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+/* VLM Result Panel */
+.vlm-result-panel {
+  background: linear-gradient(135deg, #161b22 0%, #21262d 100%);
+  border: 1px solid #8957e5;
+  border-radius: 0.75rem;
+  margin-bottom: 1rem;
+  overflow: hidden;
+  animation: slideIn 0.3s ease;
+}
+@keyframes slideIn {
+  from { opacity: 0; transform: translateY(-10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.vlm-header {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.75rem 1rem;
+  background: rgba(137, 87, 229, 0.1);
+  border-bottom: 1px solid #30363d;
+}
+.vlm-icon {
+  font-size: 1.25rem;
+}
+.vlm-title {
+  font-weight: 600;
+  color: #a371f7;
+  flex-grow: 1;
+}
+.vlm-close {
+  background: none;
+  border: none;
+  color: #8b949e;
+  cursor: pointer;
+  padding: 0.25rem;
+  font-size: 1rem;
+  transition: color 0.2s;
+}
+.vlm-close:hover {
+  color: #f85149;
+}
+.vlm-content {
+  padding: 1rem;
+}
+.vlm-question {
+  color: #8b949e;
+  font-size: 0.875rem;
+  margin-bottom: 0.5rem;
+}
+.vlm-answer {
+  color: #e6edf3;
+  font-size: 0.95rem;
+  line-height: 1.5;
+  white-space: pre-wrap;
+}
+.vlm-actions {
+  display: flex;
+  gap: 0.5rem;
+  padding: 0.75rem 1rem;
+  border-top: 1px solid #30363d;
+  background: rgba(0, 0, 0, 0.2);
+}
+.vlm-input {
+  flex-grow: 1;
+  background: #0d1117;
+  border: 1px solid #30363d;
+  border-radius: 0.375rem;
+  padding: 0.5rem 0.75rem;
+  color: #e6edf3;
+  font-size: 0.875rem;
+}
+.vlm-input:focus {
+  border-color: #8957e5;
+  outline: none;
+}
+.btn-vlm-small {
+  background: #8957e5;
+  color: white;
+  border: none;
+  padding: 0.5rem 0.75rem;
+  border-radius: 0.375rem;
+  cursor: pointer;
+  font-size: 0.875rem;
+  transition: all 0.2s;
+}
+.btn-vlm-small:hover:not(:disabled) {
+  background: #a371f7;
+}
+.btn-vlm-small:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
 .btn-secondary {
   background-color: #21262d;
   color: #c9d1d9;

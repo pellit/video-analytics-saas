@@ -8,6 +8,9 @@ fastapi
 uvicorn
 yt-dlp
 
+# Image processing
+Pillow>=9.0.0
+
 # ONNX Runtime - FASTEST for CPU (recommended for production)
 onnxruntime>=1.16.0     # 2-3x faster than PyTorch on CPU
 
@@ -15,9 +18,12 @@ onnxruntime>=1.16.0     # 2-3x faster than PyTorch on CPU
 # super-gradients>=3.5.0  # Only needed to export ONNX models
 
 # Detection Models (Apache 2.0 licensed) - fallback if no ONNX
-transformers            # For RT-DETR
+transformers            # For RT-DETR and Moondream2 VLM
 torch                   # PyTorch (only if not using ONNX)
 torchvision
+
+# VLM Dependencies (Moondream2)
+einops>=0.6.0           # Required by Moondream2 architecture
 
 # super-gradients>=3.5.0  # YOLO-NAS - Deci AI (Apache 2.0) - Only if not using ONNX
 supervision>=0.16.0      # ByteTrack tracking and utilities
