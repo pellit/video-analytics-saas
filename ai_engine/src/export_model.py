@@ -98,17 +98,35 @@ def export_yolo_nas(model_type: str = "yolo_nas_s", input_size: int = 640) -> di
             raise ValueError(f"Invalid model type: {model_type}. Use yolo_nas_s, yolo_nas_m, or yolo_nas_l")
         
         update_status("importing", 10)
-        print("📦 Importing super_gradients...")
+        print("📦 Checking super_gradients installation...")
         
+        # Try to import, if fails, install it
         try:
             from super_gradients.training import models
             from super_gradients.common.object_names import Models
-        except ImportError as e:
-            update_status("error", 0, error=f"super_gradients not installed: {e}")
-            return {
-                "success": False,
-                "error": "super_gradients package not installed. Run: pip install super-gradients"
-            }
+            print("✅ super_gradients already installed")
+        except ImportError:
+            print("📥 Installing super_gradients (this may take a few minutes)...")
+            update_status("installing_deps", 15, error=None, model_info={"message": "Installing super-gradients package..."})
+            
+            import subprocess
+            result = subprocess.run(
+                [sys.executable, "-m", "pip", "install", "super-gradients>=3.5.0", "--quiet"],
+                capture_output=True,
+                text=True,
+                timeout=600  # 10 minute timeout for installation
+            )
+            
+            if result.returncode != 0:
+                error_msg = f"Failed to install super_gradients: {result.stderr}"
+                update_status("error", 0, error=error_msg)
+                return {"success": False, "error": error_msg}
+            
+            print("✅ super_gradients installed successfully")
+            
+            # Now import after installation
+            from super_gradients.training import models
+            from super_gradients.common.object_names import Models
         
         # Map model type to super_gradients Models enum
         model_map = {

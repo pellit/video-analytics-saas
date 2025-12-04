@@ -11,8 +11,8 @@ yt-dlp
 # Image processing
 Pillow>=9.0.0
 
-# ONNX Runtime - Compatible with super-gradients
-onnxruntime==1.15.0     # Fast CPU inference (compatible with super-gradients)
+# ONNX Runtime - Fast CPU inference
+onnxruntime>=1.16.0
 
 # Detection Models (Apache 2.0 licensed) - fallback if no ONNX
 transformers            # For RT-DETR and Moondream2 VLM
@@ -23,8 +23,9 @@ torchvision
 einops>=0.6.0           # Required by Moondream2 architecture
 
 # YOLO-NAS Export (Apache 2.0 licensed)
-# Install for ONNX model generation: pip install super-gradients
-super-gradients>=3.5.0  # Required for exporting YOLO-NAS to ONNX
+# super-gradients is installed ON-DEMAND when exporting models
+# This avoids dependency conflicts and reduces image size
+# Install manually: pip install super-gradients>=3.5.0
 
 supervision>=0.16.0      # ByteTrack tracking and utilities
 
