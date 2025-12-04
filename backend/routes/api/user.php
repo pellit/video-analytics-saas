@@ -62,3 +62,13 @@ Route::delete('/faces/{id}', [\App\Http\Controllers\FaceRecognitionController::c
 Route::get('/face-detections', [\App\Http\Controllers\FaceRecognitionController::class, 'getRecentDetections']);
 Route::post('/face-detections/{detectionId}/assign', [\App\Http\Controllers\FaceRecognitionController::class, 'assignDetectionToFace']);
 Route::post('/face-detections/{detectionId}/create-face', [\App\Http\Controllers\FaceRecognitionController::class, 'createFaceFromDetection']);
+
+// Satellite Zones Management
+Route::get('/satellite/zones', [\App\Http\Controllers\SatelliteController::class, 'index']);
+Route::post('/satellite/zones', [\App\Http\Controllers\SatelliteController::class, 'store']);
+Route::get('/satellite/zones/{zone}', [\App\Http\Controllers\SatelliteController::class, 'show']);
+Route::put('/satellite/zones/{zone}', [\App\Http\Controllers\SatelliteController::class, 'update']);
+Route::delete('/satellite/zones/{zone}', [\App\Http\Controllers\SatelliteController::class, 'destroy']);
+Route::post('/satellite/zones/{zone}/analyze', [\App\Http\Controllers\SatelliteController::class, 'analyze']);
+Route::get('/satellite/zones/{zone}/latest-image', [\App\Http\Controllers\SatelliteController::class, 'latestImage']);
+Route::get('/satellite/zones/{zone}/alerts', [\App\Http\Controllers\SatelliteController::class, 'alerts']);

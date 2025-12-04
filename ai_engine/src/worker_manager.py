@@ -13,6 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from yt_dlp import YoutubeDL
 from .depth_service import DepthService
 from .models import get_detector, ModelFactory
+from .core.satellite import get_satellite_service, SatelliteService
 
 app = FastAPI()
 
@@ -126,15 +127,28 @@ except Exception as e:
 # 1. MEJORA: Forzamos formato compatible con OpenCV
 def get_stream_url(youtube_url):
     try:
-        # Pedimos explícitamente MP4 y video+audio combinados o el mejor compatible
+        # Primero intentamos obtener un stream directo MP4 (más compatible con OpenCV)
         ydl_opts = {
-            'format': 'best[ext=mp4]/best', 
+            'format': 'best[ext=mp4][height<=720]/best[ext=mp4]/best[height<=720]/best',
             'quiet': True,
-            'force_generic_extractor': False
+            'no_warnings': True,
+            'extractor_args': {'youtube': {'player_client': ['android', 'web']}},
         }
         with YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(youtube_url, download=False)
-            return info['url']
+            url = info.get('url')
+            if url:
+                print(f"✅ Stream URL obtenida correctamente")
+                return url
+            # Si no hay URL directa, buscar en formatos
+            formats = info.get('formats', [])
+            for f in formats:
+                if f.get('ext') == 'mp4' and f.get('url'):
+                    return f['url']
+            # Fallback: usar la URL del primer formato disponible
+            if formats:
+                return formats[-1].get('url', youtube_url)
+        return youtube_url
     except Exception as e:
         print(f"❌ Error yt-dlp: {e}")
         return youtube_url
@@ -595,7 +609,138 @@ def model_info():
     }
 
 
+# --- Satellite Service ---
+satellite_service = get_satellite_service()
+
+@app.get('/satellite/status')
+def satellite_status():
+    """Check satellite service availability."""
+    return {
+        'available': satellite_service.is_available(),
+        'configured': satellite_service.config.is_configured()
+    }
+
+
+@app.post('/satellite/analyze')
+def satellite_analyze(zone_data: dict):
+    """
+    Analyze a satellite zone by downloading image and running detection.
+    
+    Expects:
+        {
+            "zone_id": 1,
+            "lat": -32.94,
+            "lon": -60.63,
+            "km_radius": 1.0,
+            "user_id": 1
+        }
+    """
+    if not satellite_service.is_available():
+        return {"error": "Satellite service not configured", "status": "error"}
+    
+    try:
+        lat = zone_data.get('lat')
+        lon = zone_data.get('lon')
+        km_radius = zone_data.get('km_radius', 1.0)
+        zone_id = zone_data.get('zone_id')
+        user_id = zone_data.get('user_id')
+        
+        print(f"🛰️ Analyzing satellite zone {zone_id} at ({lat}, {lon})")
+        
+        # Download satellite image
+        image = satellite_service.get_latest_image(lat, lon, km_radius)
+        
+        if image is None:
+            return {"error": "Failed to download satellite image", "status": "error"}
+        
+        # Run detection on satellite image
+        detections = model.detect(image)
+        
+        # Prepare results
+        detection_results = []
+        for det in detections:
+            detection_results.append({
+                'class_name': det.class_name,
+                'confidence': det.confidence,
+                'bbox': list(det.bbox)
+            })
+        
+        # Encode image to base64 for storage
+        _, img_encoded = cv2.imencode('.jpg', image, [cv2.IMWRITE_JPEG_QUALITY, 85])
+        image_base64 = base64.b64encode(img_encoded).decode('utf-8')
+        
+        # Notify backend via HTTP
+        backend_url = os.environ.get('BACKEND_API_URL', 'http://localhost:8000')
+        worker_key = os.environ.get('WORKER_API_KEY')
+        
+        result = {
+            'zone_id': zone_id,
+            'user_id': user_id,
+            'detections': detection_results,
+            'image_base64': image_base64,
+            'cloud_cover': 0.0,  # TODO: get from API response
+            'captured_at': time.strftime('%Y-%m-%d %H:%M:%S')
+        }
+        
+        if worker_key:
+            try:
+                resp = requests.post(
+                    f"{backend_url}/api/worker/satellite-result",
+                    json=result,
+                    headers={'X-WORKER-KEY': worker_key, 'Content-Type': 'application/json'},
+                    timeout=10
+                )
+                print(f"📡 Backend notified: {resp.status_code}")
+            except Exception as e:
+                print(f"⚠️ Error notifying backend: {e}")
+        
+        # Publish on Redis
+        r.publish('satellite_results', json.dumps({
+            'zone_id': zone_id,
+            'detections_count': len(detection_results),
+            'status': 'completed'
+        }))
+        
+        return {
+            'status': 'success',
+            'zone_id': zone_id,
+            'detections_count': len(detection_results),
+            'detections': detection_results
+        }
+        
+    except Exception as e:
+        print(f"❌ Satellite analysis error: {e}")
+        return {"error": str(e), "status": "error"}
+
+
+def satellite_listener_loop():
+    """Listen for satellite analysis commands on Redis."""
+    print("🛰️ Escuchando Redis 'satellite_control'...")
+    pubsub = r.pubsub()
+    pubsub.subscribe('satellite_control')
+    
+    for message in pubsub.listen():
+        if message['type'] == 'message':
+            try:
+                data = json.loads(message['data'])
+                print(f"🛰️ Satellite message: {data}")
+                
+                action = data.get('action')
+                if action == 'ANALYZE':
+                    # Run analysis in a separate thread to not block listener
+                    threading.Thread(
+                        target=satellite_analyze,
+                        args=(data,),
+                        daemon=True
+                    ).start()
+                    
+            except Exception as e:
+                print(f"Error procesando mensaje satellite: {e}")
+
+
 @app.on_event("startup")
 def startup_event():
     # Start the Redis listener thread on startup
     threading.Thread(target=redis_listener_loop, daemon=True).start()
+    # Start the Satellite Redis listener thread
+    threading.Thread(target=satellite_listener_loop, daemon=True).start()
