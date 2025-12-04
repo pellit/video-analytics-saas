@@ -72,3 +72,20 @@ Route::delete('/satellite/zones/{zone}', [\App\Http\Controllers\SatelliteControl
 Route::post('/satellite/zones/{zone}/analyze', [\App\Http\Controllers\SatelliteController::class, 'analyze']);
 Route::get('/satellite/zones/{zone}/latest-image', [\App\Http\Controllers\SatelliteController::class, 'latestImage']);
 Route::get('/satellite/zones/{zone}/alerts', [\App\Http\Controllers\SatelliteController::class, 'alerts']);
+Route::get('/satellite/zones/{zone}/analysis-history', [\App\Http\Controllers\SatelliteAnalysisController::class, 'historyByZone']);
+
+// Satellite Analysis (VLM History)
+Route::get('/satellite/analysis', [\App\Http\Controllers\SatelliteAnalysisController::class, 'index']);
+Route::post('/satellite/analysis', [\App\Http\Controllers\SatelliteAnalysisController::class, 'store']);
+Route::get('/satellite/analysis/statistics', [\App\Http\Controllers\SatelliteAnalysisController::class, 'statistics']);
+Route::get('/satellite/analysis/{analysis}', [\App\Http\Controllers\SatelliteAnalysisController::class, 'show']);
+Route::delete('/satellite/analysis/{analysis}', [\App\Http\Controllers\SatelliteAnalysisController::class, 'destroy']);
+
+// User Notifications
+Route::get('/notifications', [\App\Http\Controllers\NotificationController::class, 'index']);
+Route::get('/notifications/unread-count', [\App\Http\Controllers\NotificationController::class, 'unreadCount']);
+Route::get('/notifications/recent', [\App\Http\Controllers\NotificationController::class, 'recent']);
+Route::post('/notifications/send', [\App\Http\Controllers\NotificationController::class, 'send']);
+Route::post('/notifications/mark-all-read', [\App\Http\Controllers\NotificationController::class, 'markAllRead']);
+Route::post('/notifications/{notification}/read', [\App\Http\Controllers\NotificationController::class, 'markRead']);
+Route::delete('/notifications/{notification}', [\App\Http\Controllers\NotificationController::class, 'destroy']);

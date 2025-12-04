@@ -18,6 +18,10 @@ from .models import get_detector, ModelFactory
 from .core.satellite import get_satellite_service, SatelliteService
 from .core.vlm import get_vlm_analyzer, init_vlm_analyzer, VLMPrompts
 from .core.hybrid import get_hybrid_analyzer, init_hybrid_analyzer, AlertSeverity
+from .core.image_comparison import (
+    get_comparator, compare_images, compare_images_from_base64,
+    ComparisonResult, ChangeSeverity, ChangeType
+)
 
 app = FastAPI()
 
@@ -1288,3 +1292,228 @@ def startup_event():
     threading.Thread(target=redis_listener_loop, daemon=True).start()
     # Start the Satellite Redis listener thread
     threading.Thread(target=satellite_listener_loop, daemon=True).start()
+
+
+# ============================================================================
+# IMAGE COMPARISON ENDPOINTS (for satellite monitoring)
+# ============================================================================
+
+@app.get('/comparison/status')
+def comparison_status():
+    """Get status of image comparison service."""
+    comparator = get_comparator()
+    return {
+        "available": comparator is not None,
+        "min_contour_area": comparator.min_contour_area if comparator else None,
+        "blur_kernel": comparator.blur_kernel if comparator else None
+    }
+
+
+@app.post('/comparison/compare')
+def compare_satellite_images(data: dict):
+    """
+    Compare two satellite images and detect changes.
+    
+    Expects:
+        {
+            "image_previous_base64": "...",  # Previous/baseline image
+            "image_current_base64": "...",   # Current/new image
+            "threshold": 30,                 # Optional: pixel diff threshold
+            "generate_visuals": true         # Optional: generate visualization images
+        }
+    
+    Returns:
+        {
+            "success": true,
+            "overall_change_percent": 15.5,
+            "ssim_score": 0.85,
+            "histogram_correlation": 0.92,
+            "pixel_diff_percent": 12.3,
+            "severity": "moderate",
+            "suggested_change_type": "construction",
+            "change_regions": [...],
+            "recommendations": [...],
+            "diff_image_base64": "...",
+            "heatmap_base64": "...",
+            "overlay_base64": "..."
+        }
+    """
+    try:
+        img_prev_b64 = data.get('image_previous_base64')
+        img_curr_b64 = data.get('image_current_base64')
+        
+        if not img_prev_b64 or not img_curr_b64:
+            return {"success": False, "error": "Both images are required"}
+        
+        threshold = data.get('threshold', 30)
+        generate_visuals = data.get('generate_visuals', True)
+        
+        # Run comparison
+        result = compare_images_from_base64(
+            img_prev_b64, 
+            img_curr_b64,
+            threshold=threshold,
+            generate_visuals=generate_visuals
+        )
+        
+        # Convert result to dict for JSON serialization
+        return {
+            "success": True,
+            "overall_change_percent": result.overall_change_percent,
+            "ssim_score": result.ssim_score,
+            "histogram_correlation": result.histogram_correlation,
+            "pixel_diff_percent": result.pixel_diff_percent,
+            "severity": result.severity.value,
+            "suggested_change_type": result.suggested_change_type.value,
+            "change_regions": [
+                {
+                    "x": r.x, "y": r.y, "width": r.width, "height": r.height,
+                    "area": r.area, "change_percent": r.change_percent,
+                    "centroid": r.centroid
+                }
+                for r in result.change_regions
+            ],
+            "recommendations": result.recommendations,
+            "diff_image_base64": result.diff_image_base64,
+            "heatmap_base64": result.heatmap_base64,
+            "overlay_base64": result.overlay_base64,
+            "analysis_timestamp": result.analysis_timestamp
+        }
+        
+    except Exception as e:
+        print(f"❌ Image comparison error: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.post('/comparison/analyze-with-suggestions')
+def compare_with_ai_suggestions(data: dict):
+    """
+    Compare images and get AI-powered suggestions using VLM.
+    
+    Expects:
+        {
+            "image_previous_base64": "...",
+            "image_current_base64": "...",
+            "zone_name": "Zone A",
+            "use_vlm": true  # Whether to use VLM for detailed analysis
+        }
+    
+    Returns comparison results + VLM interpretation if requested.
+    """
+    global vlm_analyzer
+    
+    try:
+        img_prev_b64 = data.get('image_previous_base64')
+        img_curr_b64 = data.get('image_current_base64')
+        zone_name = data.get('zone_name', 'Unknown Zone')
+        use_vlm = data.get('use_vlm', False)
+        
+        if not img_prev_b64 or not img_curr_b64:
+            return {"success": False, "error": "Both images are required"}
+        
+        # First, run basic comparison
+        result = compare_images_from_base64(img_prev_b64, img_curr_b64)
+        
+        response = {
+            "success": True,
+            "zone_name": zone_name,
+            "comparison": {
+                "overall_change_percent": result.overall_change_percent,
+                "severity": result.severity.value,
+                "suggested_change_type": result.suggested_change_type.value,
+                "change_regions_count": len(result.change_regions),
+                "recommendations": result.recommendations,
+                "heatmap_base64": result.heatmap_base64,
+                "overlay_base64": result.overlay_base64
+            }
+        }
+        
+        # If significant change and VLM requested, get detailed analysis
+        if use_vlm and result.overall_change_percent > 5:
+            if vlm_analyzer is None and VLM_ENABLED:
+                vlm_analyzer = init_vlm_analyzer()
+            
+            if vlm_analyzer:
+                # Decode current image for VLM
+                img_data = base64.b64decode(img_curr_b64)
+                img_array = np.frombuffer(img_data, dtype=np.uint8)
+                current_image = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
+                
+                # Ask VLM about the changes
+                change_prompt = f"""This satellite image shows an area that has changed by approximately {result.overall_change_percent:.1f}%.
+The automated analysis suggests this might be related to {result.suggested_change_type.value}.
+Please describe what you see in detail and confirm or refine this assessment.
+What specific changes can you identify? Are there any potential concerns?"""
+                
+                vlm_analysis = vlm_analyzer.analyze_image(current_image, change_prompt)
+                
+                response["vlm_analysis"] = {
+                    "detailed_interpretation": vlm_analysis,
+                    "model": "moondream2",
+                    "prompt_used": change_prompt
+                }
+        
+        # Generate notification recommendation
+        should_notify = (
+            result.severity.value in ['significant', 'critical'] or
+            result.overall_change_percent > 20
+        )
+        
+        response["notification"] = {
+            "should_notify": should_notify,
+            "priority": "high" if result.severity.value == 'critical' else 
+                       "medium" if result.severity.value == 'significant' else "low",
+            "summary": f"Zona '{zone_name}': {result.overall_change_percent:.1f}% de cambio detectado ({result.severity.value})"
+        }
+        
+        return response
+        
+    except Exception as e:
+        print(f"❌ Compare with suggestions error: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.post('/comparison/quick-diff')
+def quick_diff_check(data: dict):
+    """
+    Quick check if images are significantly different (for polling).
+    
+    Expects:
+        {
+            "image_previous_base64": "...",
+            "image_current_base64": "...",
+            "change_threshold": 10.0  # Minimum % to consider "changed"
+        }
+    
+    Returns:
+        {
+            "has_changes": true/false,
+            "change_percent": 15.5,
+            "severity": "moderate"
+        }
+    """
+    try:
+        img_prev_b64 = data.get('image_previous_base64')
+        img_curr_b64 = data.get('image_current_base64')
+        change_threshold = data.get('change_threshold', 10.0)
+        
+        if not img_prev_b64 or not img_curr_b64:
+            return {"success": False, "error": "Both images are required"}
+        
+        # Quick comparison without visuals
+        result = compare_images_from_base64(
+            img_prev_b64, 
+            img_curr_b64,
+            generate_visuals=False
+        )
+        
+        return {
+            "success": True,
+            "has_changes": result.overall_change_percent >= change_threshold,
+            "change_percent": result.overall_change_percent,
+            "severity": result.severity.value
+        }
+        
+    except Exception as e:
+        print(f"❌ Quick diff error: {e}")
+        return {"success": False, "error": str(e)}

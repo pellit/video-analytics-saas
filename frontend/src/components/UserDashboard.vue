@@ -4,6 +4,7 @@ import NavBar from './NavBar.vue'
 import FaceRecognitionPanel from './FaceRecognitionPanel.vue'
 import ToastNotification from './ToastNotification.vue'
 import SatellitePanel from './SatellitePanel.vue'
+import SatelliteReportsPanel from './SatelliteReportsPanel.vue'
 
 const props = defineProps(['token', 'user'])
 const emit = defineEmits(['logout', 'navigate'])
@@ -771,6 +772,13 @@ const saveProfile = async () => {
           >
             🛰️ Satélite
           </button>
+          <button 
+            class="view-tab" 
+            :class="{ active: activeView === 'reports' }"
+            @click="activeView = 'reports'"
+          >
+            📊 Reportes
+          </button>
         </div>
         
         <!-- Camera List (when cameras view active) -->
@@ -800,6 +808,22 @@ const saveProfile = async () => {
               <li>✓ Resolución 10m</li>
               <li>✓ Actualización cada 5 días</li>
               <li>✓ Detección automática</li>
+            </ul>
+          </div>
+        </template>
+        
+        <!-- Reports Info (when reports view active) -->
+        <template v-if="activeView === 'reports'">
+          <div class="sidebar-header">
+            <h3>📊 Reportes</h3>
+          </div>
+          <div class="satellite-info">
+            <p class="info-text">Análisis de cambios en imágenes satelitales.</p>
+            <ul class="feature-list">
+              <li>✓ Comparación de imágenes</li>
+              <li>✓ Detección de cambios</li>
+              <li>✓ Análisis con IA</li>
+              <li>✓ Historial de análisis</li>
             </ul>
           </div>
         </template>
@@ -1126,6 +1150,15 @@ const saveProfile = async () => {
         :api-url="API_URL"
         :token="token"
         @toast="handleToast"
+      />
+    </div>
+    
+    <!-- Reports View -->
+    <div class="main-content reports-view" v-if="activeView === 'reports'">
+      <SatelliteReportsPanel 
+        :token="token"
+        :zones="satelliteZones"
+        @notification="handleToast"
       />
     </div>
 

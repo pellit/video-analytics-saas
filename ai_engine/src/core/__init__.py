@@ -15,6 +15,17 @@ from .hybrid import (
     get_hybrid_analyzer,
     init_hybrid_analyzer
 )
+from .image_comparison import (
+    ImageComparator,
+    ComparisonResult,
+    ChangeRegion,
+    ChangeSeverity,
+    ChangeType,
+    get_comparator,
+    compare_images,
+    compare_images_from_base64,
+    compare_images_from_paths
+)
 
 __all__ = [
     "get_satellite_service",
@@ -28,5 +39,16 @@ __all__ = [
     "SmartAlert",
     "AlertSeverity",
     "get_hybrid_analyzer",
+    "init_hybrid_analyzer",
+    "ImageComparator",
+    "ComparisonResult",
+    "ChangeRegion",
+    "ChangeSeverity",
+    "ChangeType",
+    "get_comparator",
+    "compare_images",
+    "compare_images_from_base64",
+    "compare_images_from_paths",
+]
     "init_hybrid_analyzer"
 ]
