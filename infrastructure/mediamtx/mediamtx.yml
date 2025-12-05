@@ -112,21 +112,12 @@ pathDefaults:
 ###############################################
 
 paths:
-  # Patrón para cámaras: /live/camera_1, /live/camera_2, etc.
-  live/~^camera_[0-9]+$:
+  # Catch-all: acepta cualquier path dinámicamente
+  # Los publishers pueden crear paths como /live/camera_1, /live/camera_2, etc.
+  all:
     source: publisher
     maxReaders: 50
     
-  # Stream de prueba (FFmpeg test pattern)
-  test:
-    source: publisher
-    runOnInit: >
-      ffmpeg -re -f lavfi -i testsrc=size=640x480:rate=25 
-      -f lavfi -i sine=frequency=440:sample_rate=48000 
-      -c:v libx264 -preset ultrafast -tune zerolatency 
-      -c:a aac -f rtsp rtsp://localhost:8554/test
-    runOnInitRestart: yes
-    
-  # Catch-all para cualquier otro path
-  all_others:
-    source: publisher
+    # Habilitar grabación si es necesario
+    # record: yes
+    # recordPath: ./recordings/%path/%Y-%m-%d_%H-%M-%S-%f
