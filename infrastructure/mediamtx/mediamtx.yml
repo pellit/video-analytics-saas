@@ -56,7 +56,6 @@ hlsAllowOrigin: '*'
 webrtc: yes
 webrtcAddress: :8889
 webrtcEncryption: no
-webrtcICETCPMux: yes
 webrtcICEServers2: []
 webrtcAllowOrigin: '*'
 
