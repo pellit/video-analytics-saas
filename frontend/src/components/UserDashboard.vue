@@ -6,6 +6,7 @@ import FaceDetectionPIP from './FaceDetectionPIP.vue'
 import ToastNotification from './ToastNotification.vue'
 import SatellitePanel from './SatellitePanel.vue'
 import SatelliteReportsPanel from './SatelliteReportsPanel.vue'
+import SmartPlayer from './SmartPlayer.vue'
 
 const props = defineProps(['token', 'user'])
 const emit = defineEmits(['logout', 'navigate'])
@@ -454,6 +455,40 @@ const alerts = ref([]) // Store alerts received via SSE
 const activeWorkerStreams = ref([])
 const WORKER_URL = STREAM_URL.replace('/video_feed', '')
 
+// --- MediaMTX / SmartPlayer Mode ---
+const useMediaMTX = ref(false)
+const mediamtxConfig = ref({
+  webrtcUrl: '',
+  hlsUrl: '',
+  sseUrl: ''
+})
+
+// Check if MediaMTX architecture is available
+const checkArchitectureMode = async () => {
+  try {
+    const res = await fetch(`${WORKER_URL}/architecture/info`)
+    if (res.ok) {
+      const data = await res.json()
+      useMediaMTX.value = data.mediamtx_enabled === true
+      if (useMediaMTX.value) {
+        console.log('🚀 MediaMTX mode detected - using SmartPlayer')
+        // Configure MediaMTX URLs based on worker response
+        const host = new URL(WORKER_URL).hostname
+        mediamtxConfig.value = {
+          webrtcUrl: `http://${host}:8889`,
+          hlsUrl: `http://${host}:8888`,
+          sseUrl: `${WORKER_URL}/stream/events`
+        }
+      } else {
+        console.log('📺 MJPEG mode - using traditional img stream')
+      }
+    }
+  } catch (e) {
+    console.log('⚠️ Could not detect architecture, defaulting to MJPEG')
+    useMediaMTX.value = false
+  }
+}
+
 // --- VLM Analysis State ---
 const vlmAvailable = ref(false)
 const vlmAnalyzing = ref(false)
@@ -525,6 +560,7 @@ setInterval(fetchWorkerStatus, 5000)
 onMounted(() => {
     fetchWorkerStatus()
     checkVLMStatus()
+    checkArchitectureMode() // Check if MediaMTX is available
 })
 
 const isCameraRunning = (id) => activeWorkerStreams.value.includes(String(id))
@@ -918,8 +954,23 @@ const saveProfile = async () => {
       <div class="video-grid">
         <!-- Video Feed -->
         <div class="video-box" @dblclick="toggleFullscreen" :title="isProcessing ? 'Doble clic para pantalla completa' : ''">
+            <!-- YouTube embed -->
             <iframe v-if="isProcessing && isYouTube && showVideo" :src="activeStreamUrl" frameborder="0" allow="autoplay; encrypted-media; picture-in-picture" allowfullscreen class="stream"></iframe>
-            <div v-else-if="isProcessing && showVideo" class="stream-wrapper" @dblclick.stop="toggleFullscreen">
+            
+            <!-- MediaMTX SmartPlayer Mode (WebRTC/HLS + Canvas overlay) -->
+            <SmartPlayer 
+              v-else-if="isProcessing && showVideo && useMediaMTX"
+              :camera-id="String(activeCamera?.id)"
+              :webrtc-url="mediamtxConfig.webrtcUrl"
+              :hls-url="mediamtxConfig.hlsUrl"
+              :sse-url="mediamtxConfig.sseUrl"
+              :show-stats="true"
+              class="stream"
+              @dblclick.stop="toggleFullscreen"
+            />
+            
+            <!-- Legacy MJPEG Mode -->
+            <div v-else-if="isProcessing && showVideo && !useMediaMTX" class="stream-wrapper" @dblclick.stop="toggleFullscreen">
               <img :src="activeStreamUrl" class="stream" @load="onStreamLoad" @error="onStreamError" @dblclick.stop="toggleFullscreen" />
               <div v-if="streamLoadError" class="stream-error">
                 <p>No se pudo cargar el stream.</p>

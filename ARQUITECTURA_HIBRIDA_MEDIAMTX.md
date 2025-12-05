@@ -709,3 +709,178 @@ Para dudas sobre la implementación, revisar:
 
 *Documento creado: 5 de Diciembre 2025*
 *Versión: 2.0*
+
+
+## Resumen de Optimizaciones Graduales
+
+
+ - Nivel 1 (Actual - MVP Optimizado)
+Video: MediaMTX (Go).
+
+IA: Python + ONNX.
+
+Datos: Redis.
+
+Web: Laravel Reverb.
+
+ - Nivel 2 (Performance de Inferencia)
+Cambio: Reemplazar Python por Rust.
+
+Impacto: Puedes meter 3x o 4x más cámaras por servidor.
+
+Dificultad: Alta (Curva de aprendizaje de Rust).
+
+
+Este es el plan maestro para tu **Fase 2: "Hyper-Performance"**. Guárdalo bien, porque este es el paso que transformará tu startup de un MVP funcional a una plataforma capaz de escalar masivamente con costos de servidor mínimos.
+
+El objetivo central es: **Reemplazar el Worker de Python por uno en Rust**, manteniendo todo lo demás (MediaMTX, Redis, Laravel, Vue) exactamente igual.
+
+-----
+
+# 🚀 Plan de Migración a Nivel 2: Core de IA en Rust
+
+**Objetivo:** Reducir el consumo de RAM en un 80% y aumentar el throughput de procesamiento por CPU.
+**Cambio Clave:** `ai_engine (Python)` ➔ `ai_engine (Rust)`.
+
+-----
+
+## 1\. Arquitectura de Transición
+
+No cambiamos la infraestructura, solo cambiamos el "motor" del vehículo.
+
+```mermaid
+graph LR
+    subgraph "Nivel 1 (Actual)"
+        C1[Cámara] --> M1[MediaMTX]
+        M1 --> P[🐍 Python Worker]
+        P -- "GIL / Overhead" --> R1[Redis]
+    end
+
+    subgraph "Nivel 2 (Futuro)"
+        C2[Cámara] --> M2[MediaMTX]
+        M2 --> RS[🦀 Rust Worker]
+        RS -- "Zero-Copy / Async" --> R2[Redis]
+    end
+    
+    style P fill:#ffcccc,stroke:#333
+    style RS fill:#ccffcc,stroke:#333
+```
+
+-----
+
+## 2\. Tecnologías Necesarias (El Stack Rust)
+
+En lugar de `requirements.txt`, usarás `Cargo.toml`. Estas son las librerías equivalentes:
+
+| Función | Python (Actual) | Rust (Nuevo) |
+| :--- | :--- | :--- |
+| **Runtime** | Python 3.11 | `tokio` (Async runtime) |
+| **Inferencia** | `onnxruntime` | `ort` (Bindings de ONNX Runtime) |
+| **Video** | `opencv-python` | `ffmpeg-next` (o `gstreamer`) |
+| **Comunicación** | `redis` | `redis` (crate oficial) |
+| **Datos** | `json` | `serde` + `serde_json` |
+| **Matrices** | `numpy` | `ndarray` |
+
+-----
+
+## 3\. Hoja de Ruta de Implementación
+
+### Paso 1: Configuración del Entorno (Local)
+
+No necesitas instalar Rust en el servidor todavía, solo preparar el proyecto.
+
+1.  Crear carpeta `ai_engine_rust`.
+2.  `cargo init`.
+3.  Definir dependencias en `Cargo.toml`.
+
+### Paso 2: El "Hello World" de Inferencia
+
+Crear un pequeño script en Rust que cargue tu modelo `yolo_nas_s.onnx` y procese una imagen estática.
+
+  * **Meta:** Asegurar que las dimensiones de entrada/salida coinciden con lo que hacías en Python.
+
+### Paso 3: Decodificación de Video Eficiente
+
+Implementar la lectura del stream RTSP desde MediaMTX.
+
+  * Aquí Rust brilla: puedes decodificar frames en hilos separados sin bloquear el hilo principal (algo que Python sufre por el GIL).
+
+### Paso 4: El Bucle Principal (The Loop)
+
+Conectar las piezas. El código conceptual en Rust se vería así:
+
+```rust
+// Pseudocódigo Rust (future reference)
+use ort::{GraphOptimizationLevel, Session};
+use redis::AsyncCommands;
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // 1. Conectar a Redis
+    let client = redis::Client::open("redis://redis:6379")?;
+    let mut con = client.get_async_connection().await?;
+
+    // 2. Cargar Modelo ONNX (Una sola vez en memoria)
+    let model = Session::builder()?
+        .with_optimization_level(GraphOptimizationLevel::Level3)?
+        .with_model_from_file("yolo_nas_s.onnx")?;
+
+    // 3. Conectar a MediaMTX (RTSP)
+    let mut streamer = VideoStream::new("rtsp://media_server:8554/live/cam1");
+
+    println!("🚀 Rust Worker Iniciado");
+
+    while let Some(frame) = streamer.next_frame().await {
+        // A. Preprocesamiento (Resize + Normalización)
+        let tensor = preprocess(frame); 
+
+        // B. Inferencia (Ultrarrápida)
+        let outputs = model.run(inputs![tensor]?)?;
+
+        // C. Postprocesamiento (Filtrar cajas < 0.5 confianza)
+        let detections = postprocess(outputs);
+
+        // D. Enviar a Redis (Solo si hay detecciones)
+        if !detections.is_empty() {
+            let json = serde_json::to_string(&detections)?;
+            con.publish("camera_events", json).await?;
+        }
+    }
+
+    Ok(())
+}
+```
+
+### Paso 5: Dockerización Multi-Stage
+
+Rust compila a un binario único. Esto permite crear imágenes de Docker **diminutas**.
+
+  * **Stage 1 (Build):** Imagen pesada con compiladores. Compila el código.
+  * **Stage 2 (Runtime):** Imagen `debian:slim` o `alpine`. Solo copias el archivo ejecutable resultante (aprox 20-30MB).
+  * **Resultado:** Un contenedor que arranca en milisegundos.
+
+-----
+
+## 4\. Estrategia de "Switch" Seguro
+
+Para migrar sin miedo:
+
+1.  **Mantén el contenedor Python (`ai_worker`)** en tu `docker-compose.yml`.
+2.  **Agrega el contenedor Rust (`rust_worker`)** pero comentado o apagado (`profiles: ["disable"]`).
+3.  **Día del cambio:**
+      * Detienes Python: `docker stop ai_worker`
+      * Inicias Rust: `docker start rust_worker`
+4.  **Validación:** ¿El frontend sigue mostrando las cajas verdes? (Como usan el mismo canal de Redis y formato JSON, el Frontend ni se entera del cambio).
+5.  **Rollback:** Si Rust falla, apagas Rust y prendes Python. Tiempo de caída: 2 segundos.
+
+-----
+
+## Beneficio Final Esperado
+
+Al completar este Nivel 2, tu infraestructura cambiará drásticamente:
+
+  * **Uso de RAM:** Python (\~150MB por worker) ➔ Rust (\~15MB por worker).
+  * **Densidad:** Podrás correr **10 veces más cámaras** en el mismo servidor de $10/mes.
+  * **Estabilidad:** Rust no tiene "Runtime Exceptions" aleatorios como Python. Si compila, funciona y no se cae por memoria.
+
+Este documento queda listo para cuando tu SaaS tenga sus primeros 50-100 clientes y necesites optimizar costos agresivamente. 🚀
