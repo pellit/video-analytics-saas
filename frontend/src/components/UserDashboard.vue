@@ -927,6 +927,19 @@ const saveProfile = async () => {
               <div class="fullscreen-hint" v-if="!isFullscreen">
                 <span>⛶ Doble clic para HUD</span>
               </div>
+              
+              <!-- Face Detection Cards INSIDE Video -->
+              <FaceDetectionPIP
+                v-if="activeCamera?.face_recognition_enabled"
+                :camera-id="activeCamera?.id"
+                :token="token"
+                :max-visible="4"
+                :show-empty="false"
+                position="inside"
+                @face-selected="handleFaceSelected"
+                @face-identified="handleFaceIdentified"
+                @notification="handleToast"
+              />
             </div>
             <div v-else class="placeholder" @dblclick.stop="toggleFullscreen">
               <div class="placeholder-content">
@@ -963,57 +976,11 @@ const saveProfile = async () => {
                 
                 <div v-if="activeCamera.detection_enabled" class="nested-settings">
                   <div class="setting-row">
-                    <label class="setting-label">Modelo AI</label>
+                    <label class="setting-label">🤖 Modelo AI</label>
                     <select v-model="activeCamera.detection_model" class="compact-select">
-                      <option value="onnx">⚡ ONNX (Rápido)</option>
-                      <option value="yolo_nas_s">YOLO-NAS S</option>
-                      <option value="yolo_nas_m">YOLO-NAS M</option>
-                      <option value="rt_detr">RT-DETR</option>
+                      <option value="onnx">⚡ ONNX YOLO-NAS (Rápido)</option>
+                      <option value="rt_detr">RT-DETR (Transformers)</option>
                     </select>
-                  </div>
-
-                  <!-- Analysis FPS Control -->
-                  <div class="setting-row">
-                    <span class="setting-label">FPS de Análisis</span>
-                    <div class="fps-control">
-                      <input 
-                        type="range" 
-                        v-model.number="activeCamera.analysis_fps" 
-                        min="1" 
-                        max="30" 
-                        step="1"
-                        class="fps-slider"
-                      />
-                      <span class="fps-value">{{ activeCamera.analysis_fps || 5 }} fps</span>
-                    </div>
-                  </div>
-                  <p class="setting-hint">
-                    Menos FPS = Menor consumo de CPU. Recomendado: 5-10 fps para vigilancia.
-                  </p>
-
-                  <!-- Confidence Threshold -->
-                  <div class="setting-row">
-                    <span class="setting-label">Umbral de Confianza</span>
-                    <div class="fps-control">
-                      <input 
-                        type="range" 
-                        v-model.number="activeCamera.confidence_threshold" 
-                        min="0.1" 
-                        max="0.95" 
-                        step="0.05"
-                        class="fps-slider"
-                      />
-                      <span class="fps-value">{{ ((activeCamera.confidence_threshold || 0.5) * 100).toFixed(0) }}%</span>
-                    </div>
-                  </div>
-
-                  <!-- Show Overlay Toggle -->
-                  <div class="setting-row">
-                    <label class="toggle-switch">
-                      <input type="checkbox" v-model="activeCamera.show_analysis_overlay">
-                      <span class="toggle-slider"></span>
-                    </label>
-                    <span class="setting-label">Mostrar overlay (FPS/Modelo)</span>
                   </div>
                   
                   <div class="setting-row classes-row">
@@ -1072,6 +1039,47 @@ const saveProfile = async () => {
                 <span class="accordion-arrow">{{ settingsSection === 'advanced' ? '▲' : '▼' }}</span>
               </button>
               <div class="accordion-content" v-show="settingsSection === 'advanced'">
+                <!-- Analysis FPS Control -->
+                <div class="setting-row">
+                  <span class="setting-label">⚡ FPS de Análisis</span>
+                  <div class="fps-control">
+                    <input 
+                      type="range" 
+                      v-model.number="activeCamera.analysis_fps" 
+                      min="1" 
+                      max="30" 
+                      step="1"
+                      class="fps-slider"
+                    />
+                    <span class="fps-value">{{ activeCamera.analysis_fps || 5 }} fps</span>
+                  </div>
+                </div>
+
+                <!-- Confidence Threshold -->
+                <div class="setting-row">
+                  <span class="setting-label">🎯 Umbral Confianza</span>
+                  <div class="fps-control">
+                    <input 
+                      type="range" 
+                      v-model.number="activeCamera.confidence_threshold" 
+                      min="0.1" 
+                      max="0.95" 
+                      step="0.05"
+                      class="fps-slider"
+                    />
+                    <span class="fps-value">{{ ((activeCamera.confidence_threshold || 0.5) * 100).toFixed(0) }}%</span>
+                  </div>
+                </div>
+
+                <!-- Show Overlay Toggle -->
+                <div class="setting-row">
+                  <label class="toggle-switch">
+                    <input type="checkbox" v-model="activeCamera.show_analysis_overlay">
+                    <span class="toggle-slider"></span>
+                  </label>
+                  <span class="setting-label">Mostrar overlay (FPS/Modelo)</span>
+                </div>
+
                 <div class="setting-row">
                   <label class="toggle-switch">
                     <input type="checkbox" v-model="activeCamera.depth_enabled">
@@ -1199,18 +1207,6 @@ const saveProfile = async () => {
           />
         </div>
       </div>
-
-      <!-- Face Detection PIP (Picture-in-Picture) -->
-      <FaceDetectionPIP
-        v-if="activeCamera?.face_recognition_enabled && isProcessing"
-        :camera-id="activeCamera?.id"
-        :token="token"
-        :max-visible="5"
-        :show-empty="true"
-        @face-selected="handleFaceSelected"
-        @face-identified="handleFaceIdentified"
-        @notification="handleToast"
-      />
 
     </div>
     
@@ -1639,20 +1635,13 @@ const saveProfile = async () => {
 .stream-wrapper { 
   width: 100%; 
   height: 100%; 
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
+  position: relative;
   cursor: pointer;
 }
 .stream { 
   width: 100%; 
   height: 100%; 
   object-fit: contain;
-  position: absolute;
-  top: 0;
-  left: 0;
   cursor: pointer;
 }
 iframe.stream {

@@ -70,6 +70,7 @@ class ONNXYOLONASDetector(BaseDetector):
         self._next_track_id = 1
         self._prev_detections = []
         self._iou_threshold = 0.5
+        self._input_type = 'float32'  # Default, will be updated when model loads
     
     def _find_model_path(self) -> str:
         """Find ONNX model file in default locations."""
@@ -126,6 +127,15 @@ class ONNXYOLONASDetector(BaseDetector):
         
         self.input_name = self.session.get_inputs()[0].name
         
+        # Detect input type from model metadata
+        input_info = self.session.get_inputs()[0]
+        if 'uint8' in input_info.type:
+            self._input_type = 'uint8'
+            print(f"[ONNX-YOLO-NAS] Model expects uint8 input (0-255)")
+        else:
+            self._input_type = 'float32'
+            print(f"[ONNX-YOLO-NAS] Model expects float32 input")
+        
         # Log model info
         print(f"[ONNX-YOLO-NAS] Model loaded successfully")
         print(f"[ONNX-YOLO-NAS] Input: {self.input_name}")
@@ -153,8 +163,14 @@ class ONNXYOLONASDetector(BaseDetector):
         # Transpose from HWC to CHW format
         img_chw = np.transpose(img_rgb, (2, 0, 1))
         
-        # Add batch dimension and convert to float32
-        img_input = np.expand_dims(img_chw, axis=0).astype(np.float32)
+        # Add batch dimension
+        # Check if model expects uint8 or float32
+        if self._input_type == 'uint8':
+            # Keep as uint8 (0-255) for models exported with preprocessing
+            img_input = np.expand_dims(img_chw, axis=0).astype(np.uint8)
+        else:
+            # Convert to float32 (0-1 or 0-255 depending on model)
+            img_input = np.expand_dims(img_chw, axis=0).astype(np.float32)
         
         # Calculate scale factors for box rescaling
         scale_x = w_orig / self.input_size

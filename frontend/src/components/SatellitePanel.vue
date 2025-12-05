@@ -1344,12 +1344,21 @@ const destroyGlobalMap = () => {
 watch(viewMode, async (newMode) => {
   if (newMode === 'map') {
     // Always recreate map when switching to map view
-    await nextTick()
     destroyGlobalMap()
+    // Wait for DOM to be ready
     await nextTick()
+    await nextTick()
+    // Extra delay for DOM to fully render
     setTimeout(() => {
-      initGlobalMap()
-    }, 100)
+      if (globalMapContainer.value) {
+        initGlobalMap()
+      } else {
+        // Retry after more time if container not ready
+        setTimeout(() => {
+          initGlobalMap()
+        }, 200)
+      }
+    }, 150)
   } else {
     // Destroy map when switching away
     destroyGlobalMap()

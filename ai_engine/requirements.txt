@@ -21,11 +21,7 @@ torchvision
 
 # VLM Dependencies (Moondream2)
 einops>=0.6.0           # Required by Moondream2 architecture
-
-# YOLO-NAS Export (Apache 2.0 licensed)
-# super-gradients is installed ON-DEMAND when exporting models
-# This avoids dependency conflicts and reduces image size
-# Install manually: pip install super-gradients>=3.5.0
+accelerate>=0.25.0      # Required for device_map in transformers
 
 supervision>=0.16.0      # ByteTrack tracking and utilities
 

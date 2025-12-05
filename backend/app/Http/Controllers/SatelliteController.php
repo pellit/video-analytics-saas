@@ -510,4 +510,34 @@ class SatelliteController extends Controller
             'thumbnail_path' => $thumbnailPath,
         ], 201);
     }
+
+    /**
+     * Regenerar thumbnails para todas las zonas del usuario
+     */
+    public function regenerateThumbnails(Request $request): JsonResponse
+    {
+        $zones = SatelliteZone::where('user_id', $request->user()->id)->get();
+        $count = 0;
+
+        foreach ($zones as $zone) {
+            try {
+                $command = [
+                    'action' => 'GET_ZONE_THUMBNAIL',
+                    'zone_id' => $zone->id,
+                    'lat' => (float) $zone->latitude,
+                    'lon' => (float) $zone->longitude,
+                    'radius_km' => (float) $zone->radius_km,
+                ];
+                Redis::publish('satellite_control', json_encode($command));
+                $count++;
+            } catch (\Exception $e) {
+                \Log::warning("Could not request thumbnail for zone {$zone->id}: " . $e->getMessage());
+            }
+        }
+
+        return response()->json([
+            'message' => "Solicitados $count thumbnails",
+            'count' => $count,
+        ]);
+    }
 }

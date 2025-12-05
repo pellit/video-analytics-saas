@@ -1,11 +1,11 @@
 <template>
-  <div class="face-pip-container" v-if="faces.length > 0 || showEmpty">
+  <div class="face-pip-container" :class="{ 'inside-video': position === 'inside' }" v-if="faces.length > 0 || showEmpty">
     <div class="pip-header">
-      <span class="pip-title">👤 Rostros Detectados</span>
+      <span class="pip-title">👤 Rostros</span>
       <span class="pip-count">{{ faces.length }}</span>
     </div>
     
-    <div class="faces-stack">
+    <div class="faces-stack" :class="{ 'horizontal': position === 'inside' }">
       <TransitionGroup name="face-slide">
         <div 
           v-for="(face, index) in faces.slice(0, maxVisible)" 
@@ -168,6 +168,10 @@ const props = defineProps({
   showEmpty: {
     type: Boolean,
     default: false
+  },
+  position: {
+    type: String,
+    default: 'fixed' // 'fixed' or 'inside'
   }
 })
 
@@ -418,6 +422,85 @@ onUnmounted(() => {
   z-index: 1000;
   display: flex;
   flex-direction: column;
+}
+
+/* Inside video positioning */
+.face-pip-container.inside-video {
+  position: absolute;
+  right: 10px;
+  top: 10px;
+  width: auto;
+  max-width: 320px;
+  max-height: 180px;
+  background: linear-gradient(135deg, rgba(10, 10, 20, 0.85), rgba(20, 20, 35, 0.85));
+  border-radius: 12px;
+  z-index: 100;
+}
+
+.face-pip-container.inside-video .pip-header {
+  padding: 8px 12px;
+}
+
+.face-pip-container.inside-video .pip-title {
+  font-size: 12px;
+}
+
+.face-pip-container.inside-video .faces-stack {
+  padding: 8px;
+  gap: 6px;
+}
+
+.face-pip-container.inside-video .faces-stack.horizontal {
+  flex-direction: row;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+.face-pip-container.inside-video .face-card {
+  flex-direction: column;
+  min-width: 70px;
+  max-width: 80px;
+  padding: 6px;
+  gap: 4px;
+}
+
+.face-pip-container.inside-video .face-image-container {
+  width: 60px;
+  height: 60px;
+}
+
+.face-pip-container.inside-video .face-image {
+  width: 60px;
+  height: 60px;
+}
+
+.face-pip-container.inside-video .face-info {
+  text-align: center;
+}
+
+.face-pip-container.inside-video .face-name {
+  font-size: 10px;
+  margin: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 70px;
+}
+
+.face-pip-container.inside-video .face-meta,
+.face-pip-container.inside-video .face-actions {
+  display: none;
+}
+
+.face-pip-container.inside-video .confidence-ring {
+  width: 16px;
+  height: 16px;
+  bottom: 2px;
+  right: 2px;
+}
+
+.face-pip-container.inside-video .confidence-value {
+  font-size: 7px;
 }
 
 .pip-header {

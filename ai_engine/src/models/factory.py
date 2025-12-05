@@ -13,7 +13,6 @@ from .base import BaseDetector
 class ModelType(str, Enum):
     """Available model types."""
     ONNX = "onnx"              # ONNX Runtime - FASTEST for CPU (recommended)
-    YOLO_NAS = "yolo_nas"      # super-gradients, Apache 2.0 license
     RT_DETR = "rt_detr"        # HuggingFace transformers
     ULTRALYTICS = "ultralytics" # DISABLED by default (AGPL-3.0)
 
@@ -73,8 +72,9 @@ class ModelFactory:
                 # Fallback: map old names to new
                 model_type_map = {
                     'yolo_nas_s': ModelType.ONNX,
-                    'yolo_nas_m': ModelType.YOLO_NAS,
-                    'yolo_nas_l': ModelType.YOLO_NAS,
+                    'yolo_nas_m': ModelType.ONNX,
+                    'yolo_nas_l': ModelType.ONNX,
+                    'yolo_nas': ModelType.ONNX,
                 }
                 model_type = model_type_map.get(model_type.lower(), DEFAULT_MODEL)
         
@@ -85,16 +85,6 @@ class ModelFactory:
                 return ONNXYOLONASDetector(model_path=model_path, device=device)
             except (FileNotFoundError, ImportError) as e:
                 print(f"[ModelFactory] ONNX model not available: {e}")
-                print("[ModelFactory] Falling back to RT-DETR...")
-                from .rt_detr import RTDETRDetector
-                return RTDETRDetector(model_name=model_path, device=device)
-        
-        elif model_type == ModelType.YOLO_NAS:
-            try:
-                from .yolo_nas import YOLONASDetector
-                return YOLONASDetector(model_name=model_path, device=device)
-            except ImportError as e:
-                print(f"[ModelFactory] YOLO-NAS not available: {e}")
                 print("[ModelFactory] Falling back to RT-DETR...")
                 from .rt_detr import RTDETRDetector
                 return RTDETRDetector(model_name=model_path, device=device)
@@ -151,11 +141,6 @@ class ModelFactory:
             print(f"[ModelFactory] Unknown model type '{model_type_str}', using default: {DEFAULT_MODEL.value}")
             model_type = DEFAULT_MODEL
         
-        # Default to yolo_nas_s for YOLO-NAS if no path specified
-        if model_type == ModelType.YOLO_NAS and model_path is None:
-            model_path = 'yolo_nas_s'
-            print(f"[ModelFactory] Using default model: yolo_nas_s")
-        
         return cls.create(model_type=model_type, model_path=model_path, device=device)
     
     @classmethod
@@ -175,19 +160,11 @@ class ModelFactory:
                 'variants': ['yolo_nas_s.onnx', 'yolo_nas_m.onnx', 'yolo_nas_l.onnx'],
                 'description': 'ONNX optimized YOLO-NAS. 2-3x faster than PyTorch on CPU. Smallest Docker image.'
             },
-            ModelType.YOLO_NAS.value: {
-                'name': 'YOLO-NAS',
-                'library': 'super-gradients',
-                'license': 'Apache 2.0',
-                'status': 'ENABLED',
-                'variants': ['yolo_nas_s', 'yolo_nas_m', 'yolo_nas_l'],
-                'description': 'State-of-the-art YOLO model by Deci AI. Requires super-gradients library.'
-            },
             ModelType.RT_DETR.value: {
                 'name': 'RT-DETR',
                 'library': 'transformers',
                 'license': 'Apache 2.0',
-                'status': 'ENABLED',
+                'status': 'ENABLED (Fallback)',
                 'variants': ['PekingU/rtdetr_r50vd', 'PekingU/rtdetr_r101vd'],
                 'description': 'Real-Time Detection Transformer. Transformer-based architecture with excellent accuracy.'
             },
