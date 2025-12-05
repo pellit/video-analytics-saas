@@ -174,7 +174,7 @@ class ModelFactory:
         if model_type == ModelType.MEDIAPIPE_OBJECT:
             try:
                 from .mediapipe_object import MediaPipeObjectDetector
-                return MediaPipeObjectDetector(max_results=10)
+                return MediaPipeObjectDetector(device=device)
             except Exception as e:
                 print(f"[ModelFactory] MediaPipe Object not available: {e}")
                 print("[ModelFactory] Falling back to YOLOv4-tiny...")

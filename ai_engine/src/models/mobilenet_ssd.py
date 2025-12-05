@@ -53,12 +53,13 @@ class MobileNetSSDDetector(BaseDetector):
         20: 62,  # tvmonitor -> tv
     }
     
-    def __init__(self, device: str = 'cpu'):
+    def __init__(self, device: str = 'cpu', input_size: int = None):
         """
         Initialize MobileNet-SSD detector.
         
         Args:
             device: Device to run on (only 'cpu' supported)
+            input_size: Ignored - MobileNet-SSD uses fixed 300x300 input
         """
         self.device = device
         self.net = None

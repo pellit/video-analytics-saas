@@ -42,15 +42,26 @@ class YOLOFastestDetector(BaseDetector):
         'high': (640, 640)
     }
     
-    def __init__(self, resolution: str = 'medium', device: str = 'cpu'):
+    def __init__(self, resolution: str = 'medium', device: str = 'cpu', input_size: int = None):
         """
         Initialize YOLO-Fastest detector.
         
         Args:
             resolution: 'low' (320), 'medium' (416), or 'high' (640)
             device: Device to run on (only 'cpu' supported)
+            input_size: Override input size (320, 416, or 640)
         """
-        self.resolution = resolution.lower()
+        # Handle input_size override
+        if input_size is not None:
+            if input_size <= 320:
+                self.resolution = 'low'
+            elif input_size <= 416:
+                self.resolution = 'medium'
+            else:
+                self.resolution = 'high'
+        else:
+            self.resolution = resolution.lower()
+        
         if self.resolution not in self.RESOLUTIONS:
             self.resolution = 'medium'
         
