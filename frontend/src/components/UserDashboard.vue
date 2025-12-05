@@ -155,6 +155,7 @@ const initializeCameraDefaults = (camera) => {
   camera.tracking = camera.tracking ?? false
   // FPS and overlay defaults
   camera.analysis_fps = camera.analysis_fps ?? 5
+  camera.face_analysis_fps = camera.face_analysis_fps ?? 5  // Face detection FPS (default 5)
   camera.show_analysis_overlay = camera.show_analysis_overlay ?? true
   camera.confidence_threshold = camera.confidence_threshold ?? 0.5
   return camera
@@ -390,6 +391,7 @@ const updateCameraSettings = async (camera) => {
       detection_model: camera.detection_model, 
       detection_classes: camera.detection_classes,
       face_recognition_enabled: camera.face_recognition_enabled,
+      face_analysis_fps: camera.face_analysis_fps,  // Face detection FPS
       depth_enabled: camera.depth_enabled,
       bev_enabled: camera.bev_enabled,
       tracking: camera.tracking,
@@ -1021,6 +1023,23 @@ const saveProfile = async () => {
                   </label>
                   <span class="setting-label">Activar reconocimiento</span>
                 </div>
+                
+                <!-- Face Analysis FPS Control -->
+                <div class="setting-row" v-if="activeCamera.face_recognition_enabled">
+                  <span class="setting-label">⚡ FPS Análisis Facial</span>
+                  <div class="fps-control">
+                    <input 
+                      type="range" 
+                      v-model.number="activeCamera.face_analysis_fps" 
+                      min="1" 
+                      max="15" 
+                      step="1"
+                      class="fps-slider"
+                    />
+                    <span class="fps-value">{{ activeCamera.face_analysis_fps || 5 }} fps</span>
+                  </div>
+                </div>
+                
                 <button 
                   v-if="activeCamera.face_recognition_enabled" 
                   @click="showFacePanel = !showFacePanel"

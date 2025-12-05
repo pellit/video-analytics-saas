@@ -350,24 +350,28 @@ def stream_thread(camera_id, url):
         # Get config including FPS settings
         detection_classes = []
         face_enabled = False
+        face_analysis_fps = 5  # Default: analyze faces 5 times per second
         depth_enabled = False
         bev_enabled = False
         tracking_enabled = False
         analysis_fps = 5  # Default: analyze 5 frames per second
         show_overlay = True
         model_name = "YOLOv8"
+        last_face_analysis_time = 0
         
         with global_state['lock']:
             stream = global_state['streams'].get(str(camera_id))
             if stream:
                 detection_classes = stream.get('detection_classes', [])
                 face_enabled = stream.get('face_enabled', False)
+                face_analysis_fps = stream.get('face_analysis_fps', 5)
                 depth_enabled = stream.get('depth_enabled', False)
                 bev_enabled = stream.get('bev_enabled', False)
                 tracking_enabled = stream.get('tracking_enabled', False)
                 analysis_fps = stream.get('analysis_fps', 5)
                 show_overlay = stream.get('show_overlay', True)
                 model_name = stream.get('model_name', 'YOLOv8')
+                last_face_analysis_time = stream.get('last_face_analysis_time', 0)
 
         # Get video FPS to calculate frame skip
         video_fps = cap.get(cv2.CAP_PROP_FPS)
@@ -483,7 +487,18 @@ def stream_thread(camera_id, url):
 
         # Face Recognition Logic (only if models are available)
         # Multi-scale detection for better results with different face sizes
-        if face_enabled and os.path.exists(YUNET_PATH):
+        # Respect face_analysis_fps - independent from detection FPS
+        current_time_face = time.time()
+        face_interval = 1.0 / face_analysis_fps if face_analysis_fps > 0 else 0.2
+        should_analyze_faces = (current_time_face - last_face_analysis_time) >= face_interval
+        
+        if face_enabled and os.path.exists(YUNET_PATH) and should_analyze_faces:
+            # Update last face analysis time
+            with global_state['lock']:
+                stream = global_state['streams'].get(str(camera_id))
+                if stream:
+                    stream['last_face_analysis_time'] = current_time_face
+            
             try:
                 h, w, _ = frame.shape
                 all_faces = []
@@ -546,25 +561,37 @@ def stream_thread(camera_id, url):
                             except Exception as emb_err:
                                 print(f"⚠️ Embedding error: {emb_err}")
                         
-                        # Crop face image for storage
+                        # Crop face image - ALWAYS generate for frontend display
                         face_crop = None
                         face_image_base64 = None
-                        should_save = np.random.rand() < 0.3  # Save 30% of faces
+                        face_thumbnail_base64 = None  # Smaller version for Redis/frontend
+                        should_save_to_backend = np.random.rand() < 0.3  # Save 30% to backend DB
                         try:
                             x, y, fw, fh = box
                             # Add margin
                             margin = int(min(fw, fh) * 0.2)
-                            x1 = max(0, x - margin)
-                            y1 = max(0, y - margin)
-                            x2 = min(w, x + fw + margin)
-                            y2 = min(h, y + fh + margin)
-                            face_crop = frame[y1:y2, x1:x2]
+                            x1_crop = max(0, x - margin)
+                            y1_crop = max(0, y - margin)
+                            x2_crop = min(w, x + fw + margin)
+                            y2_crop = min(h, y + fh + margin)
+                            face_crop = frame[y1_crop:y2_crop, x1_crop:x2_crop]
                             
-                            # Encode as base64 for sending to backend
-                            if should_save and face_crop is not None and face_crop.size > 0:
-                                _, buffer = cv2.imencode('.jpg', face_crop, [cv2.IMWRITE_JPEG_QUALITY, 80])
-                                face_image_base64 = base64.b64encode(buffer).decode('utf-8')
-                                print(f"📸 Face cropped for saving (size: {face_crop.shape})")
+                            # ALWAYS generate thumbnail for frontend (smaller, faster)
+                            if face_crop is not None and face_crop.size > 0:
+                                # Resize to max 80px for thumbnail (fast transfer via Redis)
+                                thumb_size = 80
+                                fh_crop, fw_crop = face_crop.shape[:2]
+                                scale_thumb = thumb_size / max(fh_crop, fw_crop)
+                                thumb_w, thumb_h = int(fw_crop * scale_thumb), int(fh_crop * scale_thumb)
+                                face_thumb = cv2.resize(face_crop, (thumb_w, thumb_h), interpolation=cv2.INTER_AREA)
+                                _, buffer_thumb = cv2.imencode('.jpg', face_thumb, [cv2.IMWRITE_JPEG_QUALITY, 70])
+                                face_thumbnail_base64 = base64.b64encode(buffer_thumb).decode('utf-8')
+                                
+                                # Full size for backend storage (only sometimes)
+                                if should_save_to_backend:
+                                    _, buffer = cv2.imencode('.jpg', face_crop, [cv2.IMWRITE_JPEG_QUALITY, 80])
+                                    face_image_base64 = base64.b64encode(buffer).decode('utf-8')
+                                    print(f"📸 Face cropped for backend (size: {face_crop.shape})")
                         except Exception as crop_err:
                             print(f"⚠️ Face crop error: {crop_err}")
                         
@@ -600,7 +627,7 @@ def stream_thread(camera_id, url):
                         label_y = y1 - 6 if y1 > 20 else y2 + th + 10
                         cv2.putText(annotated_frame, label, (x1, label_y), font, 0.4, face_color, 1, cv2.LINE_AA)
                         
-                        # Publish Face Event
+                        # Publish Face Event with thumbnail image for frontend display
                         event_obj = { 
                             'camera_id': int(camera_id), 
                             'event': 'face_detected', 
@@ -608,7 +635,8 @@ def stream_thread(camera_id, url):
                                 'label': 'Face', 
                                 'score': float(score), 
                                 'bbox': box.tolist(),
-                                'has_embedding': embedding_list is not None
+                                'has_embedding': embedding_list is not None,
+                                'face_image': face_thumbnail_base64  # Include thumbnail for frontend cards
                             } 
                         }
                         r.publish('detections', json.dumps(event_obj))
@@ -716,6 +744,7 @@ def redis_listener_loop():
                     url = data.get('url')
                     detection_classes = data.get('detection_classes', []) # List of class names
                     face_enabled = data.get('face_recognition_enabled', False)
+                    face_analysis_fps = data.get('face_analysis_fps', 5)  # Default 5 FPS for face detection
                     depth_enabled = data.get('depth_enabled', False)
                     bev_enabled = data.get('bev_enabled', False)
                     tracking_enabled = data.get('tracking', False)  # Tracking option
@@ -737,19 +766,22 @@ def redis_listener_loop():
                                 'thread': None,
                                 'detection_classes': detection_classes,
                                 'face_enabled': face_enabled,
+                                'face_analysis_fps': face_analysis_fps,
                                 'depth_enabled': depth_enabled,
                                 'bev_enabled': bev_enabled,
                                 'tracking_enabled': tracking_enabled,
                                 'analysis_fps': analysis_fps,
                                 'show_overlay': show_overlay,
                                 'confidence_threshold': confidence_threshold,
-                                'model_name': model_name
+                                'model_name': model_name,
+                                'last_face_analysis_time': 0
                             }
                         else:
                             global_state['streams'][cam_id]['active'] = True
                             global_state['streams'][cam_id]['url'] = url
                             global_state['streams'][cam_id]['detection_classes'] = detection_classes
                             global_state['streams'][cam_id]['face_enabled'] = face_enabled
+                            global_state['streams'][cam_id]['face_analysis_fps'] = face_analysis_fps
                             global_state['streams'][cam_id]['depth_enabled'] = depth_enabled
                             global_state['streams'][cam_id]['bev_enabled'] = bev_enabled
                             global_state['streams'][cam_id]['tracking_enabled'] = tracking_enabled

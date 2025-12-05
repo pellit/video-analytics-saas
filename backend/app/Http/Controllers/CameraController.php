@@ -40,6 +40,7 @@ class CameraController extends Controller
             'detection_model' => 'sometimes|string|nullable',
             'detection_classes' => 'sometimes|array',
             'face_recognition_enabled' => 'sometimes|boolean',
+            'face_analysis_fps' => 'sometimes|integer|min:1|max:30',
             'depth_enabled' => 'sometimes|boolean',
             'bev_enabled' => 'sometimes|boolean',
             'tracking' => 'sometimes|boolean',
@@ -66,6 +67,7 @@ class CameraController extends Controller
             'model' => $camera->detection_model ?? 'yolov8n', // Enviar modelo configurado
             'detection_classes' => $camera->detection_classes, // Enviar clases
             'face_recognition_enabled' => $camera->face_recognition_enabled,
+            'face_analysis_fps' => $camera->face_analysis_fps ?? 5,  // FPS para detección facial
             'depth_enabled' => $camera->depth_enabled,
             'bev_enabled' => $camera->bev_enabled,
             'tracking' => $camera->tracking ?? false,  // Enviar opción de tracking

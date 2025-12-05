@@ -239,16 +239,19 @@ const connectSSE = () => {
 
 // Handle incoming face detection event
 const handleFaceEvent = (data) => {
+  // Extract payload if nested (from SSE/Redis event structure)
+  const payload = data.payload || data
+  
   const newFace = {
-    id: data.id || Date.now() + Math.random(),
-    image_base64: data.face_image_base64,
-    image_url: data.face_image_url,
-    confidence: data.confidence || data.score || 0.9,
-    detected_at: data.detected_at || new Date().toISOString(),
-    name: data.name || null,
-    match_score: data.match_score,
-    embedding_id: data.embedding_id,
-    bbox: data.bbox,
+    id: payload.id || Date.now() + Math.random(),
+    image_base64: payload.face_image || payload.face_image_base64,  // face_image is thumbnail from Redis
+    image_url: payload.face_image_url,
+    confidence: payload.confidence || payload.score || 0.9,
+    detected_at: payload.detected_at || new Date().toISOString(),
+    name: payload.name || null,
+    match_score: payload.match_score,
+    embedding_id: payload.embedding_id,
+    bbox: payload.bbox,
     isNew: true
   }
   

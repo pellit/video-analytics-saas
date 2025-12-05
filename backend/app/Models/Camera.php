@@ -30,6 +30,7 @@ class Camera extends Model
         'show_analysis_overlay',
         // Funcionalidades
         'face_recognition_enabled',
+        'face_analysis_fps',
         'alert_on_unknown_face',
         'depth_enabled',
         'bev_enabled',
