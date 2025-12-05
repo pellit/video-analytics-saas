@@ -37,8 +37,9 @@ class MagicLinkController extends Controller
 
         // Convertimos la URL de API a URL de Frontend para el email
         // De: http://api:8000/api/auth/verify/123?signature=...
-        // A:  http://frontend:5173/verify?url=...
-        $frontendUrl = str_replace(env('APP_URL').'/api', 'http://192.168.0.38:5173/auth/callback', $url);
+        // A:  https://frontend/auth/callback/auth/verify/123?signature=...
+        $frontendBaseUrl = env('FRONTEND_URL', 'http://localhost:3000');
+        $frontendUrl = str_replace(env('APP_URL').'/api', rtrim($frontendBaseUrl, '/') . '/auth/callback', $url);
 
         // Enviar Email (ahora con Mailable para facilitar las pruebas)
         Mail::to($user->email)->send(new MagicLinkMail($frontendUrl));
