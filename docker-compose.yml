@@ -48,7 +48,8 @@ services:
         - BACKEND_API_URL=http://api:8000
         - WORKER_API_KEY=${WORKER_API_KEY}
         # Model configuration - ONNX is fastest for CPU (2-3x speedup)
-        - DETECTION_MODEL=${DETECTION_MODEL:-onnx}
+        - DETECTION_MODEL=${DETECTION_MODEL:-yolo_fastest}
+        - DETECTION_RESOLUTION=${DETECTION_RESOLUTION:-medium}
         - DETECTION_MODEL_PATH=${DETECTION_MODEL_PATH:-}
         # ⚠️ WARNING: Only set to 'true' for testing - Ultralytics has AGPL-3.0 license
         - ENABLE_ULTRALYTICS=${ENABLE_ULTRALYTICS:-false}

@@ -14,6 +14,9 @@ Pillow>=9.0.0
 # ONNX Runtime - Fast CPU inference
 onnxruntime>=1.16.0
 
+# MediaPipe - Google's ML solutions (Apache 2.0)
+mediapipe>=0.10.0
+
 # Detection Models (Apache 2.0 licensed) - fallback if no ONNX
 transformers            # For RT-DETR and Moondream2 VLM
 torch                   # PyTorch (only if not using ONNX)
