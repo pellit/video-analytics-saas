@@ -1,25 +1,59 @@
 import cv2
 import numpy as np
-import torch
-from transformers import pipeline
 from PIL import Image
+
+# Lazy imports for torch/transformers (optional dependencies)
+torch = None
+pipeline = None
+
+def _load_torch_deps():
+    """Load torch and transformers on demand."""
+    global torch, pipeline
+    if torch is None:
+        try:
+            import torch as _torch
+            from transformers import pipeline as _pipeline
+            torch = _torch
+            pipeline = _pipeline
+            return True
+        except ImportError as e:
+            print(f"⚠️ Depth estimation requires torch and transformers: {e}")
+            print("   Install with: pip install torch torchvision transformers")
+            return False
+    return True
+
 
 class DepthService:
     def __init__(self):
         self.pipe = None
-        self.device = 0 if torch.cuda.is_available() else -1
-        print(f"DepthService initialized. Device: {'GPU' if self.device == 0 else 'CPU'}")
+        self.device = -1  # Will be set when model loads
+        self._available = None  # Will check on first use
+        print(f"DepthService initialized (lazy loading)")
+    
+    def is_available(self) -> bool:
+        """Check if depth estimation is available (torch installed)."""
+        if self._available is None:
+            self._available = _load_torch_deps()
+            if self._available and torch is not None:
+                self.device = 0 if torch.cuda.is_available() else -1
+        return self._available
 
     def load_model(self):
         if self.pipe is None:
+            if not self.is_available():
+                print("❌ Cannot load depth model - torch/transformers not installed")
+                return False
             print("⏳ Loading Depth Anything V2 model...")
             # Using the small version for performance
             self.pipe = pipeline(task="depth-estimation", model="depth-anything/Depth-Anything-V2-Small-hf", device=self.device)
             print("✅ Depth model loaded.")
+        return True
 
     def estimate_depth(self, frame):
         if self.pipe is None:
-            self.load_model()
+            if not self.load_model():
+                # Return a dummy depth map if not available
+                return np.zeros((frame.shape[0], frame.shape[1]), dtype=np.uint8)
         
         # Convert cv2 frame (BGR) to PIL Image (RGB)
         image = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))

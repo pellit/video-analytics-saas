@@ -1,33 +1,45 @@
+# ============================================
+# Video Analytics SaaS - AI Engine Dependencies
+# Optimizado para CPU-only con YOLO-NAS ONNX
+# ============================================
+
+# --- Core ---
 redis
-opencv-python-headless
-vosk
 numpy
-sentence-transformers
 requests
 fastapi
 uvicorn
+
+# --- Video Processing ---
+opencv-python-headless
 yt-dlp
 
-# Image processing
+# --- Image Processing ---
 Pillow>=9.0.0
 
-# ONNX Runtime - Fast CPU inference
+# --- ONNX Runtime (Inferencia principal - YOLO-NAS) ---
 onnxruntime>=1.16.0
 
-# MediaPipe - Google's ML solutions (Apache 2.0)
+# --- MediaPipe (Google ML - Poses, Faces) ---
 mediapipe>=0.10.0
 
-# Detection Models (Apache 2.0 licensed) - fallback if no ONNX
-transformers            # For RT-DETR and Moondream2 VLM
-torch                   # PyTorch (only if not using ONNX)
-torchvision
+# --- Tracking (ByteTrack) ---
+supervision>=0.16.0
 
-# VLM Dependencies (Moondream2)
-einops>=0.6.0           # Required by Moondream2 architecture
-accelerate>=0.25.0      # Required for device_map in transformers
+# ============================================
+# OPCIONALES - Descomentar si necesitas:
+# ============================================
 
-supervision>=0.16.0      # ByteTrack tracking and utilities
+# --- PyTorch CPU (solo si usas RT-DETR o Moondream2 VLM) ---
+# --extra-index-url https://download.pytorch.org/whl/cpu
+# torch
+# torchvision
+# transformers
+# einops>=0.6.0
+# accelerate>=0.25.0
 
-# Optional: Ultralytics (AGPL-3.0 - DISABLED by default)
-# Set ENABLE_ULTRALYTICS=true to use
-# ultralytics  # Commented out - only install if testing required
+# --- Speech Recognition ---
+# vosk
+
+# --- Semantic Search ---
+# sentence-transformers

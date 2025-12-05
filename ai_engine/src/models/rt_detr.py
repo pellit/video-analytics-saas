@@ -2,14 +2,34 @@
 RT-DETR (Real-Time Detection Transformer) detector implementation.
 Uses transformers library from HuggingFace.
 This is an alternative model with transformer-based architecture.
+
+REQUIRES: pip install torch transformers
 """
 
 import cv2
 import numpy as np
 from typing import List, Dict, Any, Optional, Tuple
-import torch
 
 from .base import BaseDetector, DetectionResult
+
+# Lazy import torch (optional dependency)
+torch = None
+
+def _ensure_torch():
+    """Ensure torch is available."""
+    global torch
+    if torch is None:
+        try:
+            import torch as _torch
+            torch = _torch
+            return True
+        except ImportError:
+            raise ImportError(
+                "RT-DETR requires PyTorch. Install with:\n"
+                "  pip install torch torchvision transformers\n"
+                "Or use YOLO-NAS ONNX detector instead (default, no PyTorch needed)."
+            )
+    return True
 
 
 class RTDETRDetector(BaseDetector):
@@ -64,6 +84,8 @@ class RTDETRDetector(BaseDetector):
         
     def load_model(self) -> None:
         """Load RT-DETR model from HuggingFace."""
+        _ensure_torch()  # Ensure torch is available
+        
         try:
             from transformers import RTDetrForObjectDetection, RTDetrImageProcessor
             
