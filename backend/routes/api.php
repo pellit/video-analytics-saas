@@ -1,6 +1,7 @@
 <?php
 
 use Illuminate\Support\Facades\Route;
+use Illuminate\Support\Facades\DB;
 
 /*
 |--------------------------------------------------------------------------
@@ -8,6 +9,40 @@ use Illuminate\Support\Facades\Route;
 |--------------------------------------------------------------------------
 | Aquí organizamos y cargamos los grupos de rutas.
 */
+
+// Health Check Endpoint (Public - for monitoring)
+Route::get('/health', function () {
+    $status = 'ok';
+    $dbOk = false;
+    $redisOk = false;
+    
+    // Check database
+    try {
+        DB::connection()->getPdo();
+        $dbOk = true;
+    } catch (\Exception $e) {
+        $status = 'degraded';
+    }
+    
+    // Check Redis (if available)
+    try {
+        $redis = app('redis');
+        $redis->ping();
+        $redisOk = true;
+    } catch (\Exception $e) {
+        // Redis is optional, don't mark as degraded
+    }
+    
+    return response()->json([
+        'status' => $status,
+        'timestamp' => now()->toIso8601String(),
+        'services' => [
+            'database' => $dbOk,
+            'redis' => $redisOk,
+        ],
+        'version' => config('app.version', '1.0.0'),
+    ]);
+});
 
 // 1. Cargar Rutas Públicas (Auth)
 require __DIR__ . '/api/auth.php';

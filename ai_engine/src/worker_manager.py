@@ -13,7 +13,7 @@ from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from yt_dlp import YoutubeDL
 from pydantic import BaseModel
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 from .depth_service import DepthService
 from .models import get_detector, ModelFactory, ModelType, Resolution
 from .core.satellite import get_satellite_service, SatelliteService
@@ -23,6 +23,18 @@ from .core.image_comparison import (
     get_comparator, compare_images, compare_images_from_base64,
     ComparisonResult, ChangeSeverity, ChangeType
 )
+
+# MediaMTX Streaming (optional - enabled via environment)
+ENABLE_MEDIAMTX = os.environ.get('ENABLE_MEDIAMTX', 'false').lower() == 'true'
+mediamtx_streamers: Dict[str, Any] = {}  # camera_id => MediaMTXStreamer instance
+
+if ENABLE_MEDIAMTX:
+    try:
+        from .mediamtx_streamer import MediaMTXStreamer, StreamStats
+        print("✅ MediaMTX Streamer module loaded")
+    except ImportError as e:
+        print(f"⚠️ MediaMTX Streamer not available: {e}")
+        ENABLE_MEDIAMTX = False
 
 app = FastAPI()
 
@@ -2032,3 +2044,293 @@ def quick_diff_check(data: dict):
     except Exception as e:
         print(f"❌ Quick diff error: {e}")
         return {"success": False, "error": str(e)}
+
+
+# ============================================================================
+#                     SYSTEM HEALTH & MONITORING ENDPOINTS
+# ============================================================================
+
+@app.get('/redis/ping')
+def redis_ping():
+    """
+    Check Redis connectivity.
+    Used by SystemHealth component for monitoring.
+    """
+    try:
+        start = time.time()
+        r.ping()
+        latency = (time.time() - start) * 1000
+        
+        # Get Redis info
+        info = r.info()
+        
+        return {
+            "status": "ok",
+            "latency_ms": round(latency, 2),
+            "connected_clients": info.get('connected_clients', 0),
+            "used_memory_human": info.get('used_memory_human', 'unknown'),
+            "uptime_days": info.get('uptime_in_days', 0)
+        }
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
+
+
+@app.get('/health/detailed')
+def health_detailed():
+    """
+    Detailed health check with all service information.
+    Used by SystemHealth component for monitoring dashboard.
+    """
+    with global_state['lock']:
+        active_ids = [cam_id for cam_id, stream in global_state['streams'].items() if stream.get('active', False)]
+        stream_details = []
+        for cam_id, stream in global_state['streams'].items():
+            if stream.get('active', False):
+                stream_details.append({
+                    'camera_id': cam_id,
+                    'url': stream.get('url', '')[:50] + '...' if stream.get('url', '') else 'N/A',
+                    'has_frame': stream.get('current_frame') is not None,
+                    'analysis_fps': stream.get('analysis_fps', 5),
+                    'tracking_enabled': stream.get('tracking_enabled', False),
+                    'face_enabled': stream.get('face_enabled', False),
+                    'depth_enabled': stream.get('depth_enabled', False)
+                })
+    
+    # Check MediaMTX status
+    mediamtx_status = {
+        'enabled': ENABLE_MEDIAMTX,
+        'active_streamers': len(mediamtx_streamers) if ENABLE_MEDIAMTX else 0,
+        'streamers': {}
+    }
+    if ENABLE_MEDIAMTX:
+        for cam_id, streamer in mediamtx_streamers.items():
+            try:
+                stats = streamer.get_stats()
+                mediamtx_status['streamers'][cam_id] = {
+                    'is_running': streamer.is_running,
+                    'frames_sent': stats.frames_sent,
+                    'fps': round(stats.fps, 2),
+                    'runtime_seconds': round(stats.total_runtime, 1)
+                }
+            except:
+                mediamtx_status['streamers'][cam_id] = {'is_running': False}
+    
+    return { 
+        'status': 'ok',
+        'timestamp': time.time(),
+        'active_streams': active_ids,
+        'stream_details': stream_details,
+        'detection_model': model.__class__.__name__ if model else 'None',
+        'face_detection_available': os.path.exists(YUNET_PATH),
+        'face_recognition_available': FACE_RECOGNITION_AVAILABLE,
+        'vlm_enabled': VLM_ENABLED,
+        'vlm_loaded': vlm_analyzer is not None,
+        'mediamtx': mediamtx_status,
+        'capabilities': {
+            'depth_estimation': True,
+            'bev_view': True,
+            'satellite_analysis': True,
+            'image_comparison': True,
+            'hybrid_analysis': True
+        }
+    }
+
+
+# ============================================================================
+#                     MEDIAMTX STREAMING ENDPOINTS
+# ============================================================================
+
+@app.get('/mediamtx/status')
+def mediamtx_status():
+    """
+    Get status of MediaMTX streamers.
+    """
+    if not ENABLE_MEDIAMTX:
+        return {
+            "enabled": False,
+            "message": "MediaMTX streaming not enabled. Set ENABLE_MEDIAMTX=true"
+        }
+    
+    result = {
+        "enabled": True,
+        "active_streamers": len(mediamtx_streamers),
+        "streamers": {}
+    }
+    
+    for cam_id, streamer in mediamtx_streamers.items():
+        try:
+            stats = streamer.get_stats()
+            result['streamers'][cam_id] = {
+                "is_running": streamer.is_running,
+                "stream_path": streamer.stream_path,
+                "stats": {
+                    "frames_sent": stats.frames_sent,
+                    "fps": round(stats.fps, 2),
+                    "dropped_frames": stats.dropped_frames,
+                    "runtime_seconds": round(stats.total_runtime, 1),
+                    "avg_latency_ms": round(stats.avg_latency * 1000, 2) if stats.avg_latency else 0
+                }
+            }
+        except Exception as e:
+            result['streamers'][cam_id] = {
+                "is_running": False,
+                "error": str(e)
+            }
+    
+    return result
+
+
+@app.post('/mediamtx/start/{camera_id}')
+def mediamtx_start_stream(camera_id: str, data: dict = None):
+    """
+    Start MediaMTX streaming for a specific camera.
+    
+    Expects optional:
+        {
+            "mediamtx_host": "media_server",
+            "mediamtx_port": 8554
+        }
+    """
+    if not ENABLE_MEDIAMTX:
+        return {"success": False, "error": "MediaMTX not enabled"}
+    
+    if camera_id in mediamtx_streamers and mediamtx_streamers[camera_id].is_running:
+        return {"success": False, "error": f"Stream for camera {camera_id} already running"}
+    
+    try:
+        mediamtx_host = data.get('mediamtx_host', 'media_server') if data else 'media_server'
+        mediamtx_port = data.get('mediamtx_port', 8554) if data else 8554
+        
+        # Get frame dimensions from active stream
+        with global_state['lock']:
+            stream = global_state['streams'].get(str(camera_id))
+            if not stream or not stream.get('current_frame') is not None:
+                return {"success": False, "error": f"No active stream for camera {camera_id}"}
+            
+            frame = stream.get('current_frame')
+            if frame is None:
+                return {"success": False, "error": "No frame available yet"}
+            
+            height, width = frame.shape[:2]
+        
+        # Create and start streamer
+        streamer = MediaMTXStreamer(
+            camera_id=camera_id,
+            mediamtx_host=mediamtx_host,
+            mediamtx_port=mediamtx_port,
+            width=width,
+            height=height,
+            fps=25
+        )
+        
+        streamer.start_stream()
+        mediamtx_streamers[camera_id] = streamer
+        
+        return {
+            "success": True,
+            "camera_id": camera_id,
+            "stream_path": streamer.stream_path,
+            "webrtc_url": f"http://{mediamtx_host}:8889/{streamer.stream_path}",
+            "hls_url": f"http://{mediamtx_host}:8888/{streamer.stream_path}"
+        }
+        
+    except Exception as e:
+        print(f"❌ MediaMTX start error: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.post('/mediamtx/stop/{camera_id}')
+def mediamtx_stop_stream(camera_id: str):
+    """
+    Stop MediaMTX streaming for a specific camera.
+    """
+    if not ENABLE_MEDIAMTX:
+        return {"success": False, "error": "MediaMTX not enabled"}
+    
+    if camera_id not in mediamtx_streamers:
+        return {"success": False, "error": f"No streamer found for camera {camera_id}"}
+    
+    try:
+        streamer = mediamtx_streamers[camera_id]
+        streamer.stop_stream()
+        del mediamtx_streamers[camera_id]
+        
+        return {"success": True, "camera_id": camera_id}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+# ============================================================================
+#                     DETECTION EVENTS SSE ENDPOINT
+# ============================================================================
+
+@app.get('/stream/events/{camera_id}')
+async def detection_events_sse(camera_id: str):
+    """
+    Server-Sent Events endpoint for real-time detection updates.
+    Used by SmartPlayer.vue for canvas overlay rendering.
+    
+    Subscribes to Redis pub/sub and streams detection data to frontend.
+    """
+    async def event_generator():
+        pubsub = r.pubsub()
+        pubsub.subscribe('detections', 'camera_detections')
+        
+        try:
+            # Send connection confirmation
+            yield f"data: {json.dumps({'event': 'connected', 'camera_id': camera_id})}\n\n"
+            
+            while True:
+                message = pubsub.get_message(timeout=0.5)
+                if message and message['type'] == 'message':
+                    try:
+                        data = json.loads(message['data'])
+                        # Filter by camera
+                        if str(data.get('camera_id')) == str(camera_id):
+                            # Send detection event
+                            yield f"data: {json.dumps(data)}\n\n"
+                    except json.JSONDecodeError:
+                        pass
+                else:
+                    # Send keepalive every 500ms
+                    yield f": keepalive\n\n"
+                
+                await asyncio.sleep(0.05)  # 20 updates/sec max
+        except asyncio.CancelledError:
+            pass
+        finally:
+            pubsub.unsubscribe('detections', 'camera_detections')
+            pubsub.close()
+    
+    return StreamingResponse(
+        event_generator(),
+        media_type='text/event-stream',
+        headers={
+            'Cache-Control': 'no-cache',
+            'Connection': 'keep-alive',
+            'X-Accel-Buffering': 'no'  # Disable nginx buffering
+        }
+    )
+
+
+@app.get('/architecture/info')
+def architecture_info():
+    """
+    Get information about the current architecture mode.
+    Useful for frontend to know which streaming method to use.
+    """
+    return {
+        "streaming_mode": "mediamtx" if ENABLE_MEDIAMTX else "mjpeg",
+        "mediamtx_enabled": ENABLE_MEDIAMTX,
+        "mjpeg_endpoint": "/video_feed",
+        "sse_endpoint": "/stream/events/{camera_id}",
+        "webrtc_available": ENABLE_MEDIAMTX,
+        "hls_available": ENABLE_MEDIAMTX,
+        "canvas_overlay_recommended": ENABLE_MEDIAMTX,
+        "environment": {
+            "ENABLE_MEDIAMTX": os.environ.get('ENABLE_MEDIAMTX', 'false'),
+            "MEDIAMTX_HOST": os.environ.get('MEDIAMTX_HOST', 'media_server'),
+            "REDIS_HOST": os.environ.get('REDIS_HOST', 'localhost')
+        }
+    }
+

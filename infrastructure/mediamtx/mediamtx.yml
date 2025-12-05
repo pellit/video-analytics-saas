@@ -1,0 +1,133 @@
+# MediaMTX Configuration
+# ======================
+# Optimizado para Video Analytics SaaS
+# Documentación: https://github.com/bluenviron/mediamtx
+
+###############################################
+# General parameters
+###############################################
+
+# Logging level (debug, info, warn, error)
+logLevel: info
+logDestinations: [stdout]
+
+# Timeout for read operations
+readTimeout: 10s
+# Timeout for write operations
+writeTimeout: 10s
+# Timeout for reading data from source
+readBufferCount: 512
+# UDP packet max size
+udpMaxPayloadSize: 1472
+
+###############################################
+# RTSP server
+###############################################
+
+rtsp: yes
+protocols: [tcp]
+encryption: "no"
+rtspAddress: :8554
+
+###############################################
+# RTMP server (para OBS/streaming externo)
+###############################################
+
+rtmp: yes
+rtmpAddress: :1935
+
+###############################################
+# HLS server (para móviles)
+###############################################
+
+hls: yes
+hlsAddress: :8888
+hlsVariant: lowLatency
+hlsSegmentCount: 3
+hlsSegmentDuration: 1s
+hlsPartDuration: 200ms
+hlsSegmentMaxSize: 50M
+hlsAllowOrigin: '*'
+
+###############################################
+# WebRTC server (baja latencia)
+###############################################
+
+webrtc: yes
+webrtcAddress: :8889
+webrtcEncryption: no
+webrtcICETCPMux: yes
+webrtcICEServers2: []
+webrtcAllowOrigin: '*'
+
+###############################################
+# API server
+###############################################
+
+api: yes
+apiAddress: :9997
+
+###############################################
+# Recording
+###############################################
+
+# Configurado via variables de entorno en docker-compose
+# record: no
+# recordPath: /recordings/%path/%Y-%m-%d_%H-%M-%S.mp4
+# recordFormat: mp4
+
+###############################################
+# Metrics (Prometheus)
+###############################################
+
+metrics: yes
+metricsAddress: :9998
+
+###############################################
+# Path defaults - Aplicado a todos los paths
+###############################################
+
+pathDefaults:
+  # Source configuration
+  source: publisher
+  sourceOnDemand: no
+  
+  # Allow anyone to publish (el worker autenticará internamente)
+  publishUser:
+  publishPass:
+  publishIPs: []
+  
+  # Allow anyone to read
+  readUser:
+  readPass:
+  readIPs: []
+  
+  # Maximum readers per path
+  maxReaders: 100
+  
+  # Recording (heredado de variables de entorno)
+  record: no
+
+###############################################
+# Paths - Streams específicos
+###############################################
+
+paths:
+  # Patrón para cámaras: /live/camera_1, /live/camera_2, etc.
+  live/~^camera_[0-9]+$:
+    source: publisher
+    maxReaders: 50
+    
+  # Stream de prueba (FFmpeg test pattern)
+  test:
+    source: publisher
+    runOnInit: >
+      ffmpeg -re -f lavfi -i testsrc=size=640x480:rate=25 
+      -f lavfi -i sine=frequency=440:sample_rate=48000 
+      -c:v libx264 -preset ultrafast -tune zerolatency 
+      -c:a aac -f rtsp rtsp://localhost:8554/test
+    runOnInitRestart: yes
+    
+  # Catch-all para cualquier otro path
+  all_others:
+    source: publisher

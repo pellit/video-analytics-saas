@@ -1,6 +1,7 @@
 <script setup>
 import { ref, onMounted, computed, onUnmounted } from 'vue'
 import NavBar from './NavBar.vue'
+import SystemHealth from './SystemHealth.vue'
 
 const props = defineProps(['token', 'user'])
 const emit = defineEmits(['logout', 'navigate'])
@@ -227,6 +228,15 @@ const formatNumber = (num) => {
 const formatBytes = (mb) => {
   if (mb >= 1024) return (mb / 1024).toFixed(1) + ' GB'
   return mb?.toFixed(1) + ' MB'
+}
+
+// System Health handlers
+const handleServiceClick = (service) => {
+  console.log('Service clicked:', service)
+  // Show detailed modal or expand info
+  if (service.data.status === 'offline') {
+    alert(`⚠️ Servicio ${service.name} no disponible.\n\nDetalles: ${JSON.stringify(service.data.details, null, 2)}`)
+  }
 }
 
 const navNotifications = computed(() => [])
@@ -569,6 +579,19 @@ const navNotifications = computed(() => [])
               </div>
             </details>
           </div>
+        </section>
+
+        <!-- System Health Section -->
+        <section class="section system-health-section">
+          <div class="section-header">
+            <h2>🏥 Monitoreo del Sistema</h2>
+            <span class="section-badge">Live</span>
+          </div>
+          <SystemHealth 
+            :worker-url="WORKER_URL"
+            :api-url="API_URL"
+            @service-click="handleServiceClick"
+          />
         </section>
       </div>
 
@@ -1685,6 +1708,53 @@ const navNotifications = computed(() => [])
   border: none;
   border-radius: 0;
   margin: 0;
+}
+
+/* --- System Health Section Styles --- */
+.system-health-section {
+  margin-top: 2rem;
+}
+
+.system-health-section .section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 1rem;
+  padding-bottom: 0.75rem;
+  border-bottom: 1px solid #30363d;
+}
+
+.system-health-section h2 {
+  margin: 0;
+  border: none;
+  padding: 0;
+}
+
+.section-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.25rem 0.5rem;
+  background: rgba(63, 185, 80, 0.2);
+  color: #3fb950;
+  border-radius: 9999px;
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  animation: pulse-badge 2s infinite;
+}
+
+.section-badge::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  background: #3fb950;
+  border-radius: 50%;
+}
+
+@keyframes pulse-badge {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.7; }
 }
 
 /* Responsive for Model Selection */

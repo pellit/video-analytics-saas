@@ -1,0 +1,194 @@
+# =============================================================================
+# Docker Compose - Arquitectura Híbrida con MediaMTX
+# =============================================================================
+# Esta configuración implementa:
+# - MediaMTX para streaming eficiente (WebRTC/HLS)
+# - Worker Python ligero (solo detección + RTSP push)
+# - Canvas overlay en frontend (dibujo en cliente)
+#
+# Para volver a la arquitectura anterior:
+#   git checkout development
+#   docker-compose up -d
+# =============================================================================
+
+services:
+  # --- BACKEND (Laravel API) ---
+  api:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    command: ["php", "artisan", "serve", "--host=0.0.0.0", "--port=8000"]
+    environment:
+      - DB_HOST=db
+      - APP_KEY=${APP_KEY:-}
+      - REDIS_HOST=redis
+    depends_on:
+      - db
+      - redis
+    networks:
+      - saas_net
+    links:
+      - redis
+
+  # --- FRONTEND (Vue.js) ---
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    environment:
+      - VITE_API_URL=${VITE_API_URL:-http://localhost:8000/api}
+      - VITE_STREAM_URL=${VITE_STREAM_URL:-http://localhost:5000/video_feed}
+      # Nuevas variables para MediaMTX
+      - VITE_MEDIAMTX_WEBRTC_URL=${VITE_MEDIAMTX_WEBRTC_URL:-http://localhost:8889}
+      - VITE_MEDIAMTX_HLS_URL=${VITE_MEDIAMTX_HLS_URL:-http://localhost:8888}
+      - VITE_USE_MEDIAMTX=${VITE_USE_MEDIAMTX:-true}
+    networks:
+      - saas_net
+
+  # --- AI WORKER (Python - Ligero) ---
+  ai_worker:
+    build:
+      context: ./ai_engine
+      dockerfile: Dockerfile
+    command: uvicorn src.worker_manager:app --host 0.0.0.0 --port 5000
+    environment:
+      - REDIS_HOST=redis
+      - PYTHONUNBUFFERED=1
+      - BACKEND_API_URL=http://api:8000
+      - WORKER_API_KEY=${WORKER_API_KEY}
+      # Model configuration
+      - DETECTION_MODEL=${DETECTION_MODEL:-yolo_fastest}
+      - DETECTION_RESOLUTION=${DETECTION_RESOLUTION:-medium}
+      # MediaMTX streaming configuration
+      - MEDIAMTX_ENABLED=${MEDIAMTX_ENABLED:-true}
+      - MEDIAMTX_RTSP_URL=rtsp://media_server:8554
+      - STREAM_MODE=${STREAM_MODE:-hybrid}  # 'hybrid', 'mediamtx_only', 'mjpeg_only'
+    volumes:
+      - ./ai_engine/models:/app/models
+    depends_on:
+      - redis
+      - media_server
+    networks:
+      - saas_net
+
+  # --- MEDIA SERVER (MediaMTX - Go) ---
+  media_server:
+    image: bluenviron/mediamtx:latest
+    container_name: saas_media
+    ports:
+      - "8554:8554"   # RTSP entrada (Worker → MediaMTX)
+      - "8889:8889"   # WebRTC salida (Navegadores desktop)
+      - "8888:8888"   # HLS salida (Móviles/Fallback)
+      - "1935:1935"   # RTMP (opcional, para OBS)
+      - "9997:9997"   # API de MediaMTX
+    environment:
+      # Protocolos
+      MTX_PROTOCOLS: tcp
+      MTX_WEBRTCADDITIONALHOSTS: ${SERVER_IP:-localhost}
+      # WebRTC configuration
+      MTX_WEBRTC: "yes"
+      MTX_WEBRTCENCRYPTION: "no"
+      MTX_WEBRTCICETCPMUX: "yes"
+      # HLS configuration (para móviles)
+      MTX_HLS: "yes"
+      MTX_HLSVARIANT: lowLatency
+      MTX_HLSSEGMENTCOUNT: 3
+      MTX_HLSSEGMENTDURATION: 1s
+      # Grabación automática
+      MTX_RECORD: ${MEDIAMTX_RECORD:-no}
+      MTX_RECORDPATH: /recordings/%path/%Y-%m-%d_%H-%M-%S.mp4
+      MTX_RECORDFORMAT: mp4
+      MTX_RECORDSEGMENTDURATION: 1h
+      MTX_RECORDDELETEAFTER: ${MEDIAMTX_RECORD_RETENTION:-168h}
+      # API
+      MTX_API: "yes"
+      MTX_APIADDRESS: ":9997"
+    volumes:
+      - ./recordings:/recordings
+      - ./infrastructure/mediamtx/mediamtx.yml:/mediamtx.yml:ro
+    networks:
+      - saas_net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:9997/v3/paths/list"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # --- REDIS ---
+  redis:
+    image: redis:alpine
+    command: redis-server --bind 0.0.0.0
+    networks:
+      - saas_net
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+
+  # --- DATABASE ---
+  db:
+    image: mysql:8.0
+    environment:
+      MYSQL_DATABASE: saas_video
+      MYSQL_ROOT_PASSWORD: secret
+    volumes:
+      - db_data:/var/lib/mysql
+    networks:
+      - saas_net
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # --- NGINX REVERSE PROXY (Producción) ---
+  nginx:
+    image: nginx:alpine
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./infrastructure/nginx/nginx.mediamtx.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./infrastructure/nginx/ssl:/etc/nginx/ssl:ro
+    depends_on:
+      - api
+      - frontend
+      - ai_worker
+      - media_server
+    networks:
+      - saas_net
+    profiles:
+      - production
+
+  # --- MAILPIT (Desarrollo) ---
+  mailpit:
+    image: axllent/mailpit
+    ports:
+      - "8025:8025"
+      - "1025:1025"
+    networks:
+      - saas_net
+    profiles:
+      - development
+
+  # --- LABEL STUDIO (Opcional) ---
+  label_studio:
+    image: heartexlabs/label-studio:latest
+    ports:
+      - "8081:8080"
+    volumes:
+      - label_studio_data:/label-studio/data
+    networks:
+      - saas_net
+    profiles:
+      - ml
+
+networks:
+  saas_net:
+    driver: bridge
+
+volumes:
+  db_data:
+  label_studio_data:
