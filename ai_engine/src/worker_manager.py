@@ -310,6 +310,11 @@ def stream_thread(camera_id, url):
     actual_analysis_fps = 0
     fps_update_counter = 0
     fps_samples = []
+    
+    # MediaMTX streaming support
+    mediamtx_streamer = None
+    if ENABLE_MEDIAMTX:
+        print(f"📡 MediaMTX mode enabled for camera {camera_id}")
 
     while True:
         with global_state['lock']:
@@ -317,6 +322,11 @@ def stream_thread(camera_id, url):
             if not stream or not stream.get('active'):
                 if cap:
                     cap.release(); cap = None
+                # Stop MediaMTX streamer if active
+                if mediamtx_streamer and mediamtx_streamer.is_running:
+                    mediamtx_streamer.stop_stream()
+                    if str(camera_id) in mediamtx_streamers:
+                        del mediamtx_streamers[str(camera_id)]
                 time.sleep(0.5)
                 continue
             current_url = stream.get('url')
@@ -345,6 +355,29 @@ def stream_thread(camera_id, url):
                 cap = None
                 time.sleep(2)
                 continue
+            
+            # Initialize MediaMTX streamer after cap is opened (we know frame dimensions)
+            if ENABLE_MEDIAMTX and not mediamtx_streamer:
+                ret, first_frame = cap.read()
+                if ret and first_frame is not None:
+                    h, w = first_frame.shape[:2]
+                    try:
+                        mediamtx_host = os.environ.get('MEDIAMTX_HOST', 'media_server')
+                        mediamtx_port = int(os.environ.get('MEDIAMTX_PORT', '8554'))
+                        mediamtx_streamer = MediaMTXStreamer(
+                            camera_id=str(camera_id),
+                            mediamtx_host=mediamtx_host,
+                            mediamtx_port=mediamtx_port,
+                            width=w,
+                            height=h,
+                            fps=25
+                        )
+                        mediamtx_streamer.start_stream()
+                        mediamtx_streamers[str(camera_id)] = mediamtx_streamer
+                        print(f"📡 MediaMTX streamer started for camera {camera_id} ({w}x{h})")
+                    except Exception as e:
+                        print(f"⚠️ Failed to start MediaMTX streamer: {e}")
+                        mediamtx_streamer = None
         
         success, frame = cap.read()
         
@@ -356,6 +389,13 @@ def stream_thread(camera_id, url):
             cap = None
             time.sleep(0.1)
             continue
+        
+        # Send frame to MediaMTX (raw video, no boxes)
+        if ENABLE_MEDIAMTX and mediamtx_streamer and mediamtx_streamer.is_running:
+            try:
+                mediamtx_streamer.write_frame(frame)
+            except Exception as e:
+                print(f"⚠️ MediaMTX write error: {e}")
 
         frame_count += 1
 
@@ -688,8 +728,8 @@ def stream_thread(camera_id, url):
             except Exception as e:
                 print(f"⚠️ Face detection error: {e}")
 
-        # Add overlay before storing frame
-        if show_overlay:
+        # Add overlay before storing frame (only for MJPEG mode)
+        if show_overlay and not ENABLE_MEDIAMTX:
             annotated_frame = add_analysis_overlay(
                 annotated_frame, 
                 actual_analysis_fps, 
@@ -705,6 +745,36 @@ def stream_thread(camera_id, url):
 
         # Publicar detecciones en Redis y al Backend
         try:
+            # Get frame dimensions for normalization
+            frame_h, frame_w = frame.shape[:2]
+            
+            # Prepare normalized detections for canvas overlay (MediaMTX mode)
+            if ENABLE_MEDIAMTX and detections:
+                normalized_detections = []
+                for det in detections:
+                    x1, y1, x2, y2 = det.bbox
+                    normalized_detections.append({
+                        'class': det.class_name,
+                        'confidence': round(det.confidence, 3),
+                        'bbox': {
+                            'x': round(x1 / frame_w, 4),
+                            'y': round(y1 / frame_h, 4),
+                            'w': round((x2 - x1) / frame_w, 4),
+                            'h': round((y2 - y1) / frame_h, 4)
+                        },
+                        'track_id': det.track_id
+                    })
+                
+                # Publish batch detection event for canvas overlay
+                canvas_event = {
+                    'camera_id': int(camera_id),
+                    'event': 'detections',
+                    'timestamp': time.time(),
+                    'detections': normalized_detections,
+                    'frame_size': {'w': frame_w, 'h': frame_h}
+                }
+                r.publish('camera_detections', json.dumps(canvas_event))
+            
             for det in detections:
                 try:
                     payload = { 
