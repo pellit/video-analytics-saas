@@ -88,16 +88,15 @@ services:
       # WebRTC configuration
       MTX_WEBRTC: "yes"
       MTX_WEBRTCENCRYPTION: "no"
-      MTX_WEBRTCICETCPMUX: "yes"
       # HLS configuration (para móviles)
       MTX_HLS: "yes"
       MTX_HLSVARIANT: lowLatency
       MTX_HLSSEGMENTCOUNT: 3
       MTX_HLSSEGMENTDURATION: 1s
-      # Grabación automática
+      # Grabación automática (fmp4 para MediaMTX v1.15+)
       MTX_RECORD: ${MEDIAMTX_RECORD:-no}
       MTX_RECORDPATH: /recordings/%path/%Y-%m-%d_%H-%M-%S.mp4
-      MTX_RECORDFORMAT: mp4
+      MTX_RECORDFORMAT: fmp4
       MTX_RECORDSEGMENTDURATION: 1h
       MTX_RECORDDELETEAFTER: ${MEDIAMTX_RECORD_RETENTION:-168h}
       # API
