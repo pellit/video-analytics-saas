@@ -15,7 +15,7 @@ from yt_dlp import YoutubeDL
 from pydantic import BaseModel
 from typing import Optional, List
 from .depth_service import DepthService
-from .models import get_detector, ModelFactory
+from .models import get_detector, ModelFactory, ModelType, Resolution
 from .core.satellite import get_satellite_service, SatelliteService
 from .core.vlm import get_vlm_analyzer, init_vlm_analyzer, VLMPrompts
 from .core.hybrid import get_hybrid_analyzer, init_hybrid_analyzer, AlertSeverity
@@ -1026,6 +1026,108 @@ def models_reload():
             "success": False,
             "error": str(e)
         }
+
+
+class ModelChangeRequest(BaseModel):
+    model_type: str
+    resolution: Optional[str] = "medium"
+
+
+@app.post('/models/change')
+def models_change(request: ModelChangeRequest):
+    """
+    Change the active detection model at runtime.
+    
+    Available models:
+    - mobilenet_ssd: ~25 FPS (fastest)
+    - yolo_fastest: ~15 FPS (default, best balance)
+    - mediapipe: ~9 FPS
+    - yolov4_tiny: ~7 FPS
+    - nanodet: ~6 FPS
+    - onnx: ~1 FPS (high accuracy)
+    - rt_detr: ~0.3 FPS (best accuracy)
+    
+    Resolution options:
+    - low: 320x320
+    - medium: 416x416 (default)
+    - high: 640x640
+    """
+    global model, class_names
+    
+    try:
+        model_type_str = request.model_type.lower()
+        resolution_str = request.resolution.lower() if request.resolution else "medium"
+        
+        # Validate model type
+        try:
+            model_type = ModelType(model_type_str)
+        except ValueError:
+            return {
+                "success": False,
+                "error": f"Invalid model type: {model_type_str}",
+                "available_models": [m.value for m in ModelType]
+            }
+        
+        # Validate resolution
+        try:
+            resolution = Resolution(resolution_str)
+        except ValueError:
+            return {
+                "success": False,
+                "error": f"Invalid resolution: {resolution_str}",
+                "available_resolutions": [r.value for r in Resolution]
+            }
+        
+        print(f"🔄 Changing model to {model_type.value} @ {resolution.value}...")
+        
+        # Create new model
+        new_model = ModelFactory.create(
+            model_type=model_type,
+            resolution=resolution
+        )
+        
+        if new_model and new_model.is_loaded:
+            model = new_model
+            class_names = getattr(model, 'class_names', [])
+            
+            return {
+                "success": True,
+                "model": model.__class__.__name__,
+                "model_type": model_type.value,
+                "resolution": resolution.value,
+                "message": f"Changed to {model.__class__.__name__} successfully"
+            }
+        else:
+            return {
+                "success": False,
+                "error": "Failed to load new model"
+            }
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return {
+            "success": False,
+            "error": str(e)
+        }
+
+
+@app.get('/models/available')
+def models_available():
+    """
+    Get list of all available detection models with their details.
+    """
+    return {
+        "models": ModelFactory.list_available_models(),
+        "resolutions": {
+            "low": {"size": 320, "description": "Fastest, lower accuracy"},
+            "medium": {"size": 416, "description": "Balanced (default)"},
+            "high": {"size": 640, "description": "Best accuracy, slower"}
+        },
+        "current": {
+            "model": model.__class__.__name__,
+            "is_loaded": model.is_loaded
+        }
+    }
 
 
 # --- Satellite Service ---

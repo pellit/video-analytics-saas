@@ -24,21 +24,63 @@ const WORKER_URL = getWorkerUrl()
 // --- Model Management State ---
 const showModelsSection = ref(true)
 const modelsInfo = ref(null)
+const availableModels = ref(null)
+const currentModel = ref(null)
 const exportStatus = ref(null)
-const selectedModelType = ref('yolo_nas_s')
+const selectedModelType = ref('yolo_fastest')
+const selectedResolution = ref('medium')
+const selectedExportModel = ref('yolo_nas_s')
 const selectedInputSize = ref(640)
 const isExporting = ref(false)
+const isChangingModel = ref(false)
 let exportPollInterval = null
 
 // Load models info
 const loadModelsInfo = async () => {
     try {
-        const res = await fetch(`${WORKER_URL}/models/export/available`)
-        if (res.ok) {
-            modelsInfo.value = await res.json()
+        const [onnxRes, availableRes] = await Promise.all([
+            fetch(`${WORKER_URL}/models/export/available`),
+            fetch(`${WORKER_URL}/models/available`)
+        ])
+        if (onnxRes.ok) {
+            modelsInfo.value = await onnxRes.json()
+        }
+        if (availableRes.ok) {
+            const data = await availableRes.json()
+            availableModels.value = data.models
+            currentModel.value = data.current
         }
     } catch (e) {
         console.error('Error loading models info:', e)
+    }
+}
+
+// Change active detection model
+const changeDetectionModel = async () => {
+    isChangingModel.value = true
+    try {
+        const res = await fetch(`${WORKER_URL}/models/change`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                model_type: selectedModelType.value,
+                resolution: selectedResolution.value
+            })
+        })
+        
+        const data = await res.json()
+        
+        if (data.success) {
+            alert(`✅ Modelo cambiado a ${data.model}`)
+            await loadModelsInfo()
+        } else {
+            alert(`❌ Error: ${data.error}`)
+        }
+    } catch (e) {
+        console.error('Error changing model:', e)
+        alert(`Error cambiando modelo: ${e.message}`)
+    } finally {
+        isChangingModel.value = false
     }
 }
 
@@ -69,7 +111,7 @@ const startExport = async (force = false) => {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-                model_type: selectedModelType.value,
+                model_type: selectedExportModel.value,
                 input_size: selectedInputSize.value
             })
         })
@@ -358,20 +400,96 @@ const navNotifications = computed(() => [])
           </div>
 
           <div v-if="showModelsSection" class="models-content">
-            <!-- Current Model Status -->
+            
+            <!-- Active Model Selection - NEW -->
+            <div class="model-selection-card">
+              <div class="status-header">
+                <span class="status-icon">⚡</span>
+                <span class="status-title">Selección de Modelo de Detección</span>
+              </div>
+              
+              <div class="current-model-info" v-if="currentModel">
+                <span class="current-label">Modelo Actual:</span>
+                <span class="current-value">{{ currentModel.model }}</span>
+                <span class="current-status" :class="currentModel.is_loaded ? 'loaded' : 'not-loaded'">
+                  {{ currentModel.is_loaded ? '✅ Cargado' : '⚠️ No cargado' }}
+                </span>
+              </div>
+
+              <div class="model-change-form">
+                <div class="form-row">
+                  <div class="form-group">
+                    <label>Modelo:</label>
+                    <select v-model="selectedModelType" :disabled="isChangingModel">
+                      <optgroup label="🚀 Ultra-Rápidos (>15 FPS)">
+                        <option value="mobilenet_ssd">MobileNet-SSD (~25 FPS) - El más rápido</option>
+                        <option value="yolo_fastest">YOLO-Fastest (~15 FPS) - Recomendado ⭐</option>
+                      </optgroup>
+                      <optgroup label="⚡ Rápidos (5-15 FPS)">
+                        <option value="mediapipe">MediaPipe (~9 FPS) - Google EfficientDet</option>
+                        <option value="yolov4_tiny">YOLOv4-tiny (~7 FPS) - Clásico</option>
+                        <option value="nanodet">NanoDet-Plus (~6 FPS) - Ultra-ligero</option>
+                      </optgroup>
+                      <optgroup label="🎯 Alta Precisión (<5 FPS)">
+                        <option value="onnx">YOLO-NAS ONNX (~1 FPS) - Alta precisión</option>
+                        <option value="rt_detr">RT-DETR (~0.3 FPS) - Máxima precisión</option>
+                      </optgroup>
+                    </select>
+                  </div>
+
+                  <div class="form-group">
+                    <label>Resolución:</label>
+                    <select v-model="selectedResolution" :disabled="isChangingModel">
+                      <option value="low">320x320 - Más rápido</option>
+                      <option value="medium">416x416 - Balanceado ⭐</option>
+                      <option value="high">640x640 - Mejor precisión</option>
+                    </select>
+                  </div>
+                </div>
+
+                <button 
+                  class="btn-change-model" 
+                  @click="changeDetectionModel"
+                  :disabled="isChangingModel"
+                >
+                  {{ isChangingModel ? '⏳ Cambiando...' : '🔄 Cambiar Modelo' }}
+                </button>
+              </div>
+
+              <!-- Available Models Grid -->
+              <div v-if="availableModels" class="available-models-grid">
+                <h4>📊 Comparativa de Modelos</h4>
+                <div class="models-comparison">
+                  <div v-for="(info, key) in availableModels" :key="key" 
+                       class="model-compare-card"
+                       :class="{ 'current': currentModel?.model?.toLowerCase().includes(key) }">
+                    <div class="model-header">
+                      <span class="model-name">{{ info.name }}</span>
+                      <span class="model-fps">{{ info.fps }}</span>
+                    </div>
+                    <div class="model-meta">
+                      <span v-if="info.size" class="model-size">📦 {{ info.size }}</span>
+                      <span class="model-status">{{ info.status }}</span>
+                    </div>
+                    <p class="model-desc">{{ info.description }}</p>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- ONNX Models Status -->
             <div class="model-status-card">
               <div class="status-header">
                 <span class="status-icon">📦</span>
                 <span class="status-title">Modelos ONNX Instalados</span>
               </div>
               
-              <div v-if="modelsInfo?.installed && Object.keys(modelsInfo.installed).length > 0" class="installed-models">
-                <div v-for="(info, name) in modelsInfo.installed" :key="name" class="model-item installed">
+              <div v-if="modelsInfo?.installed_onnx_models && modelsInfo.installed_onnx_models.length > 0" class="installed-models">
+                <div v-for="model in modelsInfo.installed_onnx_models" :key="model.name" class="model-item installed">
                   <div class="model-icon">✅</div>
                   <div class="model-details">
-                    <span class="model-name">{{ name }}.onnx</span>
-                    <span class="model-size">{{ formatBytes(info.size_mb) }}</span>
-                    <span v-if="info.validated" class="model-validated">Validado ✓</span>
+                    <span class="model-name">{{ model.name }}</span>
+                    <span class="model-size">{{ formatBytes(model.size_mb) }}</span>
                   </div>
                   <button class="btn-reload" @click="reloadModel" title="Cargar este modelo">
                     🔄 Cargar
@@ -380,94 +498,76 @@ const navNotifications = computed(() => [])
               </div>
               
               <div v-else class="no-models">
-                <span class="warning-icon">⚠️</span>
-                <p>No hay modelos ONNX instalados</p>
-                <p class="hint">Exporte un modelo YOLO-NAS para máxima velocidad en CPU</p>
+                <span class="warning-icon">ℹ️</span>
+                <p>No hay modelos ONNX instalados (opcional)</p>
+                <p class="hint">Los modelos ONNX ofrecen alta precisión pero son más lentos en CPU</p>
               </div>
             </div>
 
-            <!-- Export New Model -->
-            <div class="export-section">
-              <h3>🚀 Exportar Modelo YOLO-NAS a ONNX</h3>
-              <p class="export-description">
-                ONNX es 2-3x más rápido que PyTorch en CPU. Recomendado para producción.
-              </p>
+            <!-- Export ONNX Model (collapsed by default) -->
+            <details class="export-section-details">
+              <summary>🚀 Exportar Modelo ONNX (Avanzado)</summary>
+              <div class="export-section">
+                <p class="export-description">
+                  ONNX es 2-3x más rápido que PyTorch pero más lento que los modelos OpenCV DNN.
+                </p>
 
-              <div class="export-form">
-                <div class="form-group">
-                  <label>Modelo:</label>
-                  <select v-model="selectedModelType" :disabled="isExporting">
-                    <option value="yolo_nas_s">YOLO-NAS Small (~12M params) - Recomendado CPU</option>
-                    <option value="yolo_nas_m">YOLO-NAS Medium (~32M params) - Balanceado</option>
-                    <option value="yolo_nas_l">YOLO-NAS Large (~44M params) - Más preciso</option>
-                  </select>
+                <div class="export-form">
+                  <div class="form-group">
+                    <label>Modelo:</label>
+                    <select v-model="selectedExportModel" :disabled="isExporting">
+                      <option value="yolo_nas_s">YOLO-NAS Small (~12M params)</option>
+                      <option value="yolo_nas_m">YOLO-NAS Medium (~32M params)</option>
+                      <option value="yolo_nas_l">YOLO-NAS Large (~44M params)</option>
+                    </select>
+                  </div>
+
+                  <div class="form-group">
+                    <label>Tamaño de entrada:</label>
+                    <select v-model="selectedInputSize" :disabled="isExporting">
+                      <option :value="320">320x320</option>
+                      <option :value="416">416x416</option>
+                      <option :value="640">640x640</option>
+                    </select>
+                  </div>
+
+                  <button 
+                    class="btn-export" 
+                    @click="startExport(false)"
+                    :disabled="isExporting || (exportStatus?.status === 'exporting')"
+                  >
+                    {{ isExporting ? '⏳ Iniciando...' : '🚀 Exportar Modelo' }}
+                  </button>
                 </div>
 
-                <div class="form-group">
-                  <label>Tamaño de entrada:</label>
-                  <select v-model="selectedInputSize" :disabled="isExporting">
-                    <option :value="320">320x320 - Más rápido</option>
-                    <option :value="416">416x416 - Balanceado</option>
-                    <option :value="512">512x512 - Mejor detalle</option>
-                    <option :value="640">640x640 - Máxima precisión</option>
-                  </select>
+                <!-- Export Progress -->
+                <div v-if="exportStatus && ['starting', 'importing', 'downloading', 'preparing', 'exporting', 'verifying'].includes(exportStatus.status)" class="export-progress">
+                  <div class="progress-header">
+                    <span class="progress-icon">⏳</span>
+                    <span class="progress-status">{{ exportStatus.status }}</span>
+                  </div>
+                  <div class="progress-bar-container">
+                    <div class="progress-bar" :style="{ width: exportStatus.progress + '%' }"></div>
+                  </div>
+                  <span class="progress-percent">{{ exportStatus.progress }}%</span>
                 </div>
 
-                <button 
-                  class="btn-export" 
-                  @click="startExport(false)"
-                  :disabled="isExporting || (exportStatus?.status === 'exporting')"
-                >
-                  {{ isExporting ? '⏳ Iniciando...' : '🚀 Exportar Modelo' }}
-                </button>
-              </div>
-
-              <!-- Export Progress -->
-              <div v-if="exportStatus && ['starting', 'importing', 'downloading', 'preparing', 'exporting', 'verifying'].includes(exportStatus.status)" class="export-progress">
-                <div class="progress-header">
-                  <span class="progress-icon">⏳</span>
-                  <span class="progress-status">{{ exportStatus.status }}</span>
+                <!-- Export Complete -->
+                <div v-if="exportStatus?.status === 'completed'" class="export-complete">
+                  <span class="complete-icon">✅</span>
+                  <span class="complete-text">Exportación completada</span>
+                  <button class="btn-reload-after" @click="reloadModel">
+                    🔄 Cargar modelo ahora
+                  </button>
                 </div>
-                <div class="progress-bar-container">
-                  <div class="progress-bar" :style="{ width: exportStatus.progress + '%' }"></div>
-                </div>
-                <span class="progress-percent">{{ exportStatus.progress }}%</span>
-              </div>
 
-              <!-- Export Complete -->
-              <div v-if="exportStatus?.status === 'completed'" class="export-complete">
-                <span class="complete-icon">✅</span>
-                <span class="complete-text">Exportación completada</span>
-                <div v-if="exportStatus.model_info" class="model-result">
-                  <span>Archivo: {{ exportStatus.model_info.size_mb }} MB</span>
-                  <span v-if="exportStatus.model_info.validated">Validación: OK</span>
-                </div>
-                <button class="btn-reload-after" @click="reloadModel">
-                  🔄 Cargar modelo ahora
-                </button>
-              </div>
-
-              <!-- Export Error -->
-              <div v-if="exportStatus?.status === 'error'" class="export-error">
-                <span class="error-icon">❌</span>
-                <span class="error-text">{{ exportStatus.error }}</span>
-                <button class="btn-retry-export" @click="startExport(true)">
-                  🔄 Reintentar
-                </button>
-              </div>
-            </div>
-
-            <!-- Available Models Info -->
-            <div v-if="modelsInfo?.available" class="available-models">
-              <h4>📋 Modelos Disponibles</h4>
-              <div class="models-grid">
-                <div v-for="(info, name) in modelsInfo.available" :key="name" class="model-info-card">
-                  <span class="model-name">{{ info.name }}</span>
-                  <span class="model-desc">{{ info.description }}</span>
-                  <span class="model-rec">📌 {{ info.recommended_for }}</span>
+                <!-- Export Error -->
+                <div v-if="exportStatus?.status === 'error'" class="export-error">
+                  <span class="error-icon">❌</span>
+                  <span class="error-text">{{ exportStatus.error }}</span>
                 </div>
               </div>
-            </div>
+            </details>
           </div>
         </section>
       </div>
@@ -1395,5 +1495,217 @@ const navNotifications = computed(() => [])
   color: #7ee787;
   font-size: 0.8rem;
   margin-top: 0.25rem;
+}
+
+/* --- Model Selection Card Styles --- */
+.model-selection-card {
+  background: linear-gradient(135deg, #0d1117 0%, #161b22 100%);
+  border: 2px solid #a855f7;
+  border-radius: 0.75rem;
+  padding: 1.5rem;
+}
+
+.current-model-info {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  margin-bottom: 1.25rem;
+  padding: 0.75rem 1rem;
+  background: rgba(168, 85, 247, 0.1);
+  border-radius: 0.5rem;
+}
+
+.current-label {
+  color: #8b949e;
+  font-size: 0.875rem;
+}
+
+.current-value {
+  font-weight: 600;
+  color: #a855f7;
+  font-size: 1.1rem;
+}
+
+.current-status {
+  margin-left: auto;
+  padding: 0.25rem 0.75rem;
+  border-radius: 9999px;
+  font-size: 0.75rem;
+  font-weight: 500;
+}
+
+.current-status.loaded {
+  background: rgba(63, 185, 80, 0.2);
+  color: #3fb950;
+}
+
+.current-status.not-loaded {
+  background: rgba(248, 81, 73, 0.2);
+  color: #f85149;
+}
+
+.model-change-form {
+  margin-bottom: 1.5rem;
+}
+
+.form-row {
+  display: flex;
+  gap: 1rem;
+  margin-bottom: 1rem;
+}
+
+.form-row .form-group {
+  flex: 1;
+}
+
+.btn-change-model {
+  background: linear-gradient(135deg, #a855f7, #8b5cf6);
+  color: white;
+  border: none;
+  padding: 0.75rem 1.5rem;
+  border-radius: 0.5rem;
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 0.95rem;
+  transition: all 0.2s;
+  width: 100%;
+}
+
+.btn-change-model:hover:not(:disabled) {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(168, 85, 247, 0.4);
+}
+
+.btn-change-model:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.available-models-grid {
+  margin-top: 1.5rem;
+  padding-top: 1.5rem;
+  border-top: 1px solid #30363d;
+}
+
+.available-models-grid h4 {
+  color: #e6edf3;
+  margin-bottom: 1rem;
+}
+
+.models-comparison {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 1rem;
+}
+
+.model-compare-card {
+  background: #0d1117;
+  border: 1px solid #30363d;
+  border-radius: 0.5rem;
+  padding: 1rem;
+  transition: all 0.2s;
+}
+
+.model-compare-card:hover {
+  border-color: #58a6ff;
+  transform: translateY(-2px);
+}
+
+.model-compare-card.current {
+  border-color: #a855f7;
+  background: rgba(168, 85, 247, 0.05);
+}
+
+.model-compare-card .model-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.5rem;
+}
+
+.model-compare-card .model-name {
+  font-weight: 600;
+  color: #e6edf3;
+  font-size: 0.95rem;
+}
+
+.model-compare-card .model-fps {
+  background: rgba(88, 166, 255, 0.2);
+  color: #58a6ff;
+  padding: 0.2rem 0.5rem;
+  border-radius: 0.25rem;
+  font-size: 0.75rem;
+  font-weight: 500;
+}
+
+.model-compare-card .model-meta {
+  display: flex;
+  gap: 0.75rem;
+  margin-bottom: 0.5rem;
+  font-size: 0.8rem;
+}
+
+.model-compare-card .model-size {
+  color: #8b949e;
+}
+
+.model-compare-card .model-status {
+  color: #7ee787;
+  font-size: 0.75rem;
+}
+
+.model-compare-card .model-desc {
+  color: #8b949e;
+  font-size: 0.8rem;
+  line-height: 1.4;
+  margin: 0;
+}
+
+/* Export Section Details */
+.export-section-details {
+  background: #161b22;
+  border: 1px solid #30363d;
+  border-radius: 0.75rem;
+  overflow: hidden;
+}
+
+.export-section-details summary {
+  padding: 1rem 1.25rem;
+  cursor: pointer;
+  color: #e6edf3;
+  font-weight: 500;
+  transition: background 0.2s;
+}
+
+.export-section-details summary:hover {
+  background: rgba(88, 166, 255, 0.05);
+}
+
+.export-section-details .export-section {
+  border: none;
+  border-radius: 0;
+  margin: 0;
+}
+
+/* Responsive for Model Selection */
+@media (max-width: 768px) {
+  .form-row {
+    flex-direction: column;
+  }
+  
+  .current-model-info {
+    flex-wrap: wrap;
+  }
+  
+  .current-status {
+    margin-left: 0;
+    margin-top: 0.5rem;
+    flex-basis: 100%;
+    text-align: center;
+  }
+  
+  .models-comparison {
+    grid-template-columns: 1fr;
+  }
 }
 </style>
