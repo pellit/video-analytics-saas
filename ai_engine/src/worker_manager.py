@@ -2003,12 +2003,188 @@ def satellite_listener_loop():
                 print(f"Error procesando mensaje satellite: {e}")
 
 
+# ============================================================================
+# CAD PROCESSING - "Architect's Eye" Feature
+# ============================================================================
+
+# CAD Processor - Lazy loaded
+cad_processor = None
+CAD_ENABLED = os.environ.get('ENABLE_CAD', 'true').lower() == 'true'
+
+
+def get_cad_processor_instance():
+    """Get or create CAD processor instance with VLM engine."""
+    global cad_processor, vlm_analyzer
+    
+    if cad_processor is None:
+        try:
+            from .core.cad import CADProcessor
+            
+            # Initialize VLM if needed (for CAD analysis)
+            if vlm_analyzer is None and VLM_ENABLED:
+                try:
+                    vlm_analyzer = init_vlm_analyzer()
+                except Exception as e:
+                    print(f"⚠️ VLM not available for CAD: {e}")
+            
+            cad_processor = CADProcessor(
+                vlm_engine=vlm_analyzer,
+                output_dir="/app/public/cad_renders"
+            )
+            print("✅ CAD Processor inicializado")
+        except Exception as e:
+            print(f"❌ Error inicializando CAD Processor: {e}")
+            return None
+    
+    return cad_processor
+
+
+def process_cad_project(data: dict):
+    """
+    Procesa un proyecto CAD enviado desde Laravel.
+    
+    Expected data:
+        {
+            'action': 'PROCESS_CAD',
+            'project_id': int,
+            'file_path': str,
+            'file_type': str,
+            'project_type': str,
+            'user_id': int,
+            'callback_url': str
+        }
+    """
+    project_id = data.get('project_id')
+    file_path = data.get('file_path')
+    project_type = data.get('project_type', 'architecture')
+    callback_url = data.get('callback_url')
+    
+    print(f"📐 Procesando proyecto CAD #{project_id}: {file_path}")
+    
+    # Get worker key for callbacks
+    worker_key = os.environ.get('WORKER_API_KEY', 'worker-secret-key')
+    
+    def send_callback(update_data: dict):
+        """Enviar actualización al backend Laravel"""
+        try:
+            requests.post(
+                callback_url,
+                json={'project_id': project_id, **update_data},
+                headers={'X-WORKER-KEY': worker_key, 'Content-Type': 'application/json'},
+                timeout=10
+            )
+        except Exception as e:
+            print(f"⚠️ Error enviando callback: {e}")
+    
+    def progress_callback(pid: int, step: str, progress: int):
+        """Callback para reportar progreso"""
+        status = 'rendering' if progress < 30 else 'analyzing'
+        if progress >= 100:
+            status = 'completed'
+        
+        send_callback({
+            'status': status,
+            'progress': progress,
+            'current_step': step
+        })
+    
+    try:
+        # Marcar como procesando
+        send_callback({
+            'status': 'rendering',
+            'progress': 5,
+            'current_step': 'Iniciando procesamiento...'
+        })
+        
+        # Obtener procesador
+        processor = get_cad_processor_instance()
+        
+        if processor is None:
+            send_callback({
+                'status': 'error',
+                'error_message': 'CAD Processor no disponible. Verifique dependencias (ezdxf, matplotlib).'
+            })
+            return
+        
+        # Procesar
+        result = processor.process_project(
+            file_path=file_path,
+            project_id=project_id,
+            project_type=project_type,
+            callback_fn=progress_callback
+        )
+        
+        # Enviar resultado final
+        if result.success:
+            send_callback({
+                'status': 'completed',
+                'progress': 100,
+                'current_step': 'Análisis completado',
+                'render_image_path': result.render_image_path,
+                'render_thumbnail_path': result.render_thumbnail_path,
+                'metadata': result.metadata,
+                'analysis_general': result.analysis_general,
+                'analysis_rooms': result.analysis_rooms,
+                'analysis_safety': result.analysis_safety,
+                'analysis_structural': result.analysis_structural,
+                'analysis_dimensions': result.analysis_dimensions,
+                'analysis_materials': result.analysis_materials,
+            })
+            print(f"✅ Proyecto CAD #{project_id} completado")
+        else:
+            send_callback({
+                'status': 'error',
+                'error_message': result.error_message or 'Error desconocido en procesamiento'
+            })
+            print(f"❌ Proyecto CAD #{project_id} falló: {result.error_message}")
+            
+    except Exception as e:
+        print(f"❌ Error procesando CAD: {e}")
+        import traceback
+        traceback.print_exc()
+        send_callback({
+            'status': 'error',
+            'error_message': str(e)
+        })
+
+
+def cad_listener_loop():
+    """Listen for CAD processing commands on Redis."""
+    if not CAD_ENABLED:
+        print("📐 CAD processing deshabilitado (ENABLE_CAD=false)")
+        return
+    
+    print("📐 Escuchando Redis 'cad_control'...")
+    pubsub = r.pubsub()
+    pubsub.subscribe('cad_control')
+    
+    for message in pubsub.listen():
+        if message['type'] == 'message':
+            try:
+                data = json.loads(message['data'])
+                print(f"📐 CAD message: {data}")
+                
+                action = data.get('action')
+                if action == 'PROCESS_CAD':
+                    # Run in separate thread to not block listener
+                    threading.Thread(
+                        target=process_cad_project,
+                        args=(data,),
+                        daemon=True
+                    ).start()
+                    
+            except Exception as e:
+                print(f"Error procesando mensaje CAD: {e}")
+
+
 @app.on_event("startup")
 def startup_event():
     # Start the Redis listener thread on startup
     threading.Thread(target=redis_listener_loop, daemon=True).start()
     # Start the Satellite Redis listener thread
     threading.Thread(target=satellite_listener_loop, daemon=True).start()
+    # Start the CAD Redis listener thread
+    threading.Thread(target=cad_listener_loop, daemon=True).start()
 
 
 # ============================================================================

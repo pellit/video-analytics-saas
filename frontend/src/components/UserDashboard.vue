@@ -6,6 +6,7 @@ import FaceDetectionPIP from './FaceDetectionPIP.vue'
 import ToastNotification from './ToastNotification.vue'
 import SatellitePanel from './SatellitePanel.vue'
 import SatelliteReportsPanel from './SatelliteReportsPanel.vue'
+import BlueprintPanel from './BlueprintPanel.vue'
 import SmartPlayer from './SmartPlayer.vue'
 
 const props = defineProps(['token', 'user'])
@@ -942,6 +943,13 @@ const saveProfile = async () => {
           >
             📊 Reportes
           </button>
+          <button 
+            class="view-tab" 
+            :class="{ active: activeView === 'blueprints' }"
+            @click="activeView = 'blueprints'"
+          >
+            📐 Planos
+          </button>
         </div>
         
         <!-- Camera List (when cameras view active) -->
@@ -987,6 +995,23 @@ const saveProfile = async () => {
               <li>✓ Detección de cambios</li>
               <li>✓ Análisis con IA</li>
               <li>✓ Historial de análisis</li>
+            </ul>
+          </div>
+        </template>
+        
+        <!-- Blueprints Info (when blueprints view active) -->
+        <template v-if="activeView === 'blueprints'">
+          <div class="sidebar-header">
+            <h3>📐 Planos</h3>
+          </div>
+          <div class="satellite-info">
+            <p class="info-text">Análisis inteligente de planos CAD con IA.</p>
+            <ul class="feature-list">
+              <li>✓ Soporte DXF/DWG</li>
+              <li>✓ Análisis automático</li>
+              <li>✓ Detección de espacios</li>
+              <li>✓ Evaluación de seguridad</li>
+              <li>✓ Estimación de dimensiones</li>
             </ul>
           </div>
         </template>
@@ -1470,6 +1495,14 @@ const saveProfile = async () => {
         :token="token"
         :zones="satelliteZones"
         @notification="handleToast"
+      />
+    </div>
+    
+    <!-- Blueprints View -->
+    <div class="main-content blueprints-view" v-if="activeView === 'blueprints'">
+      <BlueprintPanel 
+        :api-url="API_URL"
+        :storage-url="API_URL.replace('/api', '')"
       />
     </div>
 

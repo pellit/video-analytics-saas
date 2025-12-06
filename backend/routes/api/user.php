@@ -92,3 +92,26 @@ Route::post('/notifications/send', [\App\Http\Controllers\NotificationController
 Route::post('/notifications/mark-all-read', [\App\Http\Controllers\NotificationController::class, 'markAllRead']);
 Route::post('/notifications/{notification}/read', [\App\Http\Controllers\NotificationController::class, 'markRead']);
 Route::delete('/notifications/{notification}', [\App\Http\Controllers\NotificationController::class, 'destroy']);
+
+// ==========================================================================
+// CAD Projects - "Architect's Eye" Feature
+// Análisis inteligente de planos arquitectónicos/ingeniería
+// ==========================================================================
+Route::prefix('cad')->group(function () {
+    // Project Types (meta)
+    Route::get('/project-types', [\App\Http\Controllers\CadController::class, 'projectTypes']);
+    
+    // Analytics (dashboard)
+    Route::get('/analytics', [\App\Http\Controllers\CadController::class, 'analytics']);
+    
+    // CRUD de proyectos CAD
+    Route::get('/projects', [\App\Http\Controllers\CadController::class, 'index']);
+    Route::post('/projects', [\App\Http\Controllers\CadController::class, 'upload']);
+    Route::get('/projects/{id}', [\App\Http\Controllers\CadController::class, 'show']);
+    Route::patch('/projects/{id}', [\App\Http\Controllers\CadController::class, 'update']);
+    Route::delete('/projects/{id}', [\App\Http\Controllers\CadController::class, 'destroy']);
+    
+    // Status & Actions
+    Route::get('/projects/{id}/status', [\App\Http\Controllers\CadController::class, 'status']);
+    Route::post('/projects/{id}/reanalyze', [\App\Http\Controllers\CadController::class, 'reanalyze']);
+});
