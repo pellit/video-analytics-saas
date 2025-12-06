@@ -35,17 +35,24 @@ const handleNavigate = (view) => {
 // Verificar Magic Link al cargar
 onMounted(async () => {
   const urlParams = new URLSearchParams(window.location.search)
-  if (urlParams.has('signature') && urlParams.has('id')) {
-    // Lógica rápida de verificación para limpiar la URL
+  const pathname = window.location.pathname
+  
+  // El magic link tiene formato: /auth/callback/auth/verify/{id}?expires=...&signature=...
+  const verifyMatch = pathname.match(/\/auth\/callback\/auth\/verify\/(\d+)/)
+  
+  if (verifyMatch && urlParams.has('signature')) {
+    const userId = verifyMatch[1]
     try {
-        const verifyUrl = `${API_URL}/auth/verify/${urlParams.get('id')}?expires=${urlParams.get('expires')}&signature=${urlParams.get('signature')}`
+        const verifyUrl = `${API_URL}/auth/verify/${userId}?expires=${urlParams.get('expires')}&signature=${urlParams.get('signature')}`
         const res = await fetch(verifyUrl)
         const data = await res.json()
         if (res.ok) {
             handleLoginSuccess(data)
             window.history.replaceState({}, document.title, "/")
         }
-    } catch (e) {}
+    } catch (e) {
+      console.error('Error verificando magic link:', e)
+    }
   }
 })
 </script>
