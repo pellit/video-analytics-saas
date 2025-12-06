@@ -46,12 +46,17 @@ RUN wget -q https://github.com/microsoft/onnxruntime/releases/download/v1.17.1/o
     && mv onnxruntime-linux-x64-1.17.1/lib/* /usr/local/lib/ \
     && mv onnxruntime-linux-x64-1.17.1/include/* /usr/local/include/ \
     && rm -rf onnxruntime-linux-x64-1.17.1* \
+    && ln -sf /usr/local/lib/libonnxruntime.so.1.17.1 /usr/local/lib/onnxruntime.so \
+    && ln -sf /usr/local/lib/libonnxruntime.so.1.17.1 /usr/local/lib/libonnxruntime.so \
     && ldconfig
 
 WORKDIR /app
 
 # Copy binary from builder
 COPY --from=builder /worker /app/worker
+
+# Set library path for runtime
+ENV LD_LIBRARY_PATH=/usr/local/lib
 
 # Create models directory and copy model
 RUN mkdir -p /app/models
