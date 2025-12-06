@@ -7,6 +7,8 @@ services:
     image: redis:alpine
     command: redis-server --bind 0.0.0.0
     restart: unless-stopped
+    networks:
+      - internal
 
   # Go AI Worker
   ai_worker:
@@ -23,6 +25,8 @@ services:
       - WORKER_ID=go-worker-1
     depends_on:
       - redis
+    networks:
+      - internal
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:5000/health"]
       interval: 10s
@@ -32,7 +36,11 @@ services:
     restart: unless-stopped
     labels:
       - "traefik.enable=true"
-      - "traefik.http.routers.ai-worker-go.rule=Host(`worker-dev.pellit.com.ar`)"
+      - "traefik.http.routers.ai-worker-go.rule=Host(`worker-go-dev.pellit.com.ar`)"
       - "traefik.http.routers.ai-worker-go.entrypoints=websecure"
       - "traefik.http.routers.ai-worker-go.tls.certresolver=letsencrypt"
       - "traefik.http.services.ai-worker-go.loadbalancer.server.port=5000"
+
+networks:
+  internal:
+    driver: bridge
