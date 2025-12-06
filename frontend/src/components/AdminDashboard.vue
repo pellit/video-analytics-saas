@@ -15,6 +15,10 @@ const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000/api'
 
 // Worker URL for AI Engine endpoints
 const getWorkerUrl = () => {
+    // Use /worker prefix for nginx proxy
+    if (import.meta.env.VITE_STREAM_URL === '/video_feed') {
+        return '/worker'  // nginx will proxy to ai_worker:5000
+    }
     if (import.meta.env.VITE_STREAM_URL) {
         return import.meta.env.VITE_STREAM_URL.replace('/video_feed', '')
     }

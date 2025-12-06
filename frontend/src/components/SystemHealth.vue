@@ -40,8 +40,14 @@ const isAutoRefresh = ref(true)
 let refreshInterval = null
 
 // URLs base
-const getWorkerUrl = () => props.workerUrl || 
-  (import.meta.env.VITE_STREAM_URL || 'http://localhost:5000').replace('/video_feed', '')
+const getWorkerUrl = () => {
+  if (props.workerUrl) return props.workerUrl
+  const streamUrl = import.meta.env.VITE_STREAM_URL || ''
+  // Use /worker prefix for nginx proxy when using relative paths
+  if (streamUrl === '/video_feed') return '/worker'
+  if (streamUrl) return streamUrl.replace('/video_feed', '')
+  return 'http://localhost:5000'
+}
 const getApiUrl = () => props.apiUrl || import.meta.env.VITE_API_URL || 'http://localhost:8000/api'
 const getMediamtxUrl = () => props.mediamtxUrl || 'http://localhost:9997'
 
