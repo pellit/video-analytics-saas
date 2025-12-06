@@ -5,11 +5,23 @@ namespace App\Http\Controllers;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Redis;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\Http;
 
 use App\Models\Camera;
 
 class CameraController extends Controller
 {
+    // URL del worker Go (se puede configurar via env)
+    private function getGoWorkerUrl(): string
+    {
+        return env('GO_WORKER_URL', 'https://worker-go-dev.pellit.com.ar');
+    }
+
+    // Verificar si el modelo es para el worker Go
+    private function isGoModel(string $model): bool
+    {
+        return str_starts_with($model, 'go-');
+    }
 
 // Listar cámaras del usuario
     public function index() {
@@ -58,33 +70,79 @@ class CameraController extends Controller
 
         // Verificar que la cámara pertenezca al usuario autenticado
         $camera = Auth::user()->cameras()->findOrFail($request->id);
+        
+        $model = $camera->detection_model ?? 'yolov8n';
+        
+        // Si es modelo Go, enviar al worker Go via HTTP
+        if ($this->isGoModel($model)) {
+            return $this->startGoWorker($camera);
+        }
 
-        // Publicar en Redis
+        // Worker Python via Redis
         $message = json_encode([
             'action' => 'START',
             'camera_id' => $camera->id,
             'url' => $camera->url,
-            'model' => $camera->detection_model ?? 'yolov8n', // Enviar modelo configurado
-            'detection_classes' => $camera->detection_classes, // Enviar clases
+            'model' => $model,
+            'detection_classes' => $camera->detection_classes,
             'face_recognition_enabled' => $camera->face_recognition_enabled,
-            'face_analysis_fps' => $camera->face_analysis_fps ?? 5,  // FPS para detección facial
+            'face_analysis_fps' => $camera->face_analysis_fps ?? 5,
             'depth_enabled' => $camera->depth_enabled,
             'bev_enabled' => $camera->bev_enabled,
-            'tracking' => $camera->tracking ?? false,  // Enviar opción de tracking
-            'analysis_fps' => $camera->analysis_fps ?? 5,  // FPS de análisis
+            'tracking' => $camera->tracking ?? false,
+            'analysis_fps' => $camera->analysis_fps ?? 5,
             'show_analysis_overlay' => $camera->show_analysis_overlay ?? true,
             'confidence_threshold' => $camera->confidence_threshold ?? 0.5,
         ]);
         Redis::publish('video_control', $message);
 
-        return response()->json(['status' => 'success']);
+        return response()->json(['status' => 'success', 'worker' => 'python']);
+    }
+
+    // Iniciar procesamiento en Go Worker
+    private function startGoWorker(Camera $camera)
+    {
+        try {
+            $response = Http::timeout(10)->post($this->getGoWorkerUrl() . '/camera/' . $camera->id . '/start', [
+                'rtsp_url' => $camera->url,
+                'model_id' => 'yolov8n',  // Go worker solo soporta yolov8n
+                'threshold' => $camera->confidence_threshold ?? 0.5,
+            ]);
+
+            if ($response->successful()) {
+                return response()->json([
+                    'status' => 'success',
+                    'worker' => 'go',
+                    'worker_response' => $response->json(),
+                ]);
+            }
+
+            return response()->json([
+                'status' => 'error',
+                'message' => 'Go worker error: ' . $response->body(),
+            ], 500);
+
+        } catch (\Exception $e) {
+            return response()->json([
+                'status' => 'error',
+                'message' => 'Failed to connect to Go worker: ' . $e->getMessage(),
+            ], 500);
+        }
     }
 
     public function stop(Request $request)
     {
         $request->validate(['id' => 'required|integer']);
         $camera = Auth::user()->cameras()->findOrFail($request->id);
+        
+        $model = $camera->detection_model ?? 'yolov8n';
 
+        // Si es modelo Go, detener en worker Go
+        if ($this->isGoModel($model)) {
+            return $this->stopGoWorker($camera);
+        }
+
+        // Worker Python via Redis
         $message = json_encode([
             'action' => 'STOP',
             'camera_id' => $camera->id
@@ -94,7 +152,35 @@ class CameraController extends Controller
 
         return response()->json([
             'status' => 'success',
-            'message' => 'Análisis detenido'
+            'message' => 'Análisis detenido',
+            'worker' => 'python'
         ]);
+    }
+
+    // Detener procesamiento en Go Worker
+    private function stopGoWorker(Camera $camera)
+    {
+        try {
+            $response = Http::timeout(10)->post($this->getGoWorkerUrl() . '/camera/' . $camera->id . '/stop');
+
+            if ($response->successful()) {
+                return response()->json([
+                    'status' => 'success',
+                    'message' => 'Análisis detenido',
+                    'worker' => 'go',
+                ]);
+            }
+
+            return response()->json([
+                'status' => 'error',
+                'message' => 'Go worker error: ' . $response->body(),
+            ], 500);
+
+        } catch (\Exception $e) {
+            return response()->json([
+                'status' => 'error',
+                'message' => 'Failed to connect to Go worker: ' . $e->getMessage(),
+            ], 500);
+        }
     }
 }

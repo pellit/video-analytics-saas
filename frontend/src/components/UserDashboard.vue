@@ -12,6 +12,8 @@ const props = defineProps(['token', 'user'])
 const emit = defineEmits(['logout', 'navigate'])
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000/api'
+// URL del worker Go (configurable via env)
+const GO_WORKER_URL = import.meta.env.VITE_GO_WORKER_URL || 'https://worker-go-dev.pellit.com.ar'
 // Prefer explicit stream URL; fallback to computed from API URL to be compatible with existing setups
 const getStreamUrl = () => {
     if (import.meta.env.VITE_STREAM_URL) return import.meta.env.VITE_STREAM_URL;
@@ -669,6 +671,12 @@ const activeStreamUrl = computed(() => {
   // If the camera has a YouTube URL, return its embed URL, unless detection is enabled
   // When detection is enabled, show the worker MJPEG annotated stream instead
   if (activeCamera.value.detection_enabled && isProcessing.value) {
+    // Check if using Go worker (model starts with 'go-')
+    const model = activeCamera.value.detection_model || ''
+    if (model.startsWith('go-')) {
+      // Go worker MJPEG stream
+      return `${GO_WORKER_URL}/video_feed/${activeCamera.value.id}`
+    }
     // By default, the worker exposes MJPEG at STREAM_URL, but we allow `camera_id` param just for clarity
     return `${STREAM_URL}?camera_id=${activeCamera.value.id}`
   }
@@ -1031,13 +1039,18 @@ const saveProfile = async () => {
                   <div class="setting-row">
                     <label class="setting-label">🤖 Modelo AI</label>
                     <select v-model="activeCamera.detection_model" class="compact-select">
-                      <option value="mobilenet_ssd">🚀 MobileNet-SSD (~25 FPS)</option>
-                      <option value="yolo_fastest">⚡ YOLO-Fastest (~15 FPS)</option>
-                      <option value="mediapipe">📱 MediaPipe (~9 FPS)</option>
-                      <option value="yolov4_tiny">🎯 YOLOv4-tiny (~7 FPS)</option>
-                      <option value="nanodet">🔬 NanoDet-Plus (~6 FPS)</option>
-                      <option value="onnx">🎖️ YOLO-NAS ONNX (~1 FPS)</option>
-                      <option value="rt_detr">🏆 RT-DETR (~0.3 FPS)</option>
+                      <optgroup label="🐍 Python Worker">
+                        <option value="mobilenet_ssd">🚀 MobileNet-SSD (~25 FPS)</option>
+                        <option value="yolo_fastest">⚡ YOLO-Fastest (~15 FPS)</option>
+                        <option value="mediapipe">📱 MediaPipe (~9 FPS)</option>
+                        <option value="yolov4_tiny">🎯 YOLOv4-tiny (~7 FPS)</option>
+                        <option value="nanodet">🔬 NanoDet-Plus (~6 FPS)</option>
+                        <option value="onnx">🎖️ YOLO-NAS ONNX (~1 FPS)</option>
+                        <option value="rt_detr">🏆 RT-DETR (~0.3 FPS)</option>
+                      </optgroup>
+                      <optgroup label="🚀 Go Worker (RTSP only)">
+                        <option value="go-yolov8n">⚡ Go-YOLOv8n (~40-60 FPS)</option>
+                      </optgroup>
                     </select>
                   </div>
                   
