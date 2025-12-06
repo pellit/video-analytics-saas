@@ -27,16 +27,18 @@ mediapipe>=0.10.0
 supervision>=0.16.0
 
 # ============================================
+# Moondream2 VLM (para Auto-detectar clases)
+# ============================================
+# PyTorch CPU-only (sin CUDA para builds más rápidos)
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch==2.1.0+cpu
+transformers>=4.36.0
+einops>=0.6.0
+accelerate>=0.25.0
+
+# ============================================
 # OPCIONALES - Descomentar si necesitas:
 # ============================================
-
-# --- PyTorch CPU (solo si usas RT-DETR o Moondream2 VLM) ---
-# --extra-index-url https://download.pytorch.org/whl/cpu
-# torch
-# torchvision
-# transformers
-# einops>=0.6.0
-# accelerate>=0.25.0
 
 # --- Speech Recognition ---
 # vosk
