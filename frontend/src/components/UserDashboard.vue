@@ -1031,8 +1031,13 @@ const saveProfile = async () => {
                   <div class="setting-row">
                     <label class="setting-label">🤖 Modelo AI</label>
                     <select v-model="activeCamera.detection_model" class="compact-select">
-                      <option value="onnx">⚡ ONNX YOLO-NAS (Rápido)</option>
-                      <option value="rt_detr">RT-DETR (Transformers)</option>
+                      <option value="mobilenet_ssd">🚀 MobileNet-SSD (~25 FPS)</option>
+                      <option value="yolo_fastest">⚡ YOLO-Fastest (~15 FPS)</option>
+                      <option value="mediapipe">📱 MediaPipe (~9 FPS)</option>
+                      <option value="yolov4_tiny">🎯 YOLOv4-tiny (~7 FPS)</option>
+                      <option value="nanodet">🔬 NanoDet-Plus (~6 FPS)</option>
+                      <option value="onnx">🎖️ YOLO-NAS ONNX (~1 FPS)</option>
+                      <option value="rt_detr">🏆 RT-DETR (~0.3 FPS)</option>
                     </select>
                   </div>
                   
