@@ -29,9 +29,18 @@ services:
       start_period: 10s
       retries: 3
     restart: unless-stopped
+    networks:
+      - default
+      - dokploy-network
     labels:
       - "traefik.enable=true"
-      - "traefik.http.routers.ai-worker-go.rule=Host(`worker-dev.pellit.com.ar`)"
-      - "traefik.http.routers.ai-worker-go.entrypoints=websecure"
-      - "traefik.http.routers.ai-worker-go.tls.certresolver=letsencrypt"
-      - "traefik.http.services.ai-worker-go.loadbalancer.server.port=5000"
+      - "traefik.docker.network=dokploy-network"
+      - "traefik.http.routers.go-worker-rtsp.rule=Host(`worker-go-dev.pellit.com.ar`)"
+      - "traefik.http.routers.go-worker-rtsp.entrypoints=websecure"
+      - "traefik.http.routers.go-worker-rtsp.tls.certresolver=letsencrypt"
+      - "traefik.http.services.go-worker-rtsp.loadbalancer.server.port=5000"
+
+networks:
+  default:
+  dokploy-network:
+    external: true
