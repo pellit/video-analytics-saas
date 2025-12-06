@@ -3,6 +3,14 @@ FROM node:20-alpine as builder
 
 WORKDIR /app
 
+# Build arguments para variables de entorno de Vite
+ARG VITE_API_URL=/api
+ARG VITE_STREAM_URL=/video_feed
+
+# Convertir ARGs a ENV para que Vite las use durante el build
+ENV VITE_API_URL=$VITE_API_URL
+ENV VITE_STREAM_URL=$VITE_STREAM_URL
+
 # Copiamos package.json y lock primero
 COPY package*.json ./
 
