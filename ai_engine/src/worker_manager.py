@@ -475,9 +475,16 @@ def stream_thread(camera_id, url):
         if detection_classes and class_names:
             # Map class names to indices
             classes_indices = []
-            for idx, cls_name in class_names.items():
-                if cls_name in detection_classes:
-                    classes_indices.append(idx)
+            # Handle both dict and list formats for class_names
+            if isinstance(class_names, dict):
+                for idx, cls_name in class_names.items():
+                    if cls_name in detection_classes:
+                        classes_indices.append(idx)
+            else:
+                # class_names is a list
+                for idx, cls_name in enumerate(class_names):
+                    if cls_name in detection_classes:
+                        classes_indices.append(idx)
             if not classes_indices:
                 classes_indices = None  # No valid classes found, detect all
         
