@@ -22,11 +22,13 @@ type Detection struct {
 
 // ONNXDetector handles ONNX model inference
 type ONNXDetector struct {
-	session     *ort.AdvancedSession
-	inputShape  []int64
-	modelName   string
-	classNames  []string
-	threshold   float32
+	session      *ort.AdvancedSession
+	inputTensor  *ort.Tensor[float32]
+	outputTensor *ort.Tensor[float32]
+	inputShape   []int64
+	modelName    string
+	classNames   []string
+	threshold    float32
 	nmsThreshold float32
 }
 
@@ -54,28 +56,16 @@ func NewONNXDetector(modelPath string) (*ONNXDetector, error) {
 	// Get model name from path
 	modelName := strings.TrimSuffix(filepath.Base(modelPath), filepath.Ext(modelPath))
 
-	// Create session options
-	options, err := ort.NewSessionOptions()
-	if err != nil {
-		return nil, fmt.Errorf("failed to create session options: %w", err)
-	}
-	defer options.Destroy()
-
-	// Set number of threads
-	if err := options.SetIntraOpNumThreads(4); err != nil {
-		return nil, fmt.Errorf("failed to set threads: %w", err)
-	}
-
 	// Input shape for YOLOv8 nano: [1, 3, 640, 640]
-	inputShape := []int64{1, 3, 640, 640}
-	inputTensor, err := ort.NewEmptyTensor[float32](ort.NewShape(inputShape...))
+	inputShape := ort.NewShape(1, 3, 640, 640)
+	inputTensor, err := ort.NewEmptyTensor[float32](inputShape)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create input tensor: %w", err)
 	}
 
 	// Output shape: [1, 84, 8400] for YOLOv8
-	outputShape := []int64{1, 84, 8400}
-	outputTensor, err := ort.NewEmptyTensor[float32](ort.NewShape(outputShape...))
+	outputShape := ort.NewShape(1, 84, 8400)
+	outputTensor, err := ort.NewEmptyTensor[float32](outputShape)
 	if err != nil {
 		inputTensor.Destroy()
 		return nil, fmt.Errorf("failed to create output tensor: %w", err)
@@ -88,7 +78,7 @@ func NewONNXDetector(modelPath string) (*ONNXDetector, error) {
 		[]string{"output0"},
 		[]ort.ArbitraryTensor{inputTensor},
 		[]ort.ArbitraryTensor{outputTensor},
-		options,
+		nil, // Use default options
 	)
 	if err != nil {
 		inputTensor.Destroy()
@@ -97,11 +87,13 @@ func NewONNXDetector(modelPath string) (*ONNXDetector, error) {
 	}
 
 	return &ONNXDetector{
-		session:     session,
-		inputShape:  inputShape,
-		modelName:   modelName,
-		classNames:  cocoClasses,
-		threshold:   0.25,
+		session:      session,
+		inputTensor:  inputTensor,
+		outputTensor: outputTensor,
+		inputShape:   []int64{1, 3, 640, 640},
+		modelName:    modelName,
+		classNames:   cocoClasses,
+		threshold:    0.25,
 		nmsThreshold: 0.45,
 	}, nil
 }
@@ -110,6 +102,12 @@ func NewONNXDetector(modelPath string) (*ONNXDetector, error) {
 func (d *ONNXDetector) Close() {
 	if d.session != nil {
 		d.session.Destroy()
+	}
+	if d.inputTensor != nil {
+		d.inputTensor.Destroy()
+	}
+	if d.outputTensor != nil {
+		d.outputTensor.Destroy()
 	}
 	ort.DestroyEnvironment()
 }
@@ -129,14 +127,8 @@ func (d *ONNXDetector) Detect(img image.Image) ([]Detection, error) {
 	// Preprocess image
 	inputData := d.preprocess(img)
 
-	// Get input tensor and copy data
-	inputs := d.session.GetInputs()
-	if len(inputs) == 0 {
-		return nil, fmt.Errorf("no input tensors")
-	}
-	
-	inputTensor := inputs[0].(*ort.Tensor[float32])
-	inputSlice := inputTensor.GetData()
+	// Copy data to input tensor
+	inputSlice := d.inputTensor.GetData()
 	copy(inputSlice, inputData)
 
 	// Run inference
@@ -144,14 +136,8 @@ func (d *ONNXDetector) Detect(img image.Image) ([]Detection, error) {
 		return nil, fmt.Errorf("inference failed: %w", err)
 	}
 
-	// Get output tensor
-	outputs := d.session.GetOutputs()
-	if len(outputs) == 0 {
-		return nil, fmt.Errorf("no output tensors")
-	}
-	
-	outputTensor := outputs[0].(*ort.Tensor[float32])
-	outputData := outputTensor.GetData()
+	// Get output data
+	outputData := d.outputTensor.GetData()
 
 	// Postprocess results
 	detections := d.postprocess(outputData, img.Bounds().Dx(), img.Bounds().Dy())
@@ -161,13 +147,10 @@ func (d *ONNXDetector) Detect(img image.Image) ([]Detection, error) {
 
 // preprocess converts image to NCHW float32 tensor normalized to [0, 1]
 func (d *ONNXDetector) preprocess(img image.Image) []float32 {
-	bounds := img.Bounds()
-	w, h := bounds.Dx(), bounds.Dy()
-	
 	targetW := int(d.inputShape[3])
 	targetH := int(d.inputShape[2])
 	
-	// Resize image using bilinear interpolation
+	// Resize image
 	resized := resizeImage(img, targetW, targetH)
 	
 	// Convert to NCHW format and normalize
@@ -184,8 +167,6 @@ func (d *ONNXDetector) preprocess(img image.Image) []float32 {
 		}
 	}
 	
-	_ = w
-	_ = h
 	return data
 }
 
@@ -256,10 +237,10 @@ func (d *ONNXDetector) postprocess(output []float32, imgWidth, imgHeight int) []
 		y2 := int((cy + h/2) * scaleY)
 		
 		// Clamp to image bounds
-		x1 = max(0, min(x1, imgWidth-1))
-		y1 = max(0, min(y1, imgHeight-1))
-		x2 = max(0, min(x2, imgWidth-1))
-		y2 = max(0, min(y2, imgHeight-1))
+		x1 = maxInt(0, minInt(x1, imgWidth-1))
+		y1 = maxInt(0, minInt(y1, imgHeight-1))
+		x2 = maxInt(0, minInt(x2, imgWidth-1))
+		y2 = maxInt(0, minInt(y2, imgHeight-1))
 		
 		className := "unknown"
 		if maxClass < len(d.classNames) {
@@ -315,10 +296,10 @@ func (d *ONNXDetector) nms(detections []Detection) []Detection {
 
 // iou calculates Intersection over Union
 func iou(box1, box2 [4]int) float32 {
-	x1 := max(box1[0], box2[0])
-	y1 := max(box1[1], box2[1])
-	x2 := min(box1[2], box2[2])
-	y2 := min(box1[3], box2[3])
+	x1 := maxInt(box1[0], box2[0])
+	y1 := maxInt(box1[1], box2[1])
+	x2 := minInt(box1[2], box2[2])
+	y2 := minInt(box1[3], box2[3])
 	
 	if x2 <= x1 || y2 <= y1 {
 		return 0
@@ -339,11 +320,11 @@ func iou(box1, box2 [4]int) float32 {
 // DrawDetections draws bounding boxes on an image
 func (d *ONNXDetector) DrawDetections(img *image.RGBA, detections []Detection) {
 	for _, det := range detections {
-		color := getColorForClass(det.ClassID)
-		drawRect(img, det.BBox, color, 2)
+		c := getColorForClass(det.ClassID)
+		drawRect(img, det.BBox, c, 2)
 		
 		label := fmt.Sprintf("%s: %.1f%%", det.ClassName, det.Confidence*100)
-		drawLabel(img, det.BBox[0], det.BBox[1]-12, label, color)
+		drawLabel(img, det.BBox[0], det.BBox[1]-12, label, c)
 	}
 }
 
@@ -408,25 +389,18 @@ func drawLabel(img *image.RGBA, x, y int, label string, bgColor color.RGBA) {
 	}
 }
 
-func min(a, b int) int {
+func minInt(a, b int) int {
 	if a < b {
 		return a
 	}
 	return b
 }
 
-func max(a, b int) int {
+func maxInt(a, b int) int {
 	if a > b {
 		return a
 	}
 	return b
-}
-
-func abs(x int) int {
-	if x < 0 {
-		return -x
-	}
-	return x
 }
 
 func sqrt(x float32) float32 {
