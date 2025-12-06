@@ -1,20 +1,34 @@
-# Build stage
-FROM golang:1.22-alpine AS builder
+# Build stage - using Ubuntu for glibc compatibility with ONNX Runtime
+FROM golang:1.22 AS builder
 
 # Install build dependencies
-RUN apk add --no-cache git gcc musl-dev
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git gcc g++ wget ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install ONNX Runtime for build
+RUN wget -q https://github.com/microsoft/onnxruntime/releases/download/v1.17.1/onnxruntime-linux-x64-1.17.1.tgz \
+    && tar -xzf onnxruntime-linux-x64-1.17.1.tgz \
+    && mv onnxruntime-linux-x64-1.17.1/lib/* /usr/local/lib/ \
+    && mv onnxruntime-linux-x64-1.17.1/include/* /usr/local/include/ \
+    && rm -rf onnxruntime-linux-x64-1.17.1* \
+    && ldconfig
 
 WORKDIR /app
 
-# Copy go mod file and download dependencies
+# Copy go mod file
 COPY go.mod ./
-RUN go mod download || true
 
 # Copy source code
 COPY . .
 
-# Download dependencies and build the binary
-RUN go mod tidy && CGO_ENABLED=0 GOOS=linux go build -o /worker ./cmd/worker
+# Set CGO and ONNX Runtime paths, then build
+ENV CGO_ENABLED=1
+ENV CGO_LDFLAGS="-L/usr/local/lib -lonnxruntime"
+ENV CGO_CFLAGS="-I/usr/local/include"
+ENV LD_LIBRARY_PATH=/usr/local/lib
+
+RUN go mod tidy && go build -o /worker ./cmd/worker
 
 # Runtime stage
 FROM ubuntu:22.04
