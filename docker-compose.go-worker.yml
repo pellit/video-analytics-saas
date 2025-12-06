@@ -1,0 +1,29 @@
+# Docker Compose override for Go AI Worker testing
+# Usage: docker-compose -f docker-compose.yml -f docker-compose.go-worker.yml up -d
+
+services:
+  # Replace Python AI worker with Go worker
+  ai_worker:
+    build:
+      context: ./ai_engine_go
+      dockerfile: Dockerfile
+    command: /app/worker
+    environment:
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - HTTP_PORT=5000
+      - MODEL_PATH=/app/models/yolov8n.onnx
+      - NUM_WORKERS=4
+      - WORKER_ID=go-worker-1
+    volumes:
+      - ./ai_engine_go/models:/app/models
+    depends_on:
+      - redis
+    networks:
+      - saas_net
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:5000/health"]
+      interval: 10s
+      timeout: 3s
+      start_period: 5s
+      retries: 3
