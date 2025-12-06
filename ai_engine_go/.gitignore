@@ -9,8 +9,9 @@
 # Binary output
 /worker
 /ai_engine_go
-# Model files (download separately)
-/models/*.onnx
+# PyTorch model files (download separately)
 /models/*.pt
+# Keep ONNX models in repo
+!models/yolov8n.onnx
 # Dependencies
 vendor/

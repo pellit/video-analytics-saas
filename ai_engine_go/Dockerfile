@@ -39,11 +39,9 @@ WORKDIR /app
 # Copy binary from builder
 COPY --from=builder /worker /app/worker
 
-# Create models directory
+# Create models directory and copy model
 RUN mkdir -p /app/models
-
-# Copy models (will be mounted or downloaded)
-COPY models/*.onnx /app/models/
+COPY models/yolov8n.onnx /app/models/
 
 # Environment variables
 ENV REDIS_HOST=redis \
