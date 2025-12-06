@@ -154,16 +154,24 @@ class MediaPipeObjectDetector(BaseDetector):
             w = bbox.width
             h = bbox.height
             
+            # Convert to x1, y1, x2, y2 format
+            x1 = int(x * frame.shape[1])
+            y1 = int(y * frame.shape[0])
+            x2 = int((x + w) * frame.shape[1])
+            y2 = int((y + h) * frame.shape[0])
+            
             detections.append(DetectionResult(
                 class_id=class_id,
                 class_name=class_name,
                 confidence=float(confidence),
-                bbox=(x, y, w, h),
+                bbox=(x1, y1, x2, y2),
                 track_id=None
             ))
         
         # Draw detections
-        annotated = self.draw_modern_detection(frame.copy(), detections)
+        annotated = frame.copy()
+        for det in detections:
+            self.draw_modern_detection(annotated, det)
         
         return detections, annotated
     

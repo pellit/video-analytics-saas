@@ -175,12 +175,14 @@ class MobileNetSSDDetector(BaseDetector):
                     class_id=coco_id,
                     class_name=self.VOC_CLASSES[class_id] if class_id < len(self.VOC_CLASSES) else f"class_{class_id}",
                     confidence=float(confidence),
-                    bbox=(x1, y1, x2 - x1, y2 - y1),
+                    bbox=(x1, y1, x2, y2),  # x1, y1, x2, y2 format
                     track_id=None
                 ))
         
         # Draw detections
-        annotated = self.draw_modern_detection(frame.copy(), detections)
+        annotated = frame.copy()
+        for det in detections:
+            self.draw_modern_detection(annotated, det)
         
         return detections, annotated
     

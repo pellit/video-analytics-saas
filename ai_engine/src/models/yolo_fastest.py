@@ -190,12 +190,14 @@ class YOLOFastestDetector(BaseDetector):
                     class_id=class_ids[i],
                     class_name=self.COCO_CLASSES[class_ids[i]] if class_ids[i] < len(self.COCO_CLASSES) else f"class_{class_ids[i]}",
                     confidence=confidences[i],
-                    bbox=(x, y, w, h),
+                    bbox=(x, y, x + w, y + h),  # Convert to x1, y1, x2, y2 format
                     track_id=None
                 ))
         
         # Draw detections
-        annotated = self.draw_modern_detection(frame.copy(), detections)
+        annotated = frame.copy()
+        for det in detections:
+            self.draw_modern_detection(annotated, det)
         
         return detections, annotated
     
