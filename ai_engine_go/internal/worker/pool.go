@@ -313,6 +313,11 @@ func (p *Pool) StreamVideo(ctx context.Context, cameraID string, w io.Writer) er
 	
 	boundary := "frame"
 	
+	// Create a flusher if available
+	type flusher interface {
+		Flush() error
+	}
+	
 	for {
 		select {
 		case <-ctx.Done():
@@ -339,6 +344,11 @@ func (p *Pool) StreamVideo(ctx context.Context, cameraID string, w io.Writer) er
 		}
 		if _, err := w.Write([]byte("\r\n")); err != nil {
 			return err
+		}
+		
+		// Flush if possible
+		if f, ok := w.(flusher); ok {
+			f.Flush()
 		}
 		
 		// Target ~15 FPS

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -160,8 +161,14 @@ func setupHTTPServer(config Config, rdb *redis.Client, det *detector.ONNXDetecto
 		
 		c.Set("Content-Type", "multipart/x-mixed-replace; boundary=frame")
 		c.Set("Cache-Control", "no-cache")
+		c.Set("Connection", "keep-alive")
 		
-		return pool.StreamVideo(c.Context(), cameraID, c.Response().BodyWriter())
+		// Use streaming response for MJPEG
+		c.Context().SetBodyStreamWriter(func(w *bufio.Writer) {
+			pool.StreamVideo(context.Background(), cameraID, w)
+		})
+		
+		return nil
 	})
 
 	// Start camera processing
