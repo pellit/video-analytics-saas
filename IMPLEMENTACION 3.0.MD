@@ -748,3 +748,257 @@ Simulamos el ojo humano usando matplotlib para "dibujar" el plano matemático en
 Interpretamos esa foto con Moondream2 (optimizada para CPU) que entiende qué es una pared, una puerta o una ventana.
 
 Integramos esto en tu app existente como un tipo de cámara especial que, en lugar de mostrar video en vivo, muestra la imagen estática analizada.
+
+
+
+## OPTIMIZACION DE CODIGO
+
+¡Manos a la obra\! Aquí tienes la secuencia de implementación definitiva para el módulo **"Ojo de Arquitecto"** (CAD a IA).
+
+He organizado esto para que los contenedores puedan compartir los archivos (Laravel sube el archivo, Python lo lee) y para integrar las optimizaciones de limpieza de planos que diseñamos.
+
+-----
+
+### Paso 1: Infraestructura (El Volumen Compartido)
+
+Para que Laravel (API) le pase el archivo `.dxf` a Python (Worker), ambos necesitan ver la misma carpeta de almacenamiento.
+
+**1. Edita `docker-compose.yml` (y `dev` si lo usas):**
+Define un volumen llamado `app_storage` y móntalo en ambos servicios.
+
+```yaml
+services:
+  api:
+    # ...
+    volumes:
+      - app_storage:/var/www/html/storage  # <--- AGREGAR ESTO
+
+  ai_worker:
+    # ...
+    volumes:
+      - app_storage:/app/storage           # <--- AGREGAR ESTO (Misma ruta interna relativa)
+
+volumes:
+  db_data:
+  label_studio_data:
+  app_storage:                             # <--- DECLARARLO AL FINAL
+```
+
+-----
+
+### Paso 2: El Cerebro AI (Python)
+
+Preparamos el worker para entender planos y usar Moondream.
+
+**1. Actualiza `ai_engine/requirements.txt`:**
+Agrega estas librerías al final:
+
+```text
+ezdxf
+matplotlib
+```
+
+**2. Crea el módulo de renderizado `ai_engine/src/core/cad.py`:**
+Este es el código optimizado que "limpia" el plano antes de verlo.
+
+```python
+import ezdxf
+from ezdxf.addons.drawing import RenderContext, Frontend
+from ezdxf.addons.drawing.matplotlib import MatplotlibBackend
+import matplotlib.pyplot as plt
+import os
+
+def clean_and_render_cad(dxf_path, output_image_path):
+    try:
+        print(f"📐 Procesando CAD: {dxf_path}")
+        doc = ezdxf.readfile(dxf_path)
+        msp = doc.modelspace()
+
+        # 1. LIMPIEZA: Borrar ruido (Cotas, Textos)
+        for entity in msp:
+            if entity.dxftype() in ['MTEXT', 'TEXT', 'DIMENSION', 'HATCH', 'LEADER']:
+                msp.delete_entity(entity)
+
+        # 2. RENDERIZADO: Alto contraste (Negro sobre Blanco)
+        ctx = RenderContext(doc)
+        fig = plt.figure(figsize=(20, 20), dpi=150)
+        ax = fig.add_axes([0, 0, 1, 1])
+        ax.set_axis_off()
+        
+        out = MatplotlibBackend(ax)
+        
+        # Forzar líneas negras y gruesas
+        def config_draw(properties):
+            properties.color = '#000000'
+            if properties.lineweight < 0.25: properties.lineweight = 0.5 
+            return properties
+
+        Frontend(ctx, out).draw_layout(msp, finalize=True)
+        
+        # Guardar
+        os.makedirs(os.path.dirname(output_image_path), exist_ok=True)
+        fig.savefig(output_image_path, dpi=150, bbox_inches='tight', pad_inches=0)
+        plt.close(fig)
+        return True
+    except Exception as e:
+        print(f"❌ Error CAD: {e}")
+        return False
+```
+
+**3. Actualiza `ai_engine/src/worker_manager.py`:**
+Agrega la lógica para manejar la tarea `PROCESS_CAD`.
+
+```python
+# ... imports ...
+from src.core.cad import clean_and_render_cad
+from src.core.vlm import MoondreamAnalyzer # Asegúrate de tener este archivo del paso anterior
+
+# ... (código existente) ...
+
+# Estado global
+vlm_engine = None
+
+def process_cad_task(data):
+    global vlm_engine
+    camera_id = data.get('camera_id')
+    # Ruta mapeada en el volumen compartido
+    file_path = f"/app/storage/app/public/{data.get('file_path')}"
+    
+    # Salida (carpeta pública para que Laravel la sirva)
+    output_filename = f"render_{camera_id}.png"
+    output_path = f"/app/storage/app/public/renders/{output_filename}"
+
+    print(f"🏗️ Iniciando CAD ID {camera_id}")
+
+    if clean_and_render_cad(file_path, output_path):
+        # Cargar IA
+        if vlm_engine is None: vlm_engine = MoondreamAnalyzer()
+        
+        # Analizar
+        import cv2
+        img = cv2.imread(output_path)
+        prompt = "Describe this architectural floor plan. Identify rooms, structure and exits."
+        analysis = vlm_engine.analyze_image(img, prompt)
+        
+        print(f"🤖 Resultado: {analysis}")
+
+        # Avisar a Laravel
+        r.publish('video_control', json.dumps({
+            'type': 'CAD_COMPLETE',
+            'camera_id': camera_id,
+            'image_url': f"/storage/renders/{output_filename}",
+            'analysis': analysis
+        }))
+
+# En redis_listener_loop agregar:
+# elif action == 'PROCESS_CAD':
+#     threading.Thread(target=process_cad_task, args=(data,)).start()
+```
+
+-----
+
+### Paso 3: Backend Laravel (API)
+
+**1. Migración para la BD:**
+En tu PC local:
+
+```bash
+docker compose exec api php artisan make:migration add_type_to_cameras_table
+```
+
+Edita la migración:
+
+```php
+public function up(): void {
+    Schema::table('cameras', function (Blueprint $table) {
+        $table->string('type')->default('video'); // video, cad
+        $table->string('file_path')->nullable();
+        $table->text('ai_summary')->nullable();
+        $table->string('latest_image_url')->nullable();
+    });
+}
+```
+
+**2. Actualiza `CameraController.php`:**
+Agrega el método para subir y el listener de Redis (o simplemente guarda el resultado cuando el Frontend pregunte, para simplificar por ahora, guardaremos el estado).
+
+```php
+public function uploadCad(Request $request) {
+    $request->validate(['file' => 'required|file', 'name' => 'required']);
+    
+    // Guardar en el disco 'public' (que es el volumen compartido)
+    $path = $request->file('file')->store('cad_files', 'public');
+    
+    $camera = Auth::user()->cameras()->create([
+        'name' => $request->name,
+        'type' => 'cad',
+        'file_path' => $path,
+        'status' => 'processing'
+    ]);
+
+    // Avisar a Python
+    // Nota: enviamos solo el nombre relativo, Python ya sabe el prefijo del volumen
+    \Illuminate\Support\Facades\Redis::publish('video_control', json_encode([
+        'action' => 'PROCESS_CAD',
+        'camera_id' => $camera->id,
+        'file_path' => $path 
+    ]));
+
+    return $camera;
+}
+
+// Método para actualizar resultado (llamado desde Python o un Job, 
+// o simplificamos haciendo que Python actualice vía API si prefieres, 
+// por ahora dejemos que el Frontend haga polling o espere el evento)
+```
+
+**3. Rutas (`routes/api/user.php`):**
+
+```php
+Route::post('/cameras/upload-cad', [CameraController::class, 'uploadCad']);
+```
+
+-----
+
+### Paso 4: Frontend Vue (La Interfaz)
+
+**1. Modificar `UserDashboard.vue`:**
+Agregar botón de subir CAD y la visualización.
+
+```html
+<button @click="showCadModal = true" class="btn-cad">📐 Subir Plano</button>
+
+<div v-if="activeCamera" class="video-box">
+    
+    <img v-if="activeCamera.type === 'video'" :src="STREAM_URL" class="stream" />
+    
+    <div v-else-if="activeCamera.type === 'cad'" class="cad-view">
+        <div v-if="activeCamera.status === 'processing'" class="loading">
+           ⚙️ Analizando Plano con IA...
+        </div>
+        <div v-else>
+           <img :src="activeCamera.latest_image_url" class="blueprint" />
+           <div class="ai-report">
+              <h4>Análisis IA:</h4>
+              <p>{{ activeCamera.ai_summary }}</p>
+           </div>
+        </div>
+    </div>
+
+</div>
+```
+
+-----
+
+### Paso 5: Despliegue
+
+1.  **Sube todo a Git**
+2.  **Redeploy** en Dockploy (Esto reconstruirá la imagen de Python con las nuevas librerías y montará el volumen compartido).
+3.  **Ejecuta la migración** en la consola de Dockploy:
+    ```bash
+    php artisan migrate --force
+    ```
+4.  **Crea el link simbólico** en Laravel (vital para ver las imágenes):
+    ```bash
+    docker exec -it code-api-1 php artisan storage:link
+    ```

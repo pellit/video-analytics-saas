@@ -149,11 +149,13 @@ func (p *Pool) processTask(ctx context.Context, task *Task) {
 			continue
 		}
 		
-		// Draw detections on frame
-		rgba := toRGBA(frame.Image)
-		p.detector.DrawDetections(rgba, detections)
+		// Get frame dimensions for normalization
+		bounds := frame.Image.Bounds()
+		frameW := float64(bounds.Dx())
+		frameH := float64(bounds.Dy())
 		
-		// Encode to JPEG
+		// Encode CLEAN frame to JPEG (no boxes - frontend draws them via canvas)
+		rgba := toRGBA(frame.Image)
 		jpegData, err := stream.EncodeJPEG(rgba, 85)
 		if err != nil {
 			continue
@@ -175,9 +177,9 @@ func (p *Pool) processTask(ctx context.Context, task *Task) {
 		}
 		task.mu.Unlock()
 		
-		// Publish detections to Redis
+		// Publish detections to Redis (normalized for canvas overlay)
 		if len(detections) > 0 {
-			p.publishDetections(taskCtx, task.CameraID, detections)
+			p.publishDetections(taskCtx, task.CameraID, detections, frameW, frameH)
 		}
 	}
 }
@@ -194,20 +196,59 @@ func toRGBA(img image.Image) *image.RGBA {
 	return rgba
 }
 
-// publishDetections publishes detections to Redis
-func (p *Pool) publishDetections(ctx context.Context, cameraID string, detections []detector.Detection) {
-	data := map[string]interface{}{
-		"camera_id":  cameraID,
-		"timestamp":  time.Now().UTC().Format(time.RFC3339),
-		"detections": detections,
+// publishDetections publishes normalized detections to Redis for canvas overlay
+func (p *Pool) publishDetections(ctx context.Context, cameraID string, detections []detector.Detection, frameW, frameH float64) {
+	// Normalize detections for canvas overlay (same format as Python worker)
+	normalizedDetections := make([]map[string]interface{}, 0, len(detections))
+	for _, det := range detections {
+		x1, y1, x2, y2 := float64(det.BBox[0]), float64(det.BBox[1]), float64(det.BBox[2]), float64(det.BBox[3])
+		normalizedDetections = append(normalizedDetections, map[string]interface{}{
+			"class":      det.ClassName,
+			"confidence": det.Confidence,
+			"bbox": map[string]float64{
+				"x": x1 / frameW,
+				"y": y1 / frameH,
+				"w": (x2 - x1) / frameW,
+				"h": (y2 - y1) / frameH,
+			},
+			"track_id": nil, // Go worker doesn't support tracking yet
+		})
 	}
 	
-	jsonData, err := json.Marshal(data)
+	// Canvas overlay event (same format as Python worker)
+	canvasEvent := map[string]interface{}{
+		"camera_id":  cameraID,
+		"event":      "detections",
+		"timestamp":  time.Now().UTC().Unix(),
+		"detections": normalizedDetections,
+		"frame_size": map[string]int{
+			"w": int(frameW),
+			"h": int(frameH),
+		},
+	}
+	
+	jsonData, err := json.Marshal(canvasEvent)
 	if err != nil {
 		return
 	}
 	
-	p.redis.Publish(ctx, fmt.Sprintf("camera:%s:detections", cameraID), string(jsonData))
+	// Publish to same channel as Python worker
+	p.redis.Publish(ctx, "camera_detections", string(jsonData))
+	
+	// Also publish individual detections for alerts (legacy format)
+	for _, det := range detections {
+		data := map[string]interface{}{
+			"camera_id": cameraID,
+			"event":     det.ClassName,
+			"payload": map[string]interface{}{
+				"label": det.ClassName,
+				"score": det.Confidence,
+				"bbox":  det.BBox,
+			},
+		}
+		jsonData, _ := json.Marshal(data)
+		p.redis.Publish(ctx, "detections", string(jsonData))
+	}
 }
 
 // StartCamera starts processing for a camera

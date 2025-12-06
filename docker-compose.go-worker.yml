@@ -23,10 +23,10 @@ services:
       - MODEL_PATH=/app/models/yolov8n.onnx
       - NUM_WORKERS=${NUM_WORKERS:-4}
       - WORKER_ID=go-worker-1
+      # Python worker URL for VLM/AI analysis (proxied requests)
+      - PYTHON_WORKER_URL=${PYTHON_WORKER_URL:-http://saas_ai_worker:5000}
     depends_on:
       - redis
-    networks:
-      - internal
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:5000/health"]
       interval: 10s
@@ -34,13 +34,19 @@ services:
       start_period: 10s
       retries: 3
     restart: unless-stopped
+    networks:
+      - internal
+      - dokploy-network
     labels:
       - "traefik.enable=true"
-      - "traefik.http.routers.ai-worker-go.rule=Host(`worker-go-dev.pellit.com.ar`)"
-      - "traefik.http.routers.ai-worker-go.entrypoints=websecure"
-      - "traefik.http.routers.ai-worker-go.tls.certresolver=letsencrypt"
-      - "traefik.http.services.ai-worker-go.loadbalancer.server.port=5000"
+      - "traefik.docker.network=dokploy-network"
+      - "traefik.http.routers.go-worker-rtsp.rule=Host(`worker-go-dev.pellit.com.ar`)"
+      - "traefik.http.routers.go-worker-rtsp.entrypoints=websecure"
+      - "traefik.http.routers.go-worker-rtsp.tls.certresolver=letsencrypt"
+      - "traefik.http.services.go-worker-rtsp.loadbalancer.server.port=5000"
 
 networks:
   internal:
     driver: bridge
+  dokploy-network:
+    external: true

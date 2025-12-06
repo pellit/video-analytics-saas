@@ -20,6 +20,8 @@ services:
       - MODEL_PATH=/app/models/yolov8n.onnx
       - NUM_WORKERS=${NUM_WORKERS:-4}
       - WORKER_ID=go-worker-1
+      # Python worker URL for VLM/AI analysis (proxied requests)
+      - PYTHON_WORKER_URL=${PYTHON_WORKER_URL:-http://saas_ai_worker:5000}
     depends_on:
       - redis
     healthcheck:

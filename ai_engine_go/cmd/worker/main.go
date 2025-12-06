@@ -2,10 +2,13 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
@@ -20,24 +23,26 @@ import (
 )
 
 type Config struct {
-	RedisHost      string
-	RedisPort      string
-	RedisPassword  string
-	WorkerID       string
-	HTTPPort       string
-	ModelPath      string
-	NumWorkers     int
+	RedisHost       string
+	RedisPort       string
+	RedisPassword   string
+	WorkerID        string
+	HTTPPort        string
+	ModelPath       string
+	NumWorkers      int
+	PythonWorkerURL string
 }
 
 func loadConfig() Config {
 	return Config{
-		RedisHost:     getEnv("REDIS_HOST", "localhost"),
-		RedisPort:     getEnv("REDIS_PORT", "6379"),
-		RedisPassword: getEnv("REDIS_PASSWORD", ""),
-		WorkerID:      getEnv("WORKER_ID", "go-worker-1"),
-		HTTPPort:      getEnv("HTTP_PORT", "8002"),
-		ModelPath:     getEnv("MODEL_PATH", "./models/yolov8n.onnx"),
-		NumWorkers:    getEnvInt("NUM_WORKERS", 4),
+		RedisHost:       getEnv("REDIS_HOST", "localhost"),
+		RedisPort:       getEnv("REDIS_PORT", "6379"),
+		RedisPassword:   getEnv("REDIS_PASSWORD", ""),
+		WorkerID:        getEnv("WORKER_ID", "go-worker-1"),
+		HTTPPort:        getEnv("HTTP_PORT", "8002"),
+		ModelPath:       getEnv("MODEL_PATH", "./models/yolov8n.onnx"),
+		NumWorkers:      getEnvInt("NUM_WORKERS", 4),
+		PythonWorkerURL: getEnv("PYTHON_WORKER_URL", "http://ai_worker:5000"),
 	}
 }
 
@@ -209,6 +214,91 @@ func setupHTTPServer(config Config, rdb *redis.Client, det *detector.ONNXDetecto
 		cameraID := c.Params("camera_id")
 		stats := pool.GetCameraStats(cameraID)
 		return c.JSON(stats)
+	})
+
+	// VLM Analysis - Proxy to Python worker (Go worker doesn't have Moondream)
+	app.Post("/vlm/analyze-camera-snapshot", func(c *fiber.Ctx) error {
+		// Forward request to Python worker
+		pythonURL := config.PythonWorkerURL + "/vlm/analyze-camera-snapshot"
+		
+		req, err := http.NewRequest("POST", pythonURL, bytes.NewReader(c.Body()))
+		if err != nil {
+			return c.Status(500).JSON(fiber.Map{
+				"success": false,
+				"error":   "Failed to create request: " + err.Error(),
+			})
+		}
+		req.Header.Set("Content-Type", "application/json")
+		
+		client := &http.Client{Timeout: 60 * time.Second}
+		resp, err := client.Do(req)
+		if err != nil {
+			return c.Status(503).JSON(fiber.Map{
+				"success": false,
+				"error":   "Python AI worker unavailable: " + err.Error(),
+			})
+		}
+		defer resp.Body.Close()
+		
+		body, _ := io.ReadAll(resp.Body)
+		c.Set("Content-Type", "application/json")
+		return c.Status(resp.StatusCode).Send(body)
+	})
+
+	// VLM Analyze - General endpoint proxy
+	app.Post("/vlm/analyze", func(c *fiber.Ctx) error {
+		pythonURL := config.PythonWorkerURL + "/vlm/analyze"
+		
+		req, err := http.NewRequest("POST", pythonURL, bytes.NewReader(c.Body()))
+		if err != nil {
+			return c.Status(500).JSON(fiber.Map{
+				"success": false,
+				"error":   "Failed to create request: " + err.Error(),
+			})
+		}
+		req.Header.Set("Content-Type", "application/json")
+		
+		client := &http.Client{Timeout: 60 * time.Second}
+		resp, err := client.Do(req)
+		if err != nil {
+			return c.Status(503).JSON(fiber.Map{
+				"success": false,
+				"error":   "Python AI worker unavailable: " + err.Error(),
+			})
+		}
+		defer resp.Body.Close()
+		
+		body, _ := io.ReadAll(resp.Body)
+		c.Set("Content-Type", "application/json")
+		return c.Status(resp.StatusCode).Send(body)
+	})
+
+	// VLM Suggest Classes - Proxy to Python worker
+	app.Post("/vlm/suggest-classes", func(c *fiber.Ctx) error {
+		pythonURL := config.PythonWorkerURL + "/vlm/suggest-classes"
+		
+		req, err := http.NewRequest("POST", pythonURL, bytes.NewReader(c.Body()))
+		if err != nil {
+			return c.Status(500).JSON(fiber.Map{
+				"success": false,
+				"error":   "Failed to create request: " + err.Error(),
+			})
+		}
+		req.Header.Set("Content-Type", "application/json")
+		
+		client := &http.Client{Timeout: 60 * time.Second}
+		resp, err := client.Do(req)
+		if err != nil {
+			return c.Status(503).JSON(fiber.Map{
+				"success": false,
+				"error":   "Python AI worker unavailable: " + err.Error(),
+			})
+		}
+		defer resp.Body.Close()
+		
+		body, _ := io.ReadAll(resp.Body)
+		c.Set("Content-Type", "application/json")
+		return c.Status(resp.StatusCode).Send(body)
 	})
 
 	return app
