@@ -1,8 +1,14 @@
-# Docker Compose override for Go AI Worker testing
-# Usage: docker-compose -f docker-compose.yml -f docker-compose.go-worker.yml up -d
+# Docker Compose for Go AI Worker (Standalone for Dockploy)
+# Usage: docker-compose -f docker-compose.go-worker.yml up -d --build
 
 services:
-  # Replace Python AI worker with Go worker
+  # Redis for this worker
+  redis:
+    image: redis:alpine
+    command: redis-server --bind 0.0.0.0
+    restart: unless-stopped
+
+  # Go AI Worker
   ai_worker:
     build:
       context: ./ai_engine_go
@@ -13,17 +19,20 @@ services:
       - REDIS_PORT=6379
       - HTTP_PORT=5000
       - MODEL_PATH=/app/models/yolov8n.onnx
-      - NUM_WORKERS=4
+      - NUM_WORKERS=${NUM_WORKERS:-4}
       - WORKER_ID=go-worker-1
-    volumes:
-      - ./ai_engine_go/models:/app/models
     depends_on:
       - redis
-    networks:
-      - saas_net
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:5000/health"]
       interval: 10s
       timeout: 3s
-      start_period: 5s
+      start_period: 10s
       retries: 3
+    restart: unless-stopped
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.ai-worker-go.rule=Host(`worker-dev.pellit.com.ar`)"
+      - "traefik.http.routers.ai-worker-go.entrypoints=websecure"
+      - "traefik.http.routers.ai-worker-go.tls.certresolver=letsencrypt"
+      - "traefik.http.services.ai-worker-go.loadbalancer.server.port=5000"
