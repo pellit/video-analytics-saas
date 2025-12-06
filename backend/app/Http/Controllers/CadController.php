@@ -304,10 +304,15 @@ class CadController extends Controller
     private function dispatchToWorker(CadProject $project): void
     {
         try {
+            // Con volumen compartido:
+            // Laravel storage: /var/www/html/storage  -> app_storage volume
+            // Python storage:  /app/storage           -> app_storage volume
+            // El file_path ya es relativo (ej: "cad_files/1/archivo.dxf")
+            // Python lo accede como /app/storage/app/public/{file_path}
             $message = json_encode([
                 'action' => 'PROCESS_CAD',
                 'project_id' => $project->id,
-                'file_path' => storage_path('app/public/' . $project->file_path),
+                'file_path' => '/app/storage/app/public/' . $project->file_path,
                 'file_type' => $project->file_type,
                 'project_type' => $project->project_type,
                 'user_id' => $project->user_id,

@@ -22,6 +22,8 @@ services:
       - DB_HOST=db
       - APP_KEY=${APP_KEY:-}
       - REDIS_HOST=redis
+    volumes:
+      - app_storage:/var/www/html/storage  # Volumen compartido con AI Worker
     depends_on:
       - db
       - redis
@@ -63,8 +65,11 @@ services:
       - MEDIAMTX_ENABLED=${MEDIAMTX_ENABLED:-true}
       - MEDIAMTX_RTSP_URL=rtsp://media_server:8554
       - STREAM_MODE=${STREAM_MODE:-hybrid}  # 'hybrid', 'mediamtx_only', 'mjpeg_only'
+      # CAD processing
+      - ENABLE_CAD=${ENABLE_CAD:-true}
     volumes:
       - ./ai_engine/models:/app/models
+      - app_storage:/app/storage  # Volumen compartido con Laravel
     depends_on:
       - redis
       - media_server
@@ -191,3 +196,4 @@ networks:
 volumes:
   db_data:
   label_studio_data:
+  app_storage:  # Volumen compartido entre Laravel y AI Worker para CAD files

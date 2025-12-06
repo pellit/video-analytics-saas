@@ -11,6 +11,8 @@ services:
         - DB_HOST=db
         - APP_KEY=${APP_KEY:-}
         # ... resto de variables
+      volumes:
+        - app_storage:/var/www/html/storage  # Volumen compartido con AI Worker para CAD
       depends_on:
         - db
         - redis
@@ -53,9 +55,12 @@ services:
         - DETECTION_MODEL_PATH=${DETECTION_MODEL_PATH:-}
         # ⚠️ WARNING: Only set to 'true' for testing - Ultralytics has AGPL-3.0 license
         - ENABLE_ULTRALYTICS=${ENABLE_ULTRALYTICS:-false}
+        # CAD processing
+        - ENABLE_CAD=${ENABLE_CAD:-true}
       volumes:
         # Mount models volume (read-write to allow downloads)
         - ./ai_engine/models:/app/models
+        - app_storage:/app/storage  # Volumen compartido con Laravel para CAD
       # Worker is internal by default in production - do not publish to avoid host port conflicts
       depends_on:
         - redis
@@ -106,3 +111,4 @@ networks:
 volumes:
   db_data:
   label_studio_data:
+  app_storage:  # Volumen compartido entre Laravel y AI Worker para CAD files

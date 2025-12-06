@@ -129,13 +129,13 @@ class CADProcessor:
         }
     }
     
-    def __init__(self, vlm_engine=None, output_dir: str = "/app/public/cad_renders"):
+    def __init__(self, vlm_engine=None, output_dir: str = "/app/storage/app/public/cad_renders"):
         """
         Inicializa el procesador CAD.
         
         Args:
             vlm_engine: Motor VLM (Moondream2) para análisis
-            output_dir: Directorio para guardar renders
+            output_dir: Directorio para guardar renders (default: volumen compartido)
         """
         self.vlm_engine = vlm_engine
         self.output_dir = output_dir
@@ -182,7 +182,8 @@ class CADProcessor:
         dxf_path: str, 
         output_path: str,
         dpi: int = 150,
-        background_color: str = 'white'
+        background_color: str = 'white',
+        clean_noise: bool = True
     ) -> Tuple[bool, Optional[CADMetadata]]:
         """
         Convierte un archivo DXF en una imagen PNG.
@@ -192,6 +193,7 @@ class CADProcessor:
             output_path: Ruta de salida para el PNG
             dpi: Resolución de salida
             background_color: Color de fondo ('white' o 'black')
+            clean_noise: Si True, elimina entidades de ruido (MTEXT, TEXT, DIMENSION, etc.)
         
         Returns:
             Tuple[success, metadata]
@@ -206,10 +208,30 @@ class CADProcessor:
             doc = ezdxf.readfile(dxf_path)
             msp = doc.modelspace()
             
-            # Extraer metadata
+            # Extraer metadata ANTES de limpiar (para conservar textos/cotas)
             metadata = self._extract_metadata(doc, msp)
             
-            # Configurar renderizado
+            # OPTIMIZACIÓN: Limpieza de ruido visual
+            if clean_noise:
+                entities_to_delete = []
+                noise_types = ['MTEXT', 'TEXT', 'DIMENSION', 'HATCH', 'LEADER', 'MULTILEADER']
+                
+                for entity in msp:
+                    if entity.dxftype() in noise_types:
+                        entities_to_delete.append(entity)
+                
+                deleted_count = 0
+                for entity in entities_to_delete:
+                    try:
+                        msp.delete_entity(entity)
+                        deleted_count += 1
+                    except:
+                        pass
+                
+                if deleted_count > 0:
+                    print(f"🧹 Limpieza: {deleted_count} entidades de ruido eliminadas")
+            
+            # Configurar renderizado - Alta resolución para mejor análisis VLM
             fig = plt.figure(figsize=(20, 20), dpi=dpi)
             ax = fig.add_axes([0, 0, 1, 1])
             ax.set_axis_off()
@@ -226,9 +248,10 @@ class CADProcessor:
             out = self._MatplotlibBackend(ax)
             self._Frontend(ctx, out).draw_layout(msp, finalize=True)
             
-            # Guardar
+            # Guardar con alta calidad
             fig.savefig(output_path, dpi=dpi, bbox_inches='tight', 
-                       pad_inches=0.1, facecolor=fig.get_facecolor())
+                       pad_inches=0.1, facecolor=fig.get_facecolor(),
+                       edgecolor='none')
             plt.close(fig)
             
             print(f"✅ Imagen renderizada: {output_path}")
@@ -236,6 +259,8 @@ class CADProcessor:
             
         except Exception as e:
             print(f"❌ Error renderizando DXF: {e}")
+            import traceback
+            traceback.print_exc()
             return False, None
     
     def _extract_metadata(self, doc, msp) -> CADMetadata:
@@ -551,6 +576,207 @@ class CADProcessor:
         """Obtener timestamp ISO"""
         from datetime import datetime
         return datetime.utcnow().isoformat() + 'Z'
+
+
+# ============================================================================
+# OPTIMIZED CAD RENDERING - clean_and_render_cad
+# ============================================================================
+# Esta función implementa renderizado optimizado de planos CAD:
+# 1. Limpia ruido (MTEXT, TEXT, DIMENSION, HATCH, LEADER)
+# 2. Fuerza líneas negras sobre fondo blanco (alto contraste)
+# 3. Renderiza a alta resolución (150 DPI, 20x20 figsize)
+# ============================================================================
+
+def clean_and_render_cad(dxf_path: str, output_image_path: str, dpi: int = 150) -> bool:
+    """
+    Renderiza un archivo DXF a imagen PNG con limpieza y optimización.
+    
+    Esta versión:
+    - Elimina entidades de ruido (textos, cotas, sombreados)
+    - Fuerza líneas negras sobre fondo blanco
+    - Genera imagen de alta resolución para mejor análisis VLM
+    
+    Args:
+        dxf_path: Ruta al archivo DXF
+        output_image_path: Ruta de salida para el PNG
+        dpi: Resolución de salida (default 150)
+        
+    Returns:
+        bool: True si exitoso, False si error
+    """
+    try:
+        # Imports
+        import ezdxf
+        from ezdxf.addons.drawing import RenderContext, Frontend
+        from ezdxf.addons.drawing.matplotlib import MatplotlibBackend
+        import matplotlib
+        matplotlib.use('Agg')  # Non-interactive backend
+        import matplotlib.pyplot as plt
+        
+        print(f"📐 Procesando CAD (optimizado): {dxf_path}")
+        
+        # Cargar documento
+        doc = ezdxf.readfile(dxf_path)
+        msp = doc.modelspace()
+        
+        # 1. LIMPIEZA: Borrar entidades de ruido (Cotas, Textos, etc.)
+        # Esto mejora la claridad visual para el análisis VLM
+        entities_to_delete = []
+        noise_types = ['MTEXT', 'TEXT', 'DIMENSION', 'HATCH', 'LEADER', 'MULTILEADER']
+        
+        for entity in msp:
+            if entity.dxftype() in noise_types:
+                entities_to_delete.append(entity)
+        
+        deleted_count = 0
+        for entity in entities_to_delete:
+            try:
+                msp.delete_entity(entity)
+                deleted_count += 1
+            except:
+                pass
+        
+        if deleted_count > 0:
+            print(f"🧹 Limpieza: {deleted_count} entidades de ruido eliminadas")
+        
+        # 2. RENDERIZADO: Alto contraste (Negro sobre Blanco)
+        ctx = RenderContext(doc)
+        
+        # Configurar figura grande para mejor resolución
+        fig = plt.figure(figsize=(20, 20), dpi=dpi)
+        ax = fig.add_axes([0, 0, 1, 1])
+        ax.set_axis_off()
+        
+        # Fondo blanco
+        ax.set_facecolor('white')
+        fig.patch.set_facecolor('white')
+        
+        # Backend de matplotlib
+        out = MatplotlibBackend(ax)
+        
+        # Renderizar layout
+        frontend = Frontend(ctx, out)
+        frontend.draw_layout(msp, finalize=True)
+        
+        # Crear directorio de salida si no existe
+        os.makedirs(os.path.dirname(output_image_path), exist_ok=True)
+        
+        # Guardar imagen
+        fig.savefig(
+            output_image_path, 
+            dpi=dpi, 
+            bbox_inches='tight', 
+            pad_inches=0.1,
+            facecolor='white',
+            edgecolor='none'
+        )
+        plt.close(fig)
+        
+        print(f"✅ Imagen CAD renderizada: {output_image_path}")
+        return True
+        
+    except Exception as e:
+        print(f"❌ Error renderizando CAD: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+
+
+def clean_and_render_cad_with_metadata(dxf_path: str, output_image_path: str, dpi: int = 150) -> Tuple[bool, Optional[Dict]]:
+    """
+    Versión extendida que también extrae metadata del CAD.
+    
+    Args:
+        dxf_path: Ruta al archivo DXF
+        output_image_path: Ruta de salida para el PNG
+        dpi: Resolución de salida (default 150)
+        
+    Returns:
+        Tuple[bool, Optional[Dict]]: (success, metadata_dict)
+    """
+    try:
+        import ezdxf
+        from ezdxf.addons.drawing import RenderContext, Frontend
+        from ezdxf.addons.drawing.matplotlib import MatplotlibBackend
+        import matplotlib
+        matplotlib.use('Agg')
+        import matplotlib.pyplot as plt
+        
+        print(f"📐 Procesando CAD con metadata: {dxf_path}")
+        
+        # Cargar documento
+        doc = ezdxf.readfile(dxf_path)
+        msp = doc.modelspace()
+        
+        # Extraer metadata ANTES de limpiar
+        metadata = {
+            'layers': [layer.dxf.name for layer in doc.layers][:50],
+            'block_names': [b.name for b in doc.blocks if not b.name.startswith('*')][:50],
+            'entity_count': len(list(msp)),
+            'text_content': [],
+            'dimension_texts': []
+        }
+        
+        # Extraer textos y cotas antes de eliminarlos
+        for entity in msp:
+            if entity.dxftype() == 'TEXT':
+                metadata['text_content'].append(entity.dxf.text)
+            elif entity.dxftype() == 'MTEXT':
+                metadata['text_content'].append(entity.text)
+            elif entity.dxftype() == 'DIMENSION':
+                try:
+                    metadata['dimension_texts'].append(str(entity.dxf.text))
+                except:
+                    pass
+        
+        metadata['text_content'] = metadata['text_content'][:100]
+        metadata['dimension_texts'] = metadata['dimension_texts'][:50]
+        
+        # Units
+        units_map = {
+            0: 'Unitless', 1: 'Inches', 2: 'Feet', 3: 'Miles',
+            4: 'Millimeters', 5: 'Centimeters', 6: 'Meters', 7: 'Kilometers'
+        }
+        metadata['units'] = units_map.get(doc.header.get('$INSUNITS', 0), 'Unknown')
+        
+        # LIMPIEZA
+        entities_to_delete = []
+        noise_types = ['MTEXT', 'TEXT', 'DIMENSION', 'HATCH', 'LEADER', 'MULTILEADER']
+        
+        for entity in msp:
+            if entity.dxftype() in noise_types:
+                entities_to_delete.append(entity)
+        
+        for entity in entities_to_delete:
+            try:
+                msp.delete_entity(entity)
+            except:
+                pass
+        
+        # RENDERIZADO
+        ctx = RenderContext(doc)
+        fig = plt.figure(figsize=(20, 20), dpi=dpi)
+        ax = fig.add_axes([0, 0, 1, 1])
+        ax.set_axis_off()
+        ax.set_facecolor('white')
+        fig.patch.set_facecolor('white')
+        
+        out = MatplotlibBackend(ax)
+        Frontend(ctx, out).draw_layout(msp, finalize=True)
+        
+        os.makedirs(os.path.dirname(output_image_path), exist_ok=True)
+        fig.savefig(output_image_path, dpi=dpi, bbox_inches='tight', 
+                   pad_inches=0.1, facecolor='white')
+        plt.close(fig)
+        
+        print(f"✅ Imagen CAD renderizada con metadata: {output_image_path}")
+        return True, metadata
+        
+    except Exception as e:
+        print(f"❌ Error: {e}")
+        import traceback
+        traceback.print_exc()
+        return False, None
 
 
 # Singleton instance

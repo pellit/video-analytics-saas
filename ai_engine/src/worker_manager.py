@@ -2027,9 +2027,10 @@ def get_cad_processor_instance():
                 except Exception as e:
                     print(f"⚠️ VLM not available for CAD: {e}")
             
+            # Usar volumen compartido para renders accesibles desde Laravel
             cad_processor = CADProcessor(
                 vlm_engine=vlm_analyzer,
-                output_dir="/app/public/cad_renders"
+                output_dir="/app/storage/app/public/cad_renders"
             )
             print("✅ CAD Processor inicializado")
         except Exception as e:
