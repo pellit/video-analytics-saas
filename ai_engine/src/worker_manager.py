@@ -1524,6 +1524,119 @@ def vlm_analyze_camera_snapshot(data: dict):
         return {"success": False, "error": str(e)}
 
 
+@app.post('/vlm/suggest-classes')
+def vlm_suggest_classes(data: dict):
+    """
+    Analyze camera scene and suggest optimal COCO classes for detection.
+    Takes multiple frames over time for better analysis.
+    
+    Expects:
+        {
+            "camera_id": 1,
+            "user_context": "This is a parking lot entrance",  // optional
+            "num_frames": 5,  // optional, default 1
+            "interval_ms": 500  // optional, interval between frames
+        }
+    
+    Returns:
+        {
+            "success": true,
+            "camera_id": 1,
+            "scene_description": "This appears to be a parking lot...",
+            "objects_found": "I can see cars, people walking...",
+            "suggested_classes": ["person", "car", "truck", "bicycle"],
+            "confidence": 85,
+            "analysis_count": 3
+        }
+    """
+    global vlm_analyzer
+    
+    if not VLM_ENABLED:
+        return {"success": False, "error": "VLM is disabled"}
+    
+    camera_id = str(data.get('camera_id'))
+    user_context = data.get('user_context', None)
+    num_frames = min(data.get('num_frames', 1), 5)  # Max 5 frames
+    interval_ms = data.get('interval_ms', 500)
+    
+    # Get camera stream
+    with global_state['lock']:
+        stream = global_state['streams'].get(camera_id)
+        if not stream or not stream.get('active'):
+            return {"success": False, "error": f"Camera {camera_id} not active"}
+    
+    try:
+        # Initialize VLM if needed
+        if vlm_analyzer is None:
+            vlm_analyzer = init_vlm_analyzer()
+        
+        all_suggested = []
+        all_descriptions = []
+        all_objects = []
+        
+        # Analyze multiple frames if requested
+        for i in range(num_frames):
+            with stream['lock']:
+                frame = stream.get('current_frame')
+            
+            if frame is None:
+                continue
+            
+            # Analyze this frame
+            result = vlm_analyzer.suggest_detection_classes(frame, user_context)
+            
+            if result["success"]:
+                all_suggested.extend(result.get("suggested_classes", []))
+                all_descriptions.append(result.get("scene_description", ""))
+                all_objects.append(result.get("objects_found", ""))
+            
+            # Wait for next frame (if not last iteration)
+            if i < num_frames - 1 and interval_ms > 0:
+                import time
+                time.sleep(interval_ms / 1000.0)
+        
+        if not all_suggested:
+            return {
+                "success": False,
+                "camera_id": camera_id,
+                "error": "Could not analyze any frames"
+            }
+        
+        # Count class occurrences across all frames
+        from collections import Counter
+        class_counts = Counter(all_suggested)
+        
+        # Classes that appear in at least 40% of analyses are kept
+        threshold = max(1, len(all_descriptions) * 0.4)
+        final_classes = [cls for cls, count in class_counts.items() if count >= threshold]
+        
+        # Sort by frequency
+        final_classes.sort(key=lambda x: class_counts[x], reverse=True)
+        
+        # Combine descriptions (take the longest/most detailed)
+        best_description = max(all_descriptions, key=len) if all_descriptions else ""
+        best_objects = max(all_objects, key=len) if all_objects else ""
+        
+        # Calculate confidence based on consistency
+        consistency = len(final_classes) / max(len(set(all_suggested)), 1) * 100
+        confidence = min(95, int(consistency))
+        
+        return {
+            "success": True,
+            "camera_id": camera_id,
+            "scene_description": best_description,
+            "objects_found": best_objects,
+            "suggested_classes": final_classes,
+            "confidence": confidence,
+            "analysis_count": len(all_descriptions),
+            "user_context": user_context
+        }
+        
+    except Exception as e:
+        print(f"❌ VLM suggest-classes error: {e}")
+        return {"success": False, "error": str(e)}
+
+
 # --- Hybrid Analysis Endpoints (YOLO + VLM) ---
 
 @app.get('/hybrid/status')

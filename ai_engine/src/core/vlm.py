@@ -206,6 +206,156 @@ class MoondreamAnalyzer:
                 "error": str(e)
             }
     
+    def suggest_detection_classes(
+        self,
+        image: Union[np.ndarray, Image.Image, bytes, str],
+        user_context: str = None
+    ) -> dict:
+        """
+        Analiza una imagen y sugiere qué clases COCO deberían detectarse.
+        
+        Args:
+            image: Imagen en cualquier formato soportado
+            user_context: Contexto adicional del usuario (ej: "esto es un estacionamiento")
+        
+        Returns:
+            dict con descripción de escena, clases sugeridas y confianza
+        """
+        # Clases COCO disponibles para detección
+        COCO_CLASSES = [
+            'person', 'bicycle', 'car', 'motorcycle', 'airplane', 'bus', 'train', 'truck', 'boat',
+            'traffic light', 'fire hydrant', 'stop sign', 'parking meter', 'bench', 'bird', 'cat',
+            'dog', 'horse', 'sheep', 'cow', 'elephant', 'bear', 'zebra', 'giraffe', 'backpack',
+            'umbrella', 'handbag', 'tie', 'suitcase', 'frisbee', 'skis', 'snowboard', 'sports ball',
+            'kite', 'baseball bat', 'baseball glove', 'skateboard', 'surfboard', 'tennis racket',
+            'bottle', 'wine glass', 'cup', 'fork', 'knife', 'spoon', 'bowl', 'banana', 'apple',
+            'sandwich', 'orange', 'broccoli', 'carrot', 'hot dog', 'pizza', 'donut', 'cake', 'chair',
+            'couch', 'potted plant', 'bed', 'dining table', 'toilet', 'tv', 'laptop', 'mouse',
+            'remote', 'keyboard', 'cell phone', 'microwave', 'oven', 'toaster', 'sink', 'refrigerator',
+            'book', 'clock', 'vase', 'scissors', 'teddy bear', 'hair drier', 'toothbrush'
+        ]
+        
+        if not self.available:
+            return {
+                "success": False,
+                "scene_description": None,
+                "suggested_classes": [],
+                "all_visible_objects": [],
+                "confidence": 0,
+                "error": "Moondream2 no está disponible"
+            }
+        
+        try:
+            pil_image = self._to_pil(image)
+            
+            # Redimensionar si es muy grande
+            max_size = 1024
+            if max(pil_image.size) > max_size:
+                pil_image.thumbnail((max_size, max_size), Image.LANCZOS)
+            
+            # Codificar imagen una sola vez
+            enc_image = self.model.encode_image(pil_image)
+            
+            # Pregunta 1: Descripción general de la escena
+            scene_q = "Describe this scene in detail. What type of location is this? What is the main activity or purpose of this place?"
+            scene_desc = self.model.answer_question(enc_image, scene_q, self.tokenizer).strip()
+            
+            # Pregunta 2: Objetos visibles
+            objects_q = "List ALL objects you can see in this image. Be comprehensive and list every visible item, person, or vehicle."
+            objects_desc = self.model.answer_question(enc_image, objects_q, self.tokenizer).strip()
+            
+            # Pregunta 3: Si hay contexto del usuario, preguntamos específicamente
+            if user_context:
+                context_q = f"The user says this is: {user_context}. Based on this context and what you see, what specific objects should we look for?"
+                context_desc = self.model.answer_question(enc_image, context_q, self.tokenizer).strip()
+            else:
+                context_desc = None
+            
+            # Analizar qué clases COCO están probablemente en la escena
+            suggested = []
+            objects_lower = objects_desc.lower()
+            scene_lower = scene_desc.lower()
+            context_lower = (context_desc or "").lower()
+            combined_text = f"{objects_lower} {scene_lower} {context_lower}"
+            
+            # Mapeo de sinónimos comunes a clases COCO
+            synonyms = {
+                'person': ['people', 'man', 'woman', 'child', 'pedestrian', 'human', 'worker', 'employee'],
+                'car': ['vehicle', 'automobile', 'sedan', 'suv', 'cars'],
+                'truck': ['lorry', 'pickup', 'trucks', 'van'],
+                'bicycle': ['bike', 'cyclist', 'bikes'],
+                'motorcycle': ['motorbike', 'scooter', 'motorcycles'],
+                'bus': ['buses', 'transit', 'coach'],
+                'dog': ['dogs', 'puppy', 'canine'],
+                'cat': ['cats', 'kitten', 'feline'],
+                'chair': ['chairs', 'seating', 'seat'],
+                'bottle': ['bottles', 'container'],
+                'cell phone': ['phone', 'smartphone', 'mobile'],
+                'laptop': ['computer', 'notebook'],
+                'tv': ['television', 'monitor', 'screen'],
+                'traffic light': ['signal', 'light', 'stoplight'],
+            }
+            
+            for coco_class in COCO_CLASSES:
+                # Buscar clase directamente
+                if coco_class in combined_text:
+                    suggested.append(coco_class)
+                    continue
+                
+                # Buscar sinónimos
+                if coco_class in synonyms:
+                    for synonym in synonyms[coco_class]:
+                        if synonym in combined_text:
+                            suggested.append(coco_class)
+                            break
+            
+            # Agregar clases por contexto de escena
+            scene_class_hints = {
+                'parking': ['car', 'truck', 'motorcycle', 'person', 'bicycle'],
+                'street': ['car', 'person', 'bicycle', 'motorcycle', 'bus', 'truck', 'traffic light', 'stop sign'],
+                'office': ['person', 'chair', 'laptop', 'cell phone', 'keyboard', 'mouse', 'tv'],
+                'kitchen': ['person', 'bottle', 'cup', 'bowl', 'fork', 'knife', 'spoon', 'microwave', 'oven', 'refrigerator', 'sink'],
+                'living room': ['person', 'couch', 'tv', 'remote', 'chair', 'potted plant', 'clock', 'vase'],
+                'restaurant': ['person', 'chair', 'dining table', 'cup', 'bottle', 'bowl', 'fork', 'knife', 'spoon'],
+                'warehouse': ['person', 'truck', 'forklift', 'backpack'],
+                'entrance': ['person', 'backpack', 'handbag', 'suitcase'],
+                'store': ['person', 'backpack', 'handbag', 'bottle', 'cell phone'],
+                'outdoor': ['person', 'car', 'bicycle', 'dog', 'bird', 'bench'],
+            }
+            
+            for context_key, classes in scene_class_hints.items():
+                if context_key in combined_text:
+                    for cls in classes:
+                        if cls not in suggested:
+                            suggested.append(cls)
+            
+            # Siempre incluir 'person' si hay indicios de actividad humana
+            human_indicators = ['activity', 'working', 'walking', 'standing', 'sitting', 'someone', 'people']
+            if any(ind in combined_text for ind in human_indicators) and 'person' not in suggested:
+                suggested.insert(0, 'person')
+            
+            # Calcular confianza basada en cuántas clases coinciden
+            confidence = min(100, len(suggested) * 15) if suggested else 30
+            
+            return {
+                "success": True,
+                "scene_description": scene_desc,
+                "objects_found": objects_desc,
+                "context_analysis": context_desc,
+                "suggested_classes": list(set(suggested)),  # Eliminar duplicados
+                "confidence": confidence,
+                "error": None
+            }
+            
+        except Exception as e:
+            return {
+                "success": False,
+                "scene_description": None,
+                "suggested_classes": [],
+                "confidence": 0,
+                "error": str(e)
+            }
+
     def validate_detection(
         self,
         image: Union[np.ndarray, Image.Image],

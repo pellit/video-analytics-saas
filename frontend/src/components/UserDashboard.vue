@@ -393,6 +393,80 @@ const onModelChange = () => {
   }
 }
 
+// --- AI Scene Analysis for Class Suggestion ---
+const aiAnalyzing = ref(false)
+const aiAnalysisResult = ref(null)
+const aiUserContext = ref('')
+
+const analyzeSceneForClasses = async () => {
+  if (!activeCamera.value || !isProcessing.value) {
+    showToast('La cámara debe estar activa para analizar', 'warning')
+    return
+  }
+  
+  aiAnalyzing.value = true
+  aiAnalysisResult.value = null
+  
+  try {
+    const res = await fetch(`${WORKER_URL}/vlm/suggest-classes`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        camera_id: activeCamera.value.id,
+        user_context: aiUserContext.value || null,
+        num_frames: 3,
+        interval_ms: 500
+      })
+    })
+    
+    const data = await res.json()
+    
+    if (data.success) {
+      aiAnalysisResult.value = data
+      showToast(`🤖 Análisis completado: ${data.suggested_classes.length} clases sugeridas`, 'success')
+    } else {
+      showToast(`Error en análisis: ${data.error}`, 'error')
+    }
+  } catch (e) {
+    console.error('AI Analysis error:', e)
+    showToast('Error conectando con el servicio de IA', 'error')
+  } finally {
+    aiAnalyzing.value = false
+  }
+}
+
+const toggleSuggestedClass = (cls) => {
+  if (!activeCamera.value) return
+  
+  const classes = activeCamera.value.detection_classes || []
+  const idx = classes.indexOf(cls)
+  
+  if (idx >= 0) {
+    classes.splice(idx, 1)
+  } else {
+    classes.push(cls)
+  }
+  activeCamera.value.detection_classes = [...classes]
+}
+
+const applySuggestedClasses = () => {
+  if (!activeCamera.value || !aiAnalysisResult.value) return
+  
+  activeCamera.value.detection_classes = [...aiAnalysisResult.value.suggested_classes]
+  showToast(`✅ ${aiAnalysisResult.value.suggested_classes.length} clases aplicadas`, 'success')
+}
+
+const addSuggestedClasses = () => {
+  if (!activeCamera.value || !aiAnalysisResult.value) return
+  
+  const current = activeCamera.value.detection_classes || []
+  const suggested = aiAnalysisResult.value.suggested_classes || []
+  const merged = [...new Set([...current, ...suggested])]
+  
+  activeCamera.value.detection_classes = merged
+  showToast(`✅ Agregadas ${suggested.length} clases (total: ${merged.length})`, 'success')
+}
+
 const updateCameraSettings = async (camera) => {
   if (isSaving.value) return
   isSaving.value = true
@@ -1091,8 +1165,57 @@ const saveProfile = async () => {
                     <div class="class-buttons">
                       <button type="button" @click="selectAllClasses" class="btn-mini">Todas</button>
                       <button type="button" @click="deselectAllClasses" class="btn-mini ghost">Ninguna</button>
+                      <button type="button" @click="analyzeSceneForClasses" class="btn-mini ai" :disabled="!isProcessing || aiAnalyzing">
+                        {{ aiAnalyzing ? '🔄 Analizando...' : '🤖 Auto-detectar' }}
+                      </button>
                     </div>
                   </div>
+                  
+                  <!-- AI Scene Analysis Results -->
+                  <div v-if="aiAnalysisResult" class="ai-analysis-panel">
+                    <div class="ai-analysis-header">
+                      <span>🤖 Análisis de Escena (Moondream)</span>
+                      <button type="button" @click="aiAnalysisResult = null" class="btn-close">×</button>
+                    </div>
+                    <div class="ai-analysis-content">
+                      <div class="ai-scene-description">
+                        <strong>📍 Escena:</strong> {{ aiAnalysisResult.scene_description }}
+                      </div>
+                      <div class="ai-objects-found">
+                        <strong>👁️ Objetos detectados:</strong> {{ aiAnalysisResult.objects_found }}
+                      </div>
+                      <div class="ai-suggested-classes">
+                        <strong>✅ Clases sugeridas ({{ aiAnalysisResult.confidence }}% confianza):</strong>
+                        <div class="ai-class-chips">
+                          <span v-for="cls in aiAnalysisResult.suggested_classes" :key="cls" 
+                                class="ai-class-chip" 
+                                :class="{ selected: activeCamera.detection_classes?.includes(cls) }"
+                                @click="toggleSuggestedClass(cls)">
+                            {{ cls }}
+                          </span>
+                        </div>
+                      </div>
+                      <div class="ai-actions">
+                        <button type="button" @click="applySuggestedClasses" class="btn-mini primary">
+                          ✓ Aplicar sugeridas
+                        </button>
+                        <button type="button" @click="addSuggestedClasses" class="btn-mini">
+                          + Agregar a actuales
+                        </button>
+                      </div>
+                    </div>
+                    <!-- User context input -->
+                    <div class="ai-context-input">
+                      <input v-model="aiUserContext" 
+                             type="text" 
+                             placeholder="Contexto adicional (ej: 'estacionamiento de oficinas')"
+                             class="dark-input small">
+                      <button type="button" @click="analyzeSceneForClasses" class="btn-mini" :disabled="aiAnalyzing">
+                        🔄 Re-analizar
+                      </button>
+                    </div>
+                  </div>
+                  
                   <div class="classes-grid">
                     <label v-for="cls in availableClasses" :key="cls" class="class-chip" :class="{ selected: activeCamera.detection_classes?.includes(cls) }">
                       <input type="checkbox" :value="cls" v-model="activeCamera.detection_classes" hidden>
@@ -2150,6 +2273,128 @@ iframe.stream {
   background: linear-gradient(135deg, rgba(31, 111, 235, 0.2), rgba(56, 139, 253, 0.2));
   border-color: #1f6feb;
   color: #58a6ff;
+}
+
+/* AI Analysis Panel */
+.btn-mini.ai {
+  background: linear-gradient(135deg, #8b5cf6, #a78bfa);
+  border-color: #8b5cf6;
+  color: white;
+}
+
+.btn-mini.ai:hover {
+  background: linear-gradient(135deg, #7c3aed, #8b5cf6);
+}
+
+.btn-mini.ai:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.ai-analysis-panel {
+  margin-top: 0.75rem;
+  background: linear-gradient(135deg, rgba(139, 92, 246, 0.1), rgba(59, 130, 246, 0.1));
+  border: 1px solid rgba(139, 92, 246, 0.3);
+  border-radius: 0.5rem;
+  overflow: hidden;
+}
+
+.ai-analysis-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.5rem 0.75rem;
+  background: rgba(139, 92, 246, 0.2);
+  border-bottom: 1px solid rgba(139, 92, 246, 0.3);
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: #c4b5fd;
+}
+
+.ai-analysis-header .btn-close {
+  background: none;
+  border: none;
+  color: #c4b5fd;
+  font-size: 1.2rem;
+  cursor: pointer;
+  padding: 0;
+  line-height: 1;
+}
+
+.ai-analysis-content {
+  padding: 0.75rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.ai-scene-description,
+.ai-objects-found {
+  font-size: 0.75rem;
+  color: #c9d1d9;
+  line-height: 1.4;
+}
+
+.ai-scene-description strong,
+.ai-objects-found strong,
+.ai-suggested-classes strong {
+  color: #a78bfa;
+  display: block;
+  margin-bottom: 0.25rem;
+}
+
+.ai-class-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  margin-top: 0.35rem;
+}
+
+.ai-class-chip {
+  font-size: 0.7rem;
+  padding: 0.2rem 0.5rem;
+  background: #252526;
+  border: 1px solid #8b5cf6;
+  border-radius: 0.25rem;
+  color: #c4b5fd;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.ai-class-chip:hover {
+  background: rgba(139, 92, 246, 0.2);
+}
+
+.ai-class-chip.selected {
+  background: linear-gradient(135deg, rgba(139, 92, 246, 0.3), rgba(56, 139, 253, 0.3));
+  border-color: #a78bfa;
+  color: #e9d5ff;
+}
+
+.ai-actions {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+}
+
+.ai-actions .btn-mini.primary {
+  background: linear-gradient(135deg, #22c55e, #16a34a);
+  border-color: #22c55e;
+  color: white;
+}
+
+.ai-context-input {
+  display: flex;
+  gap: 0.5rem;
+  padding: 0.5rem 0.75rem;
+  border-top: 1px solid rgba(139, 92, 246, 0.2);
+  background: rgba(0, 0, 0, 0.2);
+}
+
+.ai-context-input .dark-input.small {
+  flex: 1;
+  font-size: 0.75rem;
+  padding: 0.35rem 0.5rem;
 }
 
 .btn-faces {
