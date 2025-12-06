@@ -6,15 +6,15 @@ RUN apk add --no-cache git gcc musl-dev
 
 WORKDIR /app
 
-# Copy go mod files
-COPY go.mod go.sum ./
-RUN go mod download
+# Copy go mod file and download dependencies
+COPY go.mod ./
+RUN go mod download || true
 
 # Copy source code
 COPY . .
 
-# Build the binary
-RUN CGO_ENABLED=0 GOOS=linux go build -o /worker ./cmd/worker
+# Download dependencies and build the binary
+RUN go mod tidy && CGO_ENABLED=0 GOOS=linux go build -o /worker ./cmd/worker
 
 # Runtime stage
 FROM ubuntu:22.04
