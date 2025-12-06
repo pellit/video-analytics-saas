@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -216,12 +217,46 @@ func setupHTTPServer(config Config, rdb *redis.Client, det *detector.ONNXDetecto
 		return c.JSON(stats)
 	})
 
-	// VLM Analysis - Proxy to Python worker (Go worker doesn't have Moondream)
+	// VLM Analysis - Get frame from Go worker and send to Python for VLM analysis
 	app.Post("/vlm/analyze-camera-snapshot", func(c *fiber.Ctx) error {
-		// Forward request to Python worker
-		pythonURL := config.PythonWorkerURL + "/vlm/analyze-camera-snapshot"
+		var reqBody struct {
+			CameraID string `json:"camera_id"`
+			Question string `json:"question"`
+		}
+		if err := c.BodyParser(&reqBody); err != nil {
+			return c.Status(400).JSON(fiber.Map{
+				"success": false,
+				"error":   "Invalid request body",
+			})
+		}
 		
-		req, err := http.NewRequest("POST", pythonURL, bytes.NewReader(c.Body()))
+		// Get current frame from Go worker
+		frameData := pool.GetCameraFrame(reqBody.CameraID)
+		if frameData == nil {
+			return c.Status(404).JSON(fiber.Map{
+				"success": false,
+				"error":   fmt.Sprintf("Camera %s not active or no frame available", reqBody.CameraID),
+			})
+		}
+		
+		// Convert JPEG to base64
+		frameBase64 := base64.StdEncoding.EncodeToString(frameData)
+		
+		// Default question
+		question := reqBody.Question
+		if question == "" {
+			question = "Describe this security camera scene. What do you see? Are there any potential security concerns?"
+		}
+		
+		// Send to Python worker for VLM analysis
+		pythonURL := config.PythonWorkerURL + "/vlm/analyze"
+		vlmRequest := map[string]interface{}{
+			"image_base64": frameBase64,
+			"question":     question,
+		}
+		jsonBody, _ := json.Marshal(vlmRequest)
+		
+		req, err := http.NewRequest("POST", pythonURL, bytes.NewReader(jsonBody))
 		if err != nil {
 			return c.Status(500).JSON(fiber.Map{
 				"success": false,
@@ -241,8 +276,13 @@ func setupHTTPServer(config Config, rdb *redis.Client, det *detector.ONNXDetecto
 		defer resp.Body.Close()
 		
 		body, _ := io.ReadAll(resp.Body)
-		c.Set("Content-Type", "application/json")
-		return c.Status(resp.StatusCode).Send(body)
+		
+		// Parse response and add camera_id
+		var vlmResp map[string]interface{}
+		json.Unmarshal(body, &vlmResp)
+		vlmResp["camera_id"] = reqBody.CameraID
+		
+		return c.JSON(vlmResp)
 	})
 
 	// VLM Analyze - General endpoint proxy

@@ -337,6 +337,29 @@ func (p *Pool) GetCameraStats(cameraID string) map[string]interface{} {
 	}
 }
 
+// GetCameraFrame returns the current JPEG frame for a camera (for VLM analysis)
+func (p *Pool) GetCameraFrame(cameraID string) []byte {
+	p.tasksMu.RLock()
+	defer p.tasksMu.RUnlock()
+	
+	task, exists := p.tasks[cameraID]
+	if !exists || !task.running {
+		return nil
+	}
+	
+	task.mu.RLock()
+	defer task.mu.RUnlock()
+	
+	if len(task.lastFrame) == 0 {
+		return nil
+	}
+	
+	// Return a copy of the frame
+	frameCopy := make([]byte, len(task.lastFrame))
+	copy(frameCopy, task.lastFrame)
+	return frameCopy
+}
+
 // ActiveTasks returns the number of active tasks
 func (p *Pool) ActiveTasks() int {
 	return int(atomic.LoadInt32(&p.activeTasks))
