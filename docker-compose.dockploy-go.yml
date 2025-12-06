@@ -1,21 +1,27 @@
-# Docker Compose para Dockploy - Go AI Worker
+# Docker Compose para Dockploy - Go AI Worker (Standalone)
 # Despliega como servicio independiente en Dockploy
 
 services:
+  # Redis for this worker
+  redis:
+    image: redis:alpine
+    command: redis-server --bind 0.0.0.0
+    restart: unless-stopped
+
   ai_worker_go:
     build:
       context: ./ai_engine_go
       dockerfile: Dockerfile
     environment:
-      - REDIS_HOST=${REDIS_HOST:-redis}
-      - REDIS_PORT=${REDIS_PORT:-6379}
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
       - REDIS_PASSWORD=${REDIS_PASSWORD:-}
       - HTTP_PORT=5000
       - MODEL_PATH=/app/models/yolov8n.onnx
       - NUM_WORKERS=${NUM_WORKERS:-4}
       - WORKER_ID=go-worker-1
-    volumes:
-      - ai_models:/app/models
+    depends_on:
+      - redis
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:5000/health"]
       interval: 10s
@@ -29,6 +35,3 @@ services:
       - "traefik.http.routers.ai-worker-go.entrypoints=websecure"
       - "traefik.http.routers.ai-worker-go.tls.certresolver=letsencrypt"
       - "traefik.http.services.ai-worker-go.loadbalancer.server.port=5000"
-
-volumes:
-  ai_models:
