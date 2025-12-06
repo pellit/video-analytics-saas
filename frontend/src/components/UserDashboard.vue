@@ -194,6 +194,16 @@ const isYouTubeUrl = (url) => {
   return url.includes('youtube.com') || url.includes('youtu.be')
 }
 
+// Computed para saber si la cámara activa es YouTube
+const isActiveCameraYouTube = computed(() => {
+  return activeCamera.value && isYouTubeUrl(activeCamera.value.url)
+})
+
+// Verifica si el modelo seleccionado es del worker Go
+const isGoModel = (model) => {
+  return model && model.startsWith('go-')
+}
+
 const getYoutubeEmbedUrl = (url) => {
   if (!url) return ''
   const idMatch = url.match(/(?:v=|youtu\.be\/)([a-zA-Z0-9_-]+)/)
@@ -366,6 +376,20 @@ const selectAllClasses = () => {
 const deselectAllClasses = () => {
   if (activeCamera.value) {
     activeCamera.value.detection_classes = []
+  }
+}
+
+// Handler para cambio de modelo - valida compatibilidad con YouTube
+const onModelChange = () => {
+  if (!activeCamera.value) return
+  
+  const model = activeCamera.value.detection_model
+  const url = activeCamera.value.url
+  
+  // Si seleccionó un modelo Go pero la URL es YouTube, cambiar automáticamente a Python
+  if (isGoModel(model) && isYouTubeUrl(url)) {
+    showToast('⚠️ El worker Go no soporta YouTube. Usando YOLO-Fastest en su lugar.', 'warning')
+    activeCamera.value.detection_model = 'yolo_fastest'
   }
 }
 
@@ -1038,7 +1062,7 @@ const saveProfile = async () => {
                 <div v-if="activeCamera.detection_enabled" class="nested-settings">
                   <div class="setting-row">
                     <label class="setting-label">🤖 Modelo AI</label>
-                    <select v-model="activeCamera.detection_model" class="compact-select">
+                    <select v-model="activeCamera.detection_model" class="compact-select" @change="onModelChange">
                       <optgroup label="🐍 Python Worker">
                         <option value="mobilenet_ssd">🚀 MobileNet-SSD (~25 FPS)</option>
                         <option value="yolo_fastest">⚡ YOLO-Fastest (~15 FPS)</option>
@@ -1048,10 +1072,15 @@ const saveProfile = async () => {
                         <option value="onnx">🎖️ YOLO-NAS ONNX (~1 FPS)</option>
                         <option value="rt_detr">🏆 RT-DETR (~0.3 FPS)</option>
                       </optgroup>
-                      <optgroup label="🚀 Go Worker (RTSP only)">
-                        <option value="go-yolov8n">⚡ Go-YOLOv8n (~40-60 FPS)</option>
+                      <optgroup label="🚀 Go Worker (RTSP only)" :disabled="isActiveCameraYouTube">
+                        <option value="go-yolov8n" :disabled="isActiveCameraYouTube">⚡ Go-YOLOv8n (~40-60 FPS)</option>
                       </optgroup>
                     </select>
+                  </div>
+                  
+                  <!-- Warning for Go worker with YouTube -->
+                  <div v-if="isActiveCameraYouTube && isGoModel(activeCamera.detection_model)" class="warning-banner">
+                    ⚠️ El worker Go no soporta YouTube. Cambiando a worker Python...
                   </div>
                   
                   <div class="setting-row classes-row">
@@ -1967,6 +1996,19 @@ iframe.stream {
   margin-top: 0.75rem;
   padding-top: 0.75rem;
   border-top: 1px dashed #333;
+}
+
+.warning-banner {
+  background: linear-gradient(135deg, #5c4813 0%, #3d3008 100%);
+  border: 1px solid #a88c2a;
+  border-radius: 0.4rem;
+  padding: 0.5rem 0.75rem;
+  margin-top: 0.5rem;
+  font-size: 0.75rem;
+  color: #ffd666;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
 }
 
 .compact-select {
