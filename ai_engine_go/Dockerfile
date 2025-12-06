@@ -6,12 +6,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     git gcc g++ wget ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# Install ONNX Runtime for build
-RUN wget -q https://github.com/microsoft/onnxruntime/releases/download/v1.17.1/onnxruntime-linux-x64-1.17.1.tgz \
-    && tar -xzf onnxruntime-linux-x64-1.17.1.tgz \
-    && mv onnxruntime-linux-x64-1.17.1/lib/* /usr/local/lib/ \
-    && mv onnxruntime-linux-x64-1.17.1/include/* /usr/local/include/ \
-    && rm -rf onnxruntime-linux-x64-1.17.1* \
+# Install ONNX Runtime for build (v1.18.0 for API v18 support)
+RUN wget -q https://github.com/microsoft/onnxruntime/releases/download/v1.18.0/onnxruntime-linux-x64-1.18.0.tgz \
+    && tar -xzf onnxruntime-linux-x64-1.18.0.tgz \
+    && mv onnxruntime-linux-x64-1.18.0/lib/* /usr/local/lib/ \
+    && mv onnxruntime-linux-x64-1.18.0/include/* /usr/local/include/ \
+    && rm -rf onnxruntime-linux-x64-1.18.0* \
     && ldconfig
 
 WORKDIR /app
@@ -40,14 +40,14 @@ RUN apt-get update && apt-get install -y \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# Install ONNX Runtime
-RUN wget -q https://github.com/microsoft/onnxruntime/releases/download/v1.17.1/onnxruntime-linux-x64-1.17.1.tgz \
-    && tar -xzf onnxruntime-linux-x64-1.17.1.tgz \
-    && mv onnxruntime-linux-x64-1.17.1/lib/* /usr/local/lib/ \
-    && mv onnxruntime-linux-x64-1.17.1/include/* /usr/local/include/ \
-    && rm -rf onnxruntime-linux-x64-1.17.1* \
-    && ln -sf /usr/local/lib/libonnxruntime.so.1.17.1 /usr/local/lib/onnxruntime.so \
-    && ln -sf /usr/local/lib/libonnxruntime.so.1.17.1 /usr/local/lib/libonnxruntime.so \
+# Install ONNX Runtime (v1.18.0 for API v18 support)
+RUN wget -q https://github.com/microsoft/onnxruntime/releases/download/v1.18.0/onnxruntime-linux-x64-1.18.0.tgz \
+    && tar -xzf onnxruntime-linux-x64-1.18.0.tgz \
+    && mv onnxruntime-linux-x64-1.18.0/lib/* /usr/local/lib/ \
+    && mv onnxruntime-linux-x64-1.18.0/include/* /usr/local/include/ \
+    && rm -rf onnxruntime-linux-x64-1.18.0* \
+    && ln -sf /usr/local/lib/libonnxruntime.so.1.18.0 /usr/local/lib/onnxruntime.so \
+    && ln -sf /usr/local/lib/libonnxruntime.so.1.18.0 /usr/local/lib/libonnxruntime.so \
     && ldconfig
 
 WORKDIR /app
