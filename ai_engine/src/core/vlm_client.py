@@ -28,6 +28,36 @@ REDIS_PORT = int(os.environ.get('REDIS_PORT', 6379))
 VLM_TIMEOUT = int(os.environ.get('VLM_TIMEOUT', 120))  # 2 minutos default
 
 
+# ============================================================================
+# VLM Prompts (for compatibility with existing code)
+# ============================================================================
+
+class VLMPrompts:
+    """Prompts predefinidos para VLM - compatibilidad con código existente."""
+    # Satellite / Aerial
+    SATELLITE_GENERAL = "Describe what you see in this satellite image. Include terrain type, vegetation, and any structures."
+    SATELLITE_FLOOD = "Does this satellite image show signs of flooding or water accumulation? Describe the affected areas."
+    SATELLITE_FIRE = "Are there any signs of fire, smoke, or burned areas in this satellite image?"
+    SATELLITE_CONSTRUCTION = "Identify any construction sites, new buildings, or infrastructure changes in this image."
+    SATELLITE_VEGETATION = "Analyze the vegetation in this satellite image. Describe forest coverage, agricultural areas, and any deforestation."
+    
+    # Video / Surveillance
+    SECURITY_SCENE = "Describe what you see in this image from a surveillance camera. Note any people, vehicles, or unusual activity."
+    VIDEO_DESCRIBE = "Describe what you see in this image from a surveillance camera."
+    VIDEO_PEOPLE = "How many people are visible in this image? Describe their positions and activities."
+    VIDEO_VEHICLES = "Identify any vehicles in this image. Describe their type, color, and position."
+    VIDEO_ANOMALY = "Is there anything unusual or suspicious in this image? Describe any anomalies."
+    
+    # CAD / Architecture
+    CAD_GENERAL = "Describe this architectural floor plan in detail. What type of building is it?"
+    CAD_ROOMS = "List all rooms or spaces visible in this floor plan."
+    CAD_SAFETY = "Identify safety elements in this floor plan: emergency exits, fire extinguishers, escape routes."
+    
+    # General
+    GENERAL_DESCRIBE = "Describe this image in detail."
+    GENERAL_OBJECTS = "List all objects visible in this image."
+
+
 class VLMClient:
     """
     Cliente para comunicarse con el microservicio VLM.
