@@ -112,7 +112,7 @@ services:
       - TARGET_FPS=${TARGET_FPS:-25}
       - RUST_LOG=info
     volumes:
-      - ./ai_engine/models:/app/models:ro
+      - ./ai_engine_go/models:/app/models:ro  # Uses existing ONNX model
     depends_on:
       - redis
     networks:
