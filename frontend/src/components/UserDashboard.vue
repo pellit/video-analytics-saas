@@ -62,6 +62,19 @@ const cameraToDelete = ref(null)
 const showEditCameraModal = ref(false)
 const editingCamera = ref({ id: null, name: '', url: '' })
 
+// Stream error handling
+const streamLoadError = ref(false)
+const streamErrorUrl = ref('')
+const onStreamLoad = () => {
+  streamLoadError.value = false
+  streamErrorUrl.value = ''
+}
+const onStreamError = (e) => {
+  streamLoadError.value = true
+  streamErrorUrl.value = e.target?.src || 'Unknown URL'
+  console.error('Stream error loading:', streamErrorUrl.value)
+}
+
 // Fullscreen HUD mode
 const isFullscreen = ref(false)
 const fullscreenStats = ref({
@@ -977,8 +990,9 @@ const getYouTubeEmbedUrl = (url) => {
 
 const activeStreamUrl = computed(() => {
   if (!activeCamera.value) return null
-  // If the camera has a YouTube URL, return its embed URL, unless detection is enabled
-  // When detection is enabled, show the worker MJPEG annotated stream instead
+  
+  // If the camera has a YouTube URL, return its embed URL when NOT using detection
+  // When detection IS enabled, show the worker MJPEG annotated stream instead
   if (activeCamera.value.detection_enabled && isProcessing.value) {
     // Check if using Go worker (model starts with 'go-')
     const model = activeCamera.value.detection_model || ''
@@ -986,14 +1000,22 @@ const activeStreamUrl = computed(() => {
       // Go worker MJPEG stream
       return `${GO_WORKER_URL}/video_feed/${activeCamera.value.id}`
     }
-    // By default, the worker exposes MJPEG at STREAM_URL, but we allow `camera_id` param just for clarity
+    // By default, the worker exposes MJPEG at STREAM_URL, with camera_id param
     return `${STREAM_URL}?camera_id=${activeCamera.value.id}`
   }
-  // If not detection-enabled, show the source (embed or static stream)
+  
+  // If not detection-enabled or not processing:
+  // Check if it's a YouTube URL
   const embed = getYouTubeEmbedUrl(activeCamera.value.url)
   if (embed) return embed
-  // otherwise return the configured STREAM_URL for the service
-  return STREAM_URL
+  
+  // If it's an RTSP or other URL, show via worker stream
+  // (The worker can still stream without detection)
+  if (activeCamera.value.url) {
+    return `${STREAM_URL}?camera_id=${activeCamera.value.id}&passthrough=1`
+  }
+  
+  return null
 })
 const isYouTube = computed(() => {
   return !!activeStreamUrl.value && activeStreamUrl.value.includes('youtube')

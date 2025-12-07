@@ -1252,11 +1252,12 @@ def satellite_analyze(zone_data: dict):
     try:
         lat = zone_data.get('lat')
         lon = zone_data.get('lon')
-        km_radius = zone_data.get('km_radius', 1.0)
+        km_radius = zone_data.get('km_radius') or zone_data.get('radius_km', 1.0)
         zone_id = zone_data.get('zone_id')
+        image_id = zone_data.get('image_id')  # From backend
         user_id = zone_data.get('user_id')
         
-        print(f"🛰️ Analyzing satellite zone {zone_id} at ({lat}, {lon})")
+        print(f"🛰️ Analyzing satellite zone {zone_id} (image_id={image_id}) at ({lat}, {lon})")
         
         # Download satellite image
         image = satellite_service.get_latest_image(lat, lon, km_radius)
@@ -1309,11 +1310,12 @@ def satellite_analyze(zone_data: dict):
         
         result = {
             'zone_id': zone_id,
+            'image_id': image_id,  # Include image_id if provided by backend
             'user_id': user_id,
             'detections': detection_results,
             'image_base64': image_base64,
             'vlm_analysis': vlm_analysis,  # VLM interpretation
-            'cloud_cover': 0.0,  # TODO: get from API response
+            'cloud_cover': 0,  # TODO: get from API response
             'captured_at': time.strftime('%Y-%m-%d %H:%M:%S')
         }
         
@@ -2011,7 +2013,7 @@ def satellite_listener_loop():
                 print(f"🛰️ Satellite message: {data}")
                 
                 action = data.get('action')
-                if action == 'ANALYZE':
+                if action == 'ANALYZE' or action == 'ANALYZE_SATELLITE':
                     # Run analysis in a separate thread to not block listener
                     threading.Thread(
                         target=satellite_analyze,

@@ -177,6 +177,53 @@ class CADProcessor:
             self._matplotlib_loaded = True
         return self._plt
     
+    def _convert_dwg_to_dxf(self, dwg_path: str) -> Optional[str]:
+        """
+        Intenta convertir un archivo DWG a DXF usando herramientas disponibles.
+        
+        Prueba en orden:
+        1. ODAFileConverter (si está instalado)
+        2. LibreDWG dwg2dxf (si está instalado)
+        3. teigha_file_converter
+        
+        Returns:
+            Path al archivo DXF convertido o None si falla
+        """
+        import subprocess
+        import tempfile
+        
+        base_name = os.path.splitext(os.path.basename(dwg_path))[0]
+        temp_dir = tempfile.gettempdir()
+        output_dxf = os.path.join(temp_dir, f"{base_name}_converted.dxf")
+        
+        # Try ODAFileConverter
+        try:
+            oda_converter = os.environ.get('ODA_FILE_CONVERTER', 'ODAFileConverter')
+            result = subprocess.run(
+                [oda_converter, os.path.dirname(dwg_path), temp_dir, 'ACAD2018', 'DXF', '0', '1', base_name],
+                capture_output=True, text=True, timeout=60
+            )
+            if result.returncode == 0 and os.path.exists(output_dxf):
+                print(f"✅ DWG convertido con ODAFileConverter")
+                return output_dxf
+        except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+            print(f"⚠️ ODAFileConverter no disponible: {e}")
+        
+        # Try LibreDWG dwg2dxf
+        try:
+            result = subprocess.run(
+                ['dwg2dxf', '-o', output_dxf, dwg_path],
+                capture_output=True, text=True, timeout=60
+            )
+            if result.returncode == 0 and os.path.exists(output_dxf):
+                print(f"✅ DWG convertido con LibreDWG")
+                return output_dxf
+        except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+            print(f"⚠️ LibreDWG no disponible: {e}")
+        
+        print(f"❌ No se pudo convertir DWG a DXF")
+        return None
+    
     def render_dxf_to_image(
         self, 
         dxf_path: str, 
@@ -470,10 +517,33 @@ class CADProcessor:
             if ext == '.dxf':
                 success, metadata = self.render_dxf_to_image(file_path, render_path)
             elif ext == '.dwg':
-                # DWG requiere conversión previa (futuro: usar ODAFileConverter)
+                # DWG requiere conversión a DXF
                 report("⚠️ DWG detectado, intentando conversión...", 15)
-                # Por ahora, intentamos con ezdxf (algunas versiones funcionan)
-                success, metadata = self.render_dxf_to_image(file_path, render_path)
+                
+                # Try to convert DWG to DXF using available tools
+                dxf_path = self._convert_dwg_to_dxf(file_path)
+                
+                if dxf_path and os.path.exists(dxf_path):
+                    report("✅ DWG convertido a DXF", 18)
+                    success, metadata = self.render_dxf_to_image(dxf_path, render_path)
+                    # Clean up temp DXF
+                    try:
+                        os.remove(dxf_path)
+                    except:
+                        pass
+                else:
+                    # Fallback: try ezdxf directly (may work for some DWG versions)
+                    report("⚠️ Conversión fallida, intentando lectura directa...", 18)
+                    success, metadata = self.render_dxf_to_image(file_path, render_path)
+                    
+                    if not success:
+                        return AnalysisResult(
+                            success=False, render_image_path=None, render_thumbnail_path=None,
+                            metadata=None, analysis_general=None, analysis_rooms=None,
+                            analysis_safety=None, analysis_structural=None,
+                            analysis_dimensions=None, analysis_materials=None,
+                            error_message="El archivo DWG no pudo ser procesado. Por favor, convierta el archivo a formato DXF y vuelva a subirlo."
+                        )
             elif ext == '.pdf':
                 # PDF: Usar pdf2image (futuro)
                 return AnalysisResult(

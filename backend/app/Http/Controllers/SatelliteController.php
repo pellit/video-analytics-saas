@@ -365,9 +365,11 @@ class SatelliteController extends Controller
 
         $validated = $request->validate([
             'zone_id' => 'required|integer|exists:satellite_zones,id',
+            'image_id' => 'nullable|integer|exists:satellite_images,id',
             'user_id' => 'required|integer',
             'detections' => 'nullable|array',
             'image_base64' => 'nullable|string',
+            'vlm_analysis' => 'nullable|string',
             'cloud_cover' => 'nullable|numeric',
             'captured_at' => 'nullable|string',
         ]);
@@ -412,17 +414,34 @@ class SatelliteController extends Controller
             }
         }
 
-        // Crear registro de imagen
-        $satelliteImage = SatelliteImage::create([
-            'satellite_zone_id' => $zone->id,
-            'satellite_source' => 'sentinel-2',
-            'image_path' => $imagePath,
-            'thumbnail_path' => $thumbnailPath,
-            'cloud_cover' => $validated['cloud_cover'] ?? 0,
-            'captured_at' => $validated['captured_at'] ? \Carbon\Carbon::parse($validated['captured_at']) : now(),
-            'status' => 'completed',
-            'analysis_result' => $validated['detections'] ?? [],
-        ]);
+        // Si tenemos image_id, actualizar el registro existente; si no, crear nuevo
+        if (!empty($validated['image_id'])) {
+            $satelliteImage = SatelliteImage::find($validated['image_id']);
+            if ($satelliteImage) {
+                $satelliteImage->update([
+                    'image_path' => $imagePath ?? $satelliteImage->image_path,
+                    'thumbnail_path' => $thumbnailPath ?? $satelliteImage->thumbnail_path,
+                    'cloud_cover' => $validated['cloud_cover'] ?? 0,
+                    'captured_at' => $validated['captured_at'] ? \Carbon\Carbon::parse($validated['captured_at']) : now(),
+                    'status' => 'completed',
+                    'analysis_result' => $validated['detections'] ?? [],
+                    'ai_description' => $validated['vlm_analysis'] ?? null,
+                ]);
+            }
+        } else {
+            // Crear nuevo registro de imagen
+            $satelliteImage = SatelliteImage::create([
+                'satellite_zone_id' => $zone->id,
+                'satellite_source' => 'sentinel-2',
+                'image_path' => $imagePath,
+                'thumbnail_path' => $thumbnailPath,
+                'cloud_cover' => $validated['cloud_cover'] ?? 0,
+                'captured_at' => $validated['captured_at'] ? \Carbon\Carbon::parse($validated['captured_at']) : now(),
+                'status' => 'completed',
+                'analysis_result' => $validated['detections'] ?? [],
+                'ai_description' => $validated['vlm_analysis'] ?? null,
+            ]);
+        }
 
         // Actualizar zona con última imagen
         $zone->update([
