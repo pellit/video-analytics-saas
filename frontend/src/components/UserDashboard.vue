@@ -31,6 +31,7 @@ const getStreamUrl = () => {
     return 'http://192.168.0.38:5000/video_feed';
 }
 const STREAM_URL = getStreamUrl();
+const WORKER_URL = STREAM_URL.replace('/video_feed', '');
 
 // COCO Classes for Multi-select (defined early for use in initializeCameraDefaults)
 const availableClasses = [
@@ -673,7 +674,6 @@ const deleteCamera = async () => {
 const detections = ref([]) // Store detections received via SSE
 const alerts = ref([]) // Store alerts received via SSE
 const activeWorkerStreams = ref([])
-const WORKER_URL = STREAM_URL.replace('/video_feed', '')
 
 // --- MediaMTX / SmartPlayer Mode ---
 const useMediaMTX = ref(false)
