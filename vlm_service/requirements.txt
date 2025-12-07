@@ -1,0 +1,25 @@
+# ============================================
+# VLM Service - Moondream2 Microservice
+# Servicio dedicado para Vision Language Model
+# ============================================
+
+# --- Core ---
+redis
+numpy
+requests
+fastapi
+uvicorn[standard]
+
+# --- Image Processing ---
+opencv-python-headless
+Pillow>=9.0.0
+
+# ============================================
+# Moondream2 VLM
+# ============================================
+# PyTorch CPU-only (sin CUDA para builds más rápidos)
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch==2.2.0+cpu
+transformers==4.38.0
+einops>=0.7.0
+accelerate>=0.25.0

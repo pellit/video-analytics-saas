@@ -17,7 +17,7 @@ from typing import Optional, List, Dict, Any
 from .depth_service import DepthService
 from .models import get_detector, ModelFactory, ModelType, Resolution
 from .core.satellite import get_satellite_service, SatelliteService
-from .core.vlm import get_vlm_analyzer, init_vlm_analyzer, VLMPrompts
+from .core.vlm_client import VLMClient, VLMPrompts  # Now using remote VLM service
 from .core.hybrid import get_hybrid_analyzer, init_hybrid_analyzer, AlertSeverity
 from .core.image_comparison import (
     get_comparator, compare_images, compare_images_from_base64,
@@ -45,9 +45,10 @@ os.makedirs(MODELS_DIR, exist_ok=True)
 YUNET_PATH = os.path.join(MODELS_DIR, "face_detection_yunet_2023mar.onnx")
 SFACE_PATH = os.path.join(MODELS_DIR, "face_recognition_sface_2021dec.onnx")
 
-# VLM (Moondream) - Lazy loaded to save RAM at startup
-vlm_analyzer = None
+# VLM (Moondream) - Now using remote VLM microservice
+vlm_client: VLMClient = None
 VLM_ENABLED = os.environ.get('ENABLE_VLM', 'true').lower() == 'true'
+VLM_SERVICE_URL = os.environ.get('VLM_SERVICE_URL', 'http://vlm_service:5100')
 
 # Hybrid Analyzer - Lazy loaded
 hybrid_analyzer = None
@@ -1275,23 +1276,26 @@ def satellite_analyze(zone_data: dict):
                 'bbox': list(det.bbox)
             })
         
-        # --- VLM Analysis (if enabled) ---
+        # --- VLM Analysis (if enabled) via remote service ---
         vlm_analysis = None
         enable_vlm = zone_data.get('enable_vlm', VLM_ENABLED)
         vlm_prompt = zone_data.get('vlm_prompt', VLMPrompts.SATELLITE_GENERAL)
         
         if enable_vlm and VLM_ENABLED:
-            global vlm_analyzer
+            global vlm_client
             try:
-                if vlm_analyzer is None:
-                    print("🧠 Loading VLM for satellite analysis...")
-                    vlm_analyzer = init_vlm_analyzer()
+                if vlm_client is None:
+                    print("🧠 Connecting to VLM service for satellite analysis...")
+                    vlm_client = VLMClient(base_url=VLM_SERVICE_URL)
                 
-                if vlm_analyzer.available:
-                    vlm_result = vlm_analyzer.analyze_image(image, vlm_prompt)
-                    if vlm_result["success"]:
-                        vlm_analysis = vlm_result["answer"]
-                        print(f"🤖 VLM: {vlm_analysis[:100]}...")
+                # Encode image to base64 for VLM service
+                _, vlm_img_encoded = cv2.imencode('.jpg', image, [cv2.IMWRITE_JPEG_QUALITY, 85])
+                vlm_image_base64 = base64.b64encode(vlm_img_encoded).decode('utf-8')
+                
+                vlm_result = vlm_client.analyze_image(vlm_image_base64, vlm_prompt)
+                if vlm_result.get("success"):
+                    vlm_analysis = vlm_result.get("answer")
+                    print(f"🤖 VLM: {vlm_analysis[:100] if vlm_analysis else 'No response'}...")
             except Exception as e:
                 print(f"⚠️ VLM analysis skipped: {e}")
         
@@ -1357,13 +1361,20 @@ class VLMAnalyzeRequest(BaseModel):
 
 @app.get('/vlm/status')
 def vlm_status():
-    """Check VLM (Moondream) availability and status."""
-    global vlm_analyzer
+    """Check VLM (Moondream) availability and status - now via remote service."""
+    global vlm_client
+    
+    # Check remote VLM service status
+    if vlm_client is None and VLM_ENABLED:
+        vlm_client = VLMClient(base_url=VLM_SERVICE_URL)
+    
+    remote_status = vlm_client.status() if vlm_client else {'enabled': False, 'loaded': False}
     
     return {
         'enabled': VLM_ENABLED,
-        'loaded': vlm_analyzer is not None and vlm_analyzer.available,
-        'model': 'vikhyatk/moondream2',
+        'loaded': remote_status.get('loaded', False),
+        'service_url': VLM_SERVICE_URL,
+        'model': remote_status.get('model', 'vikhyatk/moondream2'),
         'prompts': {
             'satellite_general': VLMPrompts.SATELLITE_GENERAL,
             'satellite_flood': VLMPrompts.SATELLITE_FLOOD,
@@ -1375,7 +1386,7 @@ def vlm_status():
 @app.post('/vlm/analyze')
 def vlm_analyze(request: VLMAnalyzeRequest):
     """
-    Analyze an image using Moondream VLM.
+    Analyze an image using Moondream VLM (via remote service).
     
     Expects:
         {
@@ -1391,43 +1402,34 @@ def vlm_analyze(request: VLMAnalyzeRequest):
             "answers": ["answer1", "answer2"]  // If batch
         }
     """
-    global vlm_analyzer
+    global vlm_client
     
     if not VLM_ENABLED:
         return {"success": False, "error": "VLM is disabled. Set ENABLE_VLM=true"}
     
     try:
-        # Lazy load VLM on first use (saves ~2GB RAM at startup)
-        if vlm_analyzer is None:
-            print("🧠 Loading VLM (first use)...")
-            vlm_analyzer = init_vlm_analyzer()
+        # Initialize VLM client if needed
+        if vlm_client is None:
+            print("🧠 Connecting to VLM service...")
+            vlm_client = VLMClient(base_url=VLM_SERVICE_URL)
         
-        if not vlm_analyzer.available:
-            return {"success": False, "error": "VLM failed to initialize"}
-        
-        # Decode image from base64
-        img_data = base64.b64decode(request.image_base64)
-        img_array = np.frombuffer(img_data, dtype=np.uint8)
-        image = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
-        
-        if image is None:
-            return {"success": False, "error": "Invalid image data"}
-        
-        # Batch or single question
+        # Batch or single question - delegate to remote service
         if request.questions:
-            result = vlm_analyzer.batch_analyze(image, request.questions)
+            # For batch, make multiple calls
+            answers = []
+            for q in request.questions:
+                result = vlm_client.analyze_image(request.image_base64, q)
+                if result.get("success"):
+                    answers.append(result.get("answer", ""))
+                else:
+                    answers.append(f"Error: {result.get('error', 'Unknown')}")
             return {
-                "success": result["success"],
-                "answers": result.get("answers", []),
-                "error": result.get("error")
+                "success": True,
+                "answers": answers
             }
         else:
-            result = vlm_analyzer.analyze_image(image, request.question)
-            return {
-                "success": result["success"],
-                "answer": result.get("answer"),
-                "error": result.get("error")
-            }
+            result = vlm_client.analyze_image(request.image_base64, request.question)
+            return result
             
     except Exception as e:
         print(f"❌ VLM analysis error: {e}")
@@ -1447,30 +1449,34 @@ def vlm_validate_detection(data: dict):
             "context_prompt": "Is this a construction site?" // Optional
         }
     """
-    global vlm_analyzer
+    global vlm_client
     
     if not VLM_ENABLED:
         return {"success": False, "error": "VLM is disabled"}
     
     try:
-        if vlm_analyzer is None:
-            vlm_analyzer = init_vlm_analyzer()
+        if vlm_client is None:
+            vlm_client = VLMClient(base_url=VLM_SERVICE_URL)
         
-        if not vlm_analyzer.available:
-            return {"success": False, "error": "VLM not available"}
-        
-        # Decode image
-        img_data = base64.b64decode(data.get('image_base64', ''))
-        img_array = np.frombuffer(img_data, dtype=np.uint8)
-        image = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
-        
-        if image is None:
-            return {"success": False, "error": "Invalid image"}
-        
+        image_base64 = data.get('image_base64', '')
         detected_objects = data.get('detected_objects', [])
-        context_prompt = data.get('context_prompt')
+        context_prompt = data.get('context_prompt', '')
         
-        result = vlm_analyzer.validate_detection(image, detected_objects, context_prompt)
+        # Build validation prompt
+        objects_str = ", ".join(detected_objects)
+        prompt = f"Looking at this image, verify if these objects are really present: {objects_str}."
+        if context_prompt:
+            prompt += f" Additional context: {context_prompt}"
+        prompt += " For each object, say if it's truly visible or might be a false detection."
+        
+        result = vlm_client.analyze_image(image_base64, prompt)
+        
+        if result.get("success"):
+            return {
+                "success": True,
+                "validation": result.get("answer"),
+                "detected_objects": detected_objects
+            }
         return result
         
     except Exception as e:
@@ -1489,7 +1495,7 @@ def vlm_analyze_camera_snapshot(data: dict):
             "question": "What is happening in this scene?"
         }
     """
-    global vlm_analyzer
+    global vlm_client
     
     if not VLM_ENABLED:
         return {"success": False, "error": "VLM is disabled"}
@@ -1509,12 +1515,16 @@ def vlm_analyze_camera_snapshot(data: dict):
         return {"success": False, "error": "No frame available"}
     
     try:
-        if vlm_analyzer is None:
-            vlm_analyzer = init_vlm_analyzer()
+        if vlm_client is None:
+            vlm_client = VLMClient(base_url=VLM_SERVICE_URL)
         
-        result = vlm_analyzer.analyze_image(frame, question)
+        # Encode frame to base64
+        _, img_encoded = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
+        image_base64 = base64.b64encode(img_encoded).decode('utf-8')
+        
+        result = vlm_client.analyze_image(image_base64, question)
         return {
-            "success": result["success"],
+            "success": result.get("success", False),
             "camera_id": camera_id,
             "answer": result.get("answer"),
             "error": result.get("error")
@@ -1549,7 +1559,7 @@ def vlm_suggest_classes(data: dict):
             "analysis_count": 3
         }
     """
-    global vlm_analyzer
+    global vlm_client
     
     if not VLM_ENABLED:
         return {"success": False, "error": "VLM is disabled"}
@@ -1566,9 +1576,9 @@ def vlm_suggest_classes(data: dict):
             return {"success": False, "error": f"Camera {camera_id} not active"}
     
     try:
-        # Initialize VLM if needed
-        if vlm_analyzer is None:
-            vlm_analyzer = init_vlm_analyzer()
+        # Initialize VLM client if needed
+        if vlm_client is None:
+            vlm_client = VLMClient(base_url=VLM_SERVICE_URL)
         
         all_suggested = []
         all_descriptions = []
@@ -1582,10 +1592,14 @@ def vlm_suggest_classes(data: dict):
             if frame is None:
                 continue
             
-            # Analyze this frame
-            result = vlm_analyzer.suggest_detection_classes(frame, user_context)
+            # Encode frame to base64
+            _, img_encoded = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
+            image_base64 = base64.b64encode(img_encoded).decode('utf-8')
             
-            if result["success"]:
+            # Analyze this frame via remote VLM service
+            result = vlm_client.suggest_classes(image_base64, user_context)
+            
+            if result.get("success"):
                 all_suggested.extend(result.get("suggested_classes", []))
                 all_descriptions.append(result.get("scene_description", ""))
                 all_objects.append(result.get("objects_found", ""))
@@ -1642,13 +1656,23 @@ def vlm_suggest_classes(data: dict):
 @app.get('/hybrid/status')
 def hybrid_status():
     """Check hybrid analyzer (YOLO + VLM) status."""
-    global hybrid_analyzer, vlm_analyzer
+    global hybrid_analyzer, vlm_client
+    
+    # Check remote VLM service status
+    vlm_loaded = False
+    if vlm_client is not None:
+        try:
+            status = vlm_client.status()
+            vlm_loaded = status.get('loaded', False)
+        except:
+            pass
     
     return {
         'available': True,
         'detector_loaded': model is not None,
         'vlm_enabled': VLM_ENABLED,
-        'vlm_loaded': vlm_analyzer is not None and vlm_analyzer.available,
+        'vlm_loaded': vlm_loaded,
+        'vlm_service_url': VLM_SERVICE_URL,
         'hybrid_initialized': hybrid_analyzer is not None
     }
 
@@ -1666,20 +1690,21 @@ def hybrid_detect_and_validate(data: dict):
             "confidence_threshold": 0.5
         }
     """
-    global hybrid_analyzer, vlm_analyzer
+    global hybrid_analyzer, vlm_client
     
     try:
-        # Lazy init hybrid analyzer
+        # Lazy init VLM client and hybrid analyzer
+        if vlm_client is None and VLM_ENABLED:
+            vlm_client = VLMClient(base_url=VLM_SERVICE_URL)
+        
         if hybrid_analyzer is None:
-            if vlm_analyzer is None and VLM_ENABLED:
-                vlm_analyzer = init_vlm_analyzer()
-            hybrid_analyzer = init_hybrid_analyzer(detector=model, vlm=vlm_analyzer)
+            hybrid_analyzer = init_hybrid_analyzer(detector=model, vlm=vlm_client)
         else:
             # Ensure components are set
             if hybrid_analyzer.detector is None:
                 hybrid_analyzer.set_detector(model)
-            if hybrid_analyzer.vlm is None and vlm_analyzer:
-                hybrid_analyzer.set_vlm(vlm_analyzer)
+            if hybrid_analyzer.vlm is None and vlm_client:
+                hybrid_analyzer.set_vlm(vlm_client)
         
         # Decode image
         img_data = base64.b64decode(data.get('image_base64', ''))
@@ -1721,13 +1746,14 @@ def hybrid_smart_alert(data: dict):
             "camera_id": 1
         }
     """
-    global hybrid_analyzer, vlm_analyzer
+    global hybrid_analyzer, vlm_client
     
     try:
+        if vlm_client is None and VLM_ENABLED:
+            vlm_client = VLMClient(base_url=VLM_SERVICE_URL)
+        
         if hybrid_analyzer is None:
-            if vlm_analyzer is None and VLM_ENABLED:
-                vlm_analyzer = init_vlm_analyzer()
-            hybrid_analyzer = init_hybrid_analyzer(detector=model, vlm=vlm_analyzer)
+            hybrid_analyzer = init_hybrid_analyzer(detector=model, vlm=vlm_client)
         
         # Decode image
         img_data = base64.b64decode(data.get('image_base64', ''))
@@ -1779,13 +1805,14 @@ def hybrid_analyze_satellite_zone(data: dict):
             "analysis_type": "general"  # general, flood, construction, deforestation, agriculture
         }
     """
-    global hybrid_analyzer, vlm_analyzer
+    global hybrid_analyzer, vlm_client
     
     try:
+        if vlm_client is None and VLM_ENABLED:
+            vlm_client = VLMClient(base_url=VLM_SERVICE_URL)
+        
         if hybrid_analyzer is None:
-            if vlm_analyzer is None and VLM_ENABLED:
-                vlm_analyzer = init_vlm_analyzer()
-            hybrid_analyzer = init_hybrid_analyzer(detector=model, vlm=vlm_analyzer)
+            hybrid_analyzer = init_hybrid_analyzer(detector=model, vlm=vlm_client)
         
         # Decode image
         img_data = base64.b64decode(data.get('image_base64', ''))
@@ -2013,23 +2040,24 @@ CAD_ENABLED = os.environ.get('ENABLE_CAD', 'true').lower() == 'true'
 
 
 def get_cad_processor_instance():
-    """Get or create CAD processor instance with VLM engine."""
-    global cad_processor, vlm_analyzer
+    """Get or create CAD processor instance with VLM client."""
+    global cad_processor, vlm_client
     
     if cad_processor is None:
         try:
             from .core.cad import CADProcessor
             
-            # Initialize VLM if needed (for CAD analysis)
-            if vlm_analyzer is None and VLM_ENABLED:
+            # Initialize VLM client if needed (for CAD analysis)
+            if vlm_client is None and VLM_ENABLED:
                 try:
-                    vlm_analyzer = init_vlm_analyzer()
+                    vlm_client = VLMClient(base_url=VLM_SERVICE_URL)
+                    print("✅ VLM Client connected for CAD analysis")
                 except Exception as e:
                     print(f"⚠️ VLM not available for CAD: {e}")
             
             # Usar volumen compartido para renders accesibles desde Laravel
             cad_processor = CADProcessor(
-                vlm_engine=vlm_analyzer,
+                vlm_engine=vlm_client,
                 output_dir="/app/storage/app/public/cad_renders"
             )
             print("✅ CAD Processor inicializado")
@@ -2294,7 +2322,7 @@ def compare_with_ai_suggestions(data: dict):
     
     Returns comparison results + VLM interpretation if requested.
     """
-    global vlm_analyzer
+    global vlm_client
     
     try:
         img_prev_b64 = data.get('image_previous_base64')
@@ -2324,28 +2352,24 @@ def compare_with_ai_suggestions(data: dict):
         
         # If significant change and VLM requested, get detailed analysis
         if use_vlm and result.overall_change_percent > 5:
-            if vlm_analyzer is None and VLM_ENABLED:
-                vlm_analyzer = init_vlm_analyzer()
+            if vlm_client is None and VLM_ENABLED:
+                vlm_client = VLMClient(base_url=VLM_SERVICE_URL)
             
-            if vlm_analyzer:
-                # Decode current image for VLM
-                img_data = base64.b64decode(img_curr_b64)
-                img_array = np.frombuffer(img_data, dtype=np.uint8)
-                current_image = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
-                
-                # Ask VLM about the changes
+            if vlm_client:
+                # Ask VLM about the changes (use current image base64 directly)
                 change_prompt = f"""This satellite image shows an area that has changed by approximately {result.overall_change_percent:.1f}%.
 The automated analysis suggests this might be related to {result.suggested_change_type.value}.
 Please describe what you see in detail and confirm or refine this assessment.
 What specific changes can you identify? Are there any potential concerns?"""
                 
-                vlm_analysis = vlm_analyzer.analyze_image(current_image, change_prompt)
+                vlm_result = vlm_client.analyze_image(img_curr_b64, change_prompt)
                 
-                response["vlm_analysis"] = {
-                    "detailed_interpretation": vlm_analysis,
-                    "model": "moondream2",
-                    "prompt_used": change_prompt
-                }
+                if vlm_result.get("success"):
+                    response["vlm_analysis"] = {
+                        "detailed_interpretation": vlm_result.get("answer"),
+                        "model": "moondream2",
+                        "prompt_used": change_prompt
+                    }
         
         # Generate notification recommendation
         should_notify = (
@@ -2491,7 +2515,8 @@ def health_detailed():
         'face_detection_available': os.path.exists(YUNET_PATH),
         'face_recognition_available': FACE_RECOGNITION_AVAILABLE,
         'vlm_enabled': VLM_ENABLED,
-        'vlm_loaded': vlm_analyzer is not None,
+        'vlm_service_url': VLM_SERVICE_URL,
+        'vlm_client_ready': vlm_client is not None,
         'mediamtx': mediamtx_status,
         'capabilities': {
             'depth_estimation': True,

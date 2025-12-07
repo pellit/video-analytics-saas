@@ -385,8 +385,14 @@ class CADProcessor:
                 
                 print(f"🤖 Analizando: {analysis_type}...")
                 
-                # Analizar con VLM
-                response = self.vlm_engine.analyze_image(image, prompt)
+                # Analizar con VLM (puede ser local o cliente remoto)
+                vlm_result = self.vlm_engine.analyze_image(image, prompt)
+                
+                # Soportar tanto dict (VLMClient) como string (MoondreamAnalyzer local)
+                if isinstance(vlm_result, dict):
+                    response = vlm_result.get('answer', '') if vlm_result.get('success') else f"Error: {vlm_result.get('error', 'Unknown')}"
+                else:
+                    response = str(vlm_result)
                 
                 results[f'analysis_{analysis_type}'] = {
                     'prompt': prompt,
@@ -394,7 +400,7 @@ class CADProcessor:
                     'timestamp': self._get_timestamp()
                 }
                 
-                print(f"✅ {analysis_type}: {response[:100]}...")
+                print(f"✅ {analysis_type}: {response[:100] if response else 'No response'}...")
                 
             except Exception as e:
                 print(f"❌ Error en análisis {analysis_type}: {e}")

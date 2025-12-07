@@ -67,12 +67,36 @@ services:
       - STREAM_MODE=${STREAM_MODE:-hybrid}  # 'hybrid', 'mediamtx_only', 'mjpeg_only'
       # CAD processing
       - ENABLE_CAD=${ENABLE_CAD:-true}
+      # VLM Service URL (microservicio separado)
+      - VLM_SERVICE_URL=http://vlm_service:5100
+      - ENABLE_VLM=${ENABLE_VLM:-true}
     volumes:
       - ./ai_engine/models:/app/models
       - app_storage:/app/storage  # Volumen compartido con Laravel
     depends_on:
       - redis
       - media_server
+      - vlm_service
+    networks:
+      - saas_net
+
+  # --- VLM SERVICE (Moondream2 Microservice) ---
+  vlm_service:
+    build:
+      context: ./vlm_service
+      dockerfile: Dockerfile
+    command: uvicorn src.main:app --host 0.0.0.0 --port 5100
+    environment:
+      - REDIS_HOST=redis
+      - PYTHONUNBUFFERED=1
+      - VLM_MODEL=${VLM_MODEL:-vikhyatk/moondream2}
+      - VLM_REVISION=${VLM_REVISION:-2025-01-09}
+      - VLM_LAZY_LOAD=${VLM_LAZY_LOAD:-true}
+      - VLM_PRELOAD=${VLM_PRELOAD:-false}
+    volumes:
+      - vlm_cache:/root/.cache/huggingface
+    depends_on:
+      - redis
     networks:
       - saas_net
 
@@ -197,3 +221,4 @@ volumes:
   db_data:
   label_studio_data:
   app_storage:  # Volumen compartido entre Laravel y AI Worker para CAD files
+  vlm_cache:    # Cache de modelos HuggingFace para VLM service
