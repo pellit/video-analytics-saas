@@ -35,30 +35,34 @@ class SseController extends Controller
                 if (ob_get_level() > 0) ob_flush();
                 flush();
 
-                $pubsub = Redis::connection()->pubSub();
-                $pubsub->subscribe(['alerts', 'detections', 'bev_events']);
-
-                foreach ($pubsub as $message) {
-                    if ($message->kind === 'message') {
-                        try {
-                            $payload = json_decode($message->payload, true);
-                            // Filter by user_id: only send messages that belong to this user
-                            if (isset($payload['user_id']) && intval($payload['user_id']) !== intval($user->id)) {
-                                continue;
-                            }
-                            // SSE event name is the Redis channel (map bev_events to 'bev' for frontend)
-                            $eventName = $message->channel === 'bev_events' ? 'bev' : $message->channel;
-                            echo "event: {$eventName}\n";
-                            echo 'data: ' . json_encode($payload) . "\n\n";
-                            if (ob_get_level() > 0) ob_flush();
-                            flush();
-                        } catch (\Exception $e) {
-                            \Illuminate\Support\Facades\Log::error("SSE Payload Error: " . $e->getMessage());
+                // Use psubscribe with callback pattern for phpredis compatibility
+                $redis = Redis::connection()->client();
+                
+                // Subscribe to channels
+                $channels = ['alerts', 'detections', 'bev_events'];
+                
+                $redis->subscribe($channels, function ($redis, $channel, $message) use ($user) {
+                    try {
+                        $payload = json_decode($message, true);
+                        // Filter by user_id: only send messages that belong to this user
+                        if (isset($payload['user_id']) && intval($payload['user_id']) !== intval($user->id)) {
+                            return;
                         }
+                        // SSE event name is the Redis channel (map bev_events to 'bev' for frontend)
+                        $eventName = $channel === 'bev_events' ? 'bev' : $channel;
+                        echo "event: {$eventName}\n";
+                        echo 'data: ' . json_encode($payload) . "\n\n";
+                        if (ob_get_level() > 0) ob_flush();
+                        flush();
+                    } catch (\Exception $e) {
+                        \Illuminate\Support\Facades\Log::error("SSE Payload Error: " . $e->getMessage());
                     }
-                }
+                });
             } catch (\Exception $e) {
-                \Illuminate\Support\Facades\Log::error("SSE Stream Error: " . $e->getMessage());
+                \Illuminate\Support\Facades\Log::error("SSE Stream Error: " . $e->getMessage(), [
+                    'userId' => $user->id,
+                    'exception' => $e
+                ]);
                 echo "event: error\n";
                 echo 'data: {"message": "Server Error"}' . "\n\n";
                 if (ob_get_level() > 0) ob_flush();
