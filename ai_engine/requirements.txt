@@ -30,9 +30,10 @@ supervision>=0.16.0
 # Moondream2 VLM (para Auto-detectar clases)
 # ============================================
 # PyTorch CPU-only (sin CUDA para builds más rápidos)
+# NOTA: torch 2.2+ y transformers 4.38+ son compatibles y evitan el error 'register_pytree_node'
 --extra-index-url https://download.pytorch.org/whl/cpu
-torch==2.1.0+cpu
-transformers>=4.36.0
+torch==2.2.0+cpu
+transformers==4.38.0
 einops>=0.6.0
 accelerate>=0.25.0
 
