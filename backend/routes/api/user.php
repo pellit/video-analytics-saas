@@ -22,6 +22,7 @@ Route::get('/user', function (Request $request) {
 Route::get('/cameras', [CameraController::class, 'index']);      // Listar
 Route::post('/cameras', [CameraController::class, 'store']);     // Crear
 Route::patch('/cameras/{id}', [CameraController::class, 'update']);  // Actualizar cámara
+Route::delete('/cameras/{id}', [CameraController::class, 'destroy']); // Eliminar cámara
 
 // Control de Video (Redis)
 Route::post('/camera/start', [CameraController::class, 'start']); // Iniciar stream

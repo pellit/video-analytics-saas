@@ -52,7 +52,14 @@ const isProcessing = ref(false)
 const showAdd = ref(false)
 const newCam = ref({ name: '', url: '' })
 const showFacePanel = ref(false) // Face recognition panel visibility
-const activeView = ref('cameras') // 'cameras' | 'satellite'
+const activeView = ref('cameras') // 'cameras' | 'satellite' | 'monitoring'
+
+// Camera dropdown menu state
+const openCameraMenuId = ref(null)
+const showDeleteConfirm = ref(false)
+const cameraToDelete = ref(null)
+const showEditCameraModal = ref(false)
+const editingCamera = ref({ id: null, name: '', url: '' })
 
 // Fullscreen HUD mode
 const isFullscreen = ref(false)
@@ -84,14 +91,27 @@ const handleKeydown = (e) => {
   if (e.key === 'Escape' && isFullscreen.value) {
     toggleFullscreen()
   }
+  // Close camera menu on Escape
+  if (e.key === 'Escape' && openCameraMenuId.value) {
+    openCameraMenuId.value = null
+  }
+}
+
+// Close camera dropdown when clicking outside
+const handleDocumentClick = (e) => {
+  if (openCameraMenuId.value && !e.target.closest('.cam-dropdown-menu') && !e.target.closest('.cam-menu-btn')) {
+    openCameraMenuId.value = null
+  }
 }
 
 onMounted(() => {
   document.addEventListener('keydown', handleKeydown)
+  document.addEventListener('click', handleDocumentClick)
 })
 
 onUnmounted(() => {
   document.removeEventListener('keydown', handleKeydown)
+  document.removeEventListener('click', handleDocumentClick)
   document.body.style.overflow = ''
 })
 
@@ -551,6 +571,105 @@ const updateCameraSettings = async (camera) => {
   }
 }
 
+// === Camera Actions Menu ===
+const toggleCameraMenu = (camId, event) => {
+  event.stopPropagation()
+  openCameraMenuId.value = openCameraMenuId.value === camId ? null : camId
+}
+
+const closeCameraMenu = () => {
+  openCameraMenuId.value = null
+}
+
+const openEditCamera = (cam, event) => {
+  event.stopPropagation()
+  closeCameraMenu()
+  editingCamera.value = { id: cam.id, name: cam.name, url: cam.url }
+  showEditCameraModal.value = true
+}
+
+const saveEditCamera = async () => {
+  if (!editingCamera.value.name.trim() || !editingCamera.value.url.trim()) {
+    showToast('Por favor complete todos los campos', 'error')
+    return
+  }
+  
+  try {
+    const res = await fetch(`${API_URL}/cameras/${editingCamera.value.id}`, {
+      method: 'PATCH',
+      headers: { 
+        'Authorization': `Bearer ${props.token}`, 
+        'Content-Type': 'application/json' 
+      },
+      body: JSON.stringify({ 
+        name: editingCamera.value.name, 
+        url: editingCamera.value.url 
+      })
+    })
+    
+    if (!res.ok) throw new Error('Error al actualizar')
+    
+    // Update local camera
+    const cam = cameras.value.find(c => c.id === editingCamera.value.id)
+    if (cam) {
+      cam.name = editingCamera.value.name
+      cam.url = editingCamera.value.url
+    }
+    
+    showToast('Cámara actualizada correctamente', 'success')
+    showEditCameraModal.value = false
+  } catch (e) {
+    console.error('Error editing camera:', e)
+    showToast('No se pudo actualizar la cámara', 'error')
+  }
+}
+
+const confirmDeleteCamera = (cam, event) => {
+  event.stopPropagation()
+  closeCameraMenu()
+  cameraToDelete.value = cam
+  showDeleteConfirm.value = true
+}
+
+const deleteCamera = async () => {
+  if (!cameraToDelete.value) return
+  
+  try {
+    // If this camera is running, stop it first
+    if (isCameraRunning(cameraToDelete.value.id)) {
+      await fetch(`${API_URL}/camera/stop`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${props.token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: cameraToDelete.value.id })
+      })
+    }
+    
+    const res = await fetch(`${API_URL}/cameras/${cameraToDelete.value.id}`, {
+      method: 'DELETE',
+      headers: { 'Authorization': `Bearer ${props.token}` }
+    })
+    
+    if (!res.ok) throw new Error('Error al eliminar')
+    
+    // Remove from local list
+    cameras.value = cameras.value.filter(c => c.id !== cameraToDelete.value.id)
+    
+    // If the deleted camera was active, clear selection
+    if (activeCamera.value?.id === cameraToDelete.value.id) {
+      activeCamera.value = cameras.value.length > 0 ? cameras.value[0] : null
+      isProcessing.value = false
+    }
+    
+    showToast('Cámara eliminada correctamente', 'success')
+  } catch (e) {
+    console.error('Error deleting camera:', e)
+    showToast('No se pudo eliminar la cámara', 'error')
+  } finally {
+    showDeleteConfirm.value = false
+    cameraToDelete.value = null
+  }
+}
+
 const detections = ref([]) // Store detections received via SSE
 const alerts = ref([]) // Store alerts received via SSE
 const activeWorkerStreams = ref([])
@@ -665,6 +784,97 @@ onMounted(() => {
 })
 
 const isCameraRunning = (id) => activeWorkerStreams.value.includes(String(id))
+
+// === Monitoring View Helper Functions ===
+const getCameraDetectionCount = (cameraId, className) => {
+  const cameraDetections = detections.value.filter(d => 
+    d.camera_id === cameraId && d.class === className
+  )
+  return cameraDetections.length
+}
+
+const getCameraAlertCount = (cameraId) => {
+  const cameraAlerts = alerts.value.filter(a => a.camera_id === cameraId)
+  return cameraAlerts.length
+}
+
+const getLastDetection = (cameraId) => {
+  const cameraDetections = detections.value.filter(d => d.camera_id === cameraId)
+  if (cameraDetections.length === 0) return null
+  return cameraDetections.reduce((latest, d) => {
+    const dTime = new Date(d.created_at || d.timestamp || 0)
+    return dTime > latest ? dTime : latest
+  }, new Date(0))
+}
+
+const formatTime = (date) => {
+  if (!date) return ''
+  return new Date(date).toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+}
+
+const toggleCameraBackground = async (cam) => {
+  const running = isCameraRunning(cam.id)
+  try {
+    if (running) {
+      await fetch(`${API_URL}/camera/stop`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${props.token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: cam.id })
+      })
+      showToast(`Cámara ${cam.name} detenida`, 'info')
+    } else {
+      await fetch(`${API_URL}/camera/start`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${props.token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: cam.id })
+      })
+      showToast(`Cámara ${cam.name} iniciada en background`, 'success')
+    }
+    // Refresh worker status
+    setTimeout(fetchWorkerStatus, 500)
+  } catch (e) {
+    console.error('Error toggling camera:', e)
+    showToast('Error al cambiar estado de la cámara', 'error')
+  }
+}
+
+const startAllCamerasBackground = async () => {
+  showToast('Iniciando todas las cámaras...', 'info')
+  for (const cam of cameras.value) {
+    if (!isCameraRunning(cam.id)) {
+      try {
+        await fetch(`${API_URL}/camera/start`, {
+          method: 'POST',
+          headers: { 'Authorization': `Bearer ${props.token}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ id: cam.id })
+        })
+      } catch (e) {
+        console.error(`Error starting camera ${cam.name}:`, e)
+      }
+    }
+  }
+  setTimeout(fetchWorkerStatus, 1000)
+  showToast('Todas las cámaras iniciadas', 'success')
+}
+
+const stopAllCameras = async () => {
+  showToast('Deteniendo todas las cámaras...', 'info')
+  for (const cam of cameras.value) {
+    if (isCameraRunning(cam.id)) {
+      try {
+        await fetch(`${API_URL}/camera/stop`, {
+          method: 'POST',
+          headers: { 'Authorization': `Bearer ${props.token}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ id: cam.id })
+        })
+      } catch (e) {
+        console.error(`Error stopping camera ${cam.name}:`, e)
+      }
+    }
+  }
+  setTimeout(fetchWorkerStatus, 1000)
+  showToast('Todas las cámaras detenidas', 'info')
+}
 
 // Watch for camera changes to handle background processing preference
 watch(activeCamera, async (newCam, oldCam) => {
@@ -931,6 +1141,14 @@ const saveProfile = async () => {
           </button>
           <button 
             class="view-tab" 
+            :class="{ active: activeView === 'monitoring' }"
+            @click="activeView = 'monitoring'"
+            title="Monitoreo sin video"
+          >
+            📡 Monitor
+          </button>
+          <button 
+            class="view-tab" 
             :class="{ active: activeView === 'satellite' }"
             @click="activeView = 'satellite'"
           >
@@ -963,7 +1181,22 @@ const saveProfile = async () => {
                  class="cam-item" :class="{active: activeCamera?.id === cam.id}"
                  @click="activeCamera = cam">
                  <span class="status-dot" :class="{online: isCameraRunning(cam.id)}"></span>
-                 {{ cam.name }}
+                 <span class="cam-name">{{ cam.name }}</span>
+                 
+                 <!-- Camera Actions Menu Button -->
+                 <button class="cam-menu-btn" @click="toggleCameraMenu(cam.id, $event)" title="Opciones">
+                   ⋮
+                 </button>
+                 
+                 <!-- Dropdown Menu -->
+                 <div v-if="openCameraMenuId === cam.id" class="cam-dropdown-menu" @click.stop>
+                   <button class="dropdown-item" @click="openEditCamera(cam, $event)">
+                     ✏️ Editar
+                   </button>
+                   <button class="dropdown-item danger" @click="confirmDeleteCamera(cam, $event)">
+                     🗑️ Eliminar
+                   </button>
+                 </div>
             </div>
           </div>
         </template>
@@ -1013,6 +1246,33 @@ const saveProfile = async () => {
               <li>✓ Evaluación de seguridad</li>
               <li>✓ Estimación de dimensiones</li>
             </ul>
+          </div>
+        </template>
+        
+        <!-- Monitoring Info (when monitoring view active) -->
+        <template v-if="activeView === 'monitoring'">
+          <div class="sidebar-header">
+            <h3>📡 Monitor</h3>
+          </div>
+          <div class="satellite-info">
+            <p class="info-text">Vista de monitoreo sin emisión de video. Ideal para vigilancia de bajo consumo.</p>
+            <ul class="feature-list">
+              <li>✓ Sin streaming de video</li>
+              <li>✓ Solo detecciones y alertas</li>
+              <li>✓ Menor consumo de ancho de banda</li>
+              <li>✓ Vista panorámica de todas las cámaras</li>
+            </ul>
+            
+            <div class="monitoring-stats">
+              <div class="stat-item">
+                <span class="stat-value">{{ runningCamerasCount }}</span>
+                <span class="stat-label">Cámaras Activas</span>
+              </div>
+              <div class="stat-item">
+                <span class="stat-value">{{ cameras.length }}</span>
+                <span class="stat-label">Total Cámaras</span>
+              </div>
+            </div>
           </div>
         </template>
     </div>
@@ -1506,6 +1766,82 @@ const saveProfile = async () => {
       />
     </div>
 
+    <!-- Monitoring View (Background Detection) -->
+    <div class="main-content monitoring-view" v-if="activeView === 'monitoring'">
+      <header class="control-header">
+        <div class="header-left">
+          <h2>📡 Monitoreo en Segundo Plano</h2>
+          <span class="badge badge-info">Sin Video</span>
+        </div>
+        <div class="header-actions">
+          <button @click="startAllCamerasBackground" class="btn-secondary" title="Iniciar todas en background">
+            ⚡ Iniciar Todas
+          </button>
+          <button @click="stopAllCameras" class="btn-danger-sm" title="Detener todas">
+            ⏹️ Detener Todas
+          </button>
+        </div>
+      </header>
+      
+      <div class="monitoring-grid">
+        <div v-for="cam in cameras" :key="cam.id" class="monitoring-card" :class="{ active: isCameraRunning(cam.id) }">
+          <div class="monitoring-card-header">
+            <span class="status-indicator" :class="{ online: isCameraRunning(cam.id) }"></span>
+            <h4>{{ cam.name }}</h4>
+            <button 
+              class="monitoring-toggle" 
+              @click="toggleCameraBackground(cam)"
+              :title="isCameraRunning(cam.id) ? 'Detener' : 'Iniciar'"
+            >
+              {{ isCameraRunning(cam.id) ? '⏹️' : '▶️' }}
+            </button>
+          </div>
+          
+          <div class="monitoring-card-body">
+            <div class="monitoring-stats-grid">
+              <div class="monitoring-stat">
+                <span class="stat-icon">👤</span>
+                <span class="stat-number">{{ getCameraDetectionCount(cam.id, 'person') }}</span>
+                <span class="stat-name">Personas</span>
+              </div>
+              <div class="monitoring-stat">
+                <span class="stat-icon">🚗</span>
+                <span class="stat-number">{{ getCameraDetectionCount(cam.id, 'car') + getCameraDetectionCount(cam.id, 'truck') }}</span>
+                <span class="stat-name">Vehículos</span>
+              </div>
+              <div class="monitoring-stat">
+                <span class="stat-icon">⚠️</span>
+                <span class="stat-number">{{ getCameraAlertCount(cam.id) }}</span>
+                <span class="stat-name">Alertas</span>
+              </div>
+            </div>
+            
+            <div class="monitoring-last-detection" v-if="getLastDetection(cam.id)">
+              <span class="last-detection-label">Última detección:</span>
+              <span class="last-detection-time">{{ formatTime(getLastDetection(cam.id)) }}</span>
+            </div>
+            <div class="monitoring-last-detection empty" v-else>
+              <span>Sin detecciones recientes</span>
+            </div>
+          </div>
+          
+          <div class="monitoring-card-footer">
+            <span class="model-badge" v-if="cam.detection_model">{{ cam.detection_model }}</span>
+            <span class="fps-badge" v-if="cam.analysis_fps">{{ cam.analysis_fps }} FPS</span>
+          </div>
+        </div>
+        
+        <!-- Empty State -->
+        <div v-if="cameras.length === 0" class="monitoring-empty">
+          <span class="empty-icon">📷</span>
+          <p>No hay cámaras configuradas</p>
+          <button @click="activeView = 'cameras'; showAdd = true" class="btn-confirm">
+            + Agregar Cámara
+          </button>
+        </div>
+      </div>
+    </div>
+
     <!-- Add Camera Modal -->
     <div v-if="showAdd" class="modal-overlay">
         <div class="modal-box">
@@ -1515,6 +1851,36 @@ const saveProfile = async () => {
             <div class="modal-actions">
               <button @click="showAdd = false" class="btn-cancel">Cancelar</button>
               <button @click="addCamera" class="btn-confirm">Guardar</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Edit Camera Modal -->
+    <div v-if="showEditCameraModal" class="modal-overlay" @click.self="showEditCameraModal = false">
+        <div class="modal-box">
+            <h3>✏️ Editar Cámara</h3>
+            <input v-model="editingCamera.name" placeholder="Nombre de la cámara" class="dark-input">
+            <input v-model="editingCamera.url" placeholder="RTSP / HTTP / YouTube URL" class="dark-input">
+            <div class="modal-actions">
+              <button @click="showEditCameraModal = false" class="btn-cancel">Cancelar</button>
+              <button @click="saveEditCamera" class="btn-confirm">Guardar</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Delete Camera Confirm Modal -->
+    <div v-if="showDeleteConfirm" class="modal-overlay" @click.self="showDeleteConfirm = false">
+        <div class="modal-box confirm-modal">
+            <h3>🗑️ Eliminar Cámara</h3>
+            <p class="confirm-text">
+              ¿Estás seguro de que deseas eliminar la cámara <strong>{{ cameraToDelete?.name }}</strong>?
+            </p>
+            <p class="confirm-warning">
+              Esta acción eliminará también todas las detecciones y alertas asociadas.
+            </p>
+            <div class="modal-actions">
+              <button @click="showDeleteConfirm = false" class="btn-cancel">Cancelar</button>
+              <button @click="deleteCamera" class="btn-danger">Eliminar</button>
             </div>
         </div>
     </div>
@@ -1771,6 +2137,236 @@ const saveProfile = async () => {
   padding: 0;
 }
 
+/* Monitoring View */
+.monitoring-view {
+  padding: 0;
+  overflow-y: auto;
+}
+
+.monitoring-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 1.25rem;
+  padding: 1.25rem;
+}
+
+.monitoring-card {
+  background: #161b22;
+  border: 1px solid #30363d;
+  border-radius: 12px;
+  overflow: hidden;
+  transition: all 0.2s ease;
+}
+
+.monitoring-card:hover {
+  border-color: #484f58;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+}
+
+.monitoring-card.active {
+  border-color: #3fb950;
+  box-shadow: 0 0 0 1px rgba(63, 185, 80, 0.3);
+}
+
+.monitoring-card-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0.9rem 1rem;
+  background: rgba(0, 0, 0, 0.2);
+  border-bottom: 1px solid #30363d;
+}
+
+.monitoring-card-header h4 {
+  flex: 1;
+  margin: 0;
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: #c9d1d9;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.status-indicator {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #484f58;
+  flex-shrink: 0;
+}
+
+.status-indicator.online {
+  background: #3fb950;
+  box-shadow: 0 0 10px rgba(63, 185, 80, 0.5);
+  animation: pulse-dot 2s infinite;
+}
+
+.monitoring-toggle {
+  background: none;
+  border: none;
+  font-size: 1.1rem;
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: 6px;
+  transition: background 0.15s ease;
+}
+
+.monitoring-toggle:hover {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.monitoring-card-body {
+  padding: 1rem;
+}
+
+.monitoring-stats-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px;
+  margin-bottom: 1rem;
+}
+
+.monitoring-stat {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 10px;
+  background: rgba(0, 0, 0, 0.2);
+  border-radius: 8px;
+}
+
+.monitoring-stat .stat-icon {
+  font-size: 1.2rem;
+}
+
+.monitoring-stat .stat-number {
+  font-size: 1.4rem;
+  font-weight: 700;
+  color: #58a6ff;
+}
+
+.monitoring-stat .stat-name {
+  font-size: 0.7rem;
+  color: #8b949e;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.monitoring-last-detection {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background: rgba(88, 166, 255, 0.1);
+  border-radius: 6px;
+  font-size: 0.8rem;
+}
+
+.monitoring-last-detection.empty {
+  background: rgba(139, 148, 158, 0.1);
+  color: #6e7681;
+  justify-content: center;
+}
+
+.last-detection-label {
+  color: #8b949e;
+}
+
+.last-detection-time {
+  color: #58a6ff;
+  font-weight: 500;
+  font-family: 'Courier New', monospace;
+}
+
+.monitoring-card-footer {
+  display: flex;
+  gap: 6px;
+  padding: 0.6rem 1rem;
+  background: rgba(0, 0, 0, 0.15);
+  border-top: 1px solid #30363d;
+}
+
+.model-badge, .fps-badge {
+  font-size: 0.7rem;
+  padding: 3px 8px;
+  border-radius: 4px;
+  background: rgba(88, 166, 255, 0.15);
+  color: #58a6ff;
+}
+
+.fps-badge {
+  background: rgba(168, 85, 247, 0.15);
+  color: #a855f7;
+}
+
+.monitoring-empty {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 3rem;
+  gap: 1rem;
+  color: #6e7681;
+}
+
+.monitoring-empty .empty-icon {
+  font-size: 3rem;
+  opacity: 0.4;
+}
+
+.btn-danger-sm {
+  background: rgba(218, 54, 51, 0.15);
+  color: #f85149;
+  border: 1px solid rgba(218, 54, 51, 0.3);
+  padding: 0.5rem 1rem;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 0.85rem;
+  transition: all 0.2s ease;
+}
+
+.btn-danger-sm:hover {
+  background: rgba(218, 54, 51, 0.25);
+}
+
+/* Monitoring sidebar stats */
+.monitoring-stats {
+  display: flex;
+  gap: 10px;
+  margin-top: 1rem;
+  padding-top: 1rem;
+  border-top: 1px solid #30363d;
+}
+
+.monitoring-stats .stat-item {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+}
+
+.monitoring-stats .stat-value {
+  font-size: 1.5rem;
+  font-weight: 700;
+  color: #58a6ff;
+}
+
+.monitoring-stats .stat-label {
+  font-size: 0.7rem;
+  color: #8b949e;
+  text-transform: uppercase;
+}
+
+.badge-info {
+  background: rgba(88, 166, 255, 0.15);
+  color: #58a6ff;
+  border: 1px solid rgba(88, 166, 255, 0.3);
+}
+
 .sidebar-header {
   padding: 1rem;
   display: flex;
@@ -1818,6 +2414,67 @@ const saveProfile = async () => {
   transition: all 0.2s ease;
   color: #8b949e;
   font-size: 0.9rem;
+  position: relative;
+}
+.cam-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cam-menu-btn {
+  background: none;
+  border: none;
+  color: #6e7681;
+  cursor: pointer;
+  padding: 2px 6px;
+  font-size: 1rem;
+  font-weight: bold;
+  border-radius: 4px;
+  opacity: 0;
+  transition: all 0.2s ease;
+}
+.cam-item:hover .cam-menu-btn {
+  opacity: 1;
+}
+.cam-menu-btn:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: #c9d1d9;
+}
+.cam-dropdown-menu {
+  position: absolute;
+  right: 0;
+  top: 100%;
+  background: #21262d;
+  border: 1px solid #30363d;
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+  z-index: 100;
+  min-width: 140px;
+  overflow: hidden;
+}
+.dropdown-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 10px 14px;
+  background: none;
+  border: none;
+  color: #c9d1d9;
+  cursor: pointer;
+  font-size: 0.85rem;
+  text-align: left;
+  transition: background 0.15s ease;
+}
+.dropdown-item:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+.dropdown-item.danger {
+  color: #f85149;
+}
+.dropdown-item.danger:hover {
+  background: rgba(248, 81, 73, 0.15);
 }
 .cam-item:hover { 
   background-color: #21262d; 
@@ -3033,6 +3690,37 @@ input:checked + .slider:before {
 .btn-cancel:hover {
   background: #21262d;
   color: #c9d1d9;
+}
+.btn-danger {
+  background: linear-gradient(135deg, #da3633, #f85149);
+  color: white;
+  border: none;
+  padding: 0.6rem 1.25rem;
+  border-radius: 0.5rem;
+  cursor: pointer;
+  font-weight: 500;
+  transition: all 0.2s ease;
+}
+.btn-danger:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(218, 54, 51, 0.4);
+}
+
+/* Confirm Modal Styles */
+.confirm-modal {
+  max-width: 400px;
+}
+.confirm-text {
+  color: #c9d1d9;
+  margin-bottom: 0.5rem;
+}
+.confirm-warning {
+  color: #f85149;
+  font-size: 0.85rem;
+  padding: 0.75rem;
+  background: rgba(248, 81, 73, 0.1);
+  border-radius: 6px;
+  border-left: 3px solid #f85149;
 }
 
 .empty-state { 

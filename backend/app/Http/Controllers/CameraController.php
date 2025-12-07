@@ -183,4 +183,37 @@ class CameraController extends Controller
             ], 500);
         }
     }
+
+    // Eliminar cámara
+    public function destroy($id)
+    {
+        $camera = Auth::user()->cameras()->findOrFail($id);
+        
+        // Primero detener el stream si está corriendo
+        $model = $camera->detection_model ?? 'yolov8n';
+        
+        if ($this->isGoModel($model)) {
+            // Intentar detener en Go worker
+            try {
+                Http::timeout(5)->post($this->getGoWorkerUrl() . '/camera/' . $camera->id . '/stop');
+            } catch (\Exception $e) {
+                // Ignorar errores al detener
+            }
+        } else {
+            // Enviar STOP a Python worker via Redis
+            $message = json_encode([
+                'action' => 'STOP',
+                'camera_id' => $camera->id
+            ]);
+            Redis::publish('video_control', $message);
+        }
+        
+        // Eliminar la cámara (esto también eliminará detecciones relacionadas por cascade si está configurado)
+        $camera->delete();
+        
+        return response()->json([
+            'status' => 'success',
+            'message' => 'Cámara eliminada correctamente'
+        ]);
+    }
 }
