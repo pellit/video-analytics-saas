@@ -18,6 +18,10 @@ const GO_WORKER_URL = import.meta.env.VITE_GO_WORKER_URL || 'https://worker-go-d
 // Prefer explicit stream URL; fallback to computed from API URL to be compatible with existing setups
 const getStreamUrl = () => {
     if (import.meta.env.VITE_STREAM_URL) return import.meta.env.VITE_STREAM_URL;
+    // In production, use relative URLs that go through nginx proxy
+    if (window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1') {
+        return `${window.location.origin}/video_feed`;
+    }
     if (import.meta.env.VITE_API_URL) {
         try {
             const url = new URL(import.meta.env.VITE_API_URL);

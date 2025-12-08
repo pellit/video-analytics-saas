@@ -1377,6 +1377,31 @@ onMounted(() => {
   }, 100)
 })
 
+// Cleanup on unmount to prevent Leaflet errors
+onUnmounted(() => {
+  // Destroy modal map
+  if (map) {
+    try {
+      map.off()
+      map.remove()
+    } catch (e) { /* ignore */ }
+    map = null
+  }
+  // Destroy global map
+  if (globalMap) {
+    try {
+      globalMap.off()
+      globalMap.remove()
+    } catch (e) { /* ignore */ }
+    globalMap = null
+  }
+  // Clear markers
+  marker = null
+  circle = null
+  rectangle = null
+  globalMapMarkers.value = []
+})
+
 // Auto-select first zone with image when zones load
 watch(zones, (newZones) => {
   if (newZones.length > 0 && !sidebarSelectedZone.value) {
