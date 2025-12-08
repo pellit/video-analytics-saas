@@ -1287,7 +1287,7 @@ def satellite_analyze(zone_data: dict):
             try:
                 if vlm_client is None:
                     print("🧠 Connecting to VLM service for satellite analysis...")
-                    vlm_client = VLMClient(base_url=VLM_SERVICE_URL)
+                    vlm_client = VLMClient(service_url=VLM_SERVICE_URL)
                 
                 # Encode image to base64 for VLM service
                 _, vlm_img_encoded = cv2.imencode('.jpg', image, [cv2.IMWRITE_JPEG_QUALITY, 85])
@@ -1368,7 +1368,7 @@ def vlm_status():
     
     # Check remote VLM service status
     if vlm_client is None and VLM_ENABLED:
-        vlm_client = VLMClient(base_url=VLM_SERVICE_URL)
+        vlm_client = VLMClient(service_url=VLM_SERVICE_URL)
     
     remote_status = vlm_client.status() if vlm_client else {'enabled': False, 'loaded': False}
     
@@ -1413,7 +1413,7 @@ def vlm_analyze(request: VLMAnalyzeRequest):
         # Initialize VLM client if needed
         if vlm_client is None:
             print("🧠 Connecting to VLM service...")
-            vlm_client = VLMClient(base_url=VLM_SERVICE_URL)
+            vlm_client = VLMClient(service_url=VLM_SERVICE_URL)
         
         # Batch or single question - delegate to remote service
         if request.questions:
@@ -1458,7 +1458,7 @@ def vlm_validate_detection(data: dict):
     
     try:
         if vlm_client is None:
-            vlm_client = VLMClient(base_url=VLM_SERVICE_URL)
+            vlm_client = VLMClient(service_url=VLM_SERVICE_URL)
         
         image_base64 = data.get('image_base64', '')
         detected_objects = data.get('detected_objects', [])
@@ -1518,7 +1518,7 @@ def vlm_analyze_camera_snapshot(data: dict):
     
     try:
         if vlm_client is None:
-            vlm_client = VLMClient(base_url=VLM_SERVICE_URL)
+            vlm_client = VLMClient(service_url=VLM_SERVICE_URL)
         
         # Encode frame to base64
         _, img_encoded = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
@@ -1580,7 +1580,7 @@ def vlm_suggest_classes(data: dict):
     try:
         # Initialize VLM client if needed
         if vlm_client is None:
-            vlm_client = VLMClient(base_url=VLM_SERVICE_URL)
+            vlm_client = VLMClient(service_url=VLM_SERVICE_URL)
         
         all_suggested = []
         all_descriptions = []
@@ -1697,7 +1697,7 @@ def hybrid_detect_and_validate(data: dict):
     try:
         # Lazy init VLM client and hybrid analyzer
         if vlm_client is None and VLM_ENABLED:
-            vlm_client = VLMClient(base_url=VLM_SERVICE_URL)
+            vlm_client = VLMClient(service_url=VLM_SERVICE_URL)
         
         if hybrid_analyzer is None:
             hybrid_analyzer = init_hybrid_analyzer(detector=model, vlm=vlm_client)
@@ -1752,7 +1752,7 @@ def hybrid_smart_alert(data: dict):
     
     try:
         if vlm_client is None and VLM_ENABLED:
-            vlm_client = VLMClient(base_url=VLM_SERVICE_URL)
+            vlm_client = VLMClient(service_url=VLM_SERVICE_URL)
         
         if hybrid_analyzer is None:
             hybrid_analyzer = init_hybrid_analyzer(detector=model, vlm=vlm_client)
@@ -1811,7 +1811,7 @@ def hybrid_analyze_satellite_zone(data: dict):
     
     try:
         if vlm_client is None and VLM_ENABLED:
-            vlm_client = VLMClient(base_url=VLM_SERVICE_URL)
+            vlm_client = VLMClient(service_url=VLM_SERVICE_URL)
         
         if hybrid_analyzer is None:
             hybrid_analyzer = init_hybrid_analyzer(detector=model, vlm=vlm_client)
@@ -2052,7 +2052,7 @@ def get_cad_processor_instance():
             # Initialize VLM client if needed (for CAD analysis)
             if vlm_client is None and VLM_ENABLED:
                 try:
-                    vlm_client = VLMClient(base_url=VLM_SERVICE_URL)
+                    vlm_client = VLMClient(service_url=VLM_SERVICE_URL)
                     print("✅ VLM Client connected for CAD analysis")
                 except Exception as e:
                     print(f"⚠️ VLM not available for CAD: {e}")
@@ -2355,7 +2355,7 @@ def compare_with_ai_suggestions(data: dict):
         # If significant change and VLM requested, get detailed analysis
         if use_vlm and result.overall_change_percent > 5:
             if vlm_client is None and VLM_ENABLED:
-                vlm_client = VLMClient(base_url=VLM_SERVICE_URL)
+                vlm_client = VLMClient(service_url=VLM_SERVICE_URL)
             
             if vlm_client:
                 # Ask VLM about the changes (use current image base64 directly)
