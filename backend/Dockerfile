@@ -1,6 +1,6 @@
 FROM php:8.2-fpm
 
-# Build cache buster: 2025-12-08-v3-storage-fix
+# Build cache buster: 2025-12-08-v4-rust-cameras
 # 1. Dependencias del sistema
 RUN apt-get update && apt-get install -y \
     git \

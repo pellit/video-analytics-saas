@@ -47,7 +47,8 @@ services:
     networks:
       - saas_net
 
-  # --- AI WORKER (Python - Ligero) ---
+  # --- AI WORKER (Python - Full Featured) ---
+  # Use this for: VLM, CAD processing, satellite analysis
   ai_worker:
     build:
       context: ./ai_engine
@@ -70,6 +71,9 @@ services:
       # VLM Service URL (microservicio separado)
       - VLM_SERVICE_URL=http://vlm_service:5100
       - ENABLE_VLM=${ENABLE_VLM:-true}
+      # Sentinel satellite credentials
+      - SENTINEL_CLIENT_ID=${SENTINEL_CLIENT_ID:-}
+      - SENTINEL_CLIENT_SECRET=${SENTINEL_CLIENT_SECRET:-}
     volumes:
       - ./ai_engine/models:/app/models
       - app_storage:/app/storage  # Volumen compartido con Laravel
@@ -79,6 +83,35 @@ services:
       - vlm_service
     networks:
       - saas_net
+
+  # --- RUST AI WORKER (High Performance) ---
+  # Use this for: High FPS detection, low latency video processing
+  # Enable with: docker compose --profile rust up
+  rust_worker:
+    build:
+      context: ./rust_ai_worker
+      dockerfile: Dockerfile
+    environment:
+      - REDIS_URL=redis://redis:6379
+      - RUST_LOG=${RUST_LOG:-info}
+      - MODEL_PATH=/app/models/yolov8n.onnx
+      - CONFIDENCE_THRESHOLD=${CONFIDENCE_THRESHOLD:-0.5}
+      - TARGET_FPS=${TARGET_FPS:-15}
+      - NUM_THREADS=${RUST_NUM_THREADS:-4}
+      - SKIP_FRAMES=${SKIP_FRAMES:-2}
+    volumes:
+      - ./rust_ai_worker/models:/app/models:ro
+    depends_on:
+      - redis
+    networks:
+      - saas_net
+    profiles:
+      - rust
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 1G
 
   # --- VLM SERVICE (Moondream2 Microservice) ---
   vlm_service:
