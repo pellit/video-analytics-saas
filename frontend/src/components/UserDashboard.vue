@@ -57,7 +57,23 @@ const isProcessing = ref(false)
 const showAdd = ref(false)
 const newCam = ref({ name: '', url: '' })
 const showFacePanel = ref(false) // Face recognition panel visibility
-const activeView = ref('cameras') // 'cameras' | 'satellite' | 'monitoring'
+const activeView = ref('cameras-live') // 'cameras-live' | 'cameras-monitoring' | 'satellite-config' | 'satellite-reports' | 'blueprints-viewer' | 'blueprints-projects'
+
+// Navigation menu state
+const expandedMenus = ref(['cameras']) // Menus expandidos por defecto
+
+// Toggle menu expansion
+const toggleMenu = (menu) => {
+  const idx = expandedMenus.value.indexOf(menu)
+  if (idx >= 0) {
+    expandedMenus.value.splice(idx, 1)
+  } else {
+    expandedMenus.value.push(menu)
+  }
+}
+
+// Check if a main category is active
+const isMenuActive = (menu) => activeView.value.startsWith(menu)
 
 // Camera dropdown menu state
 const openCameraMenuId = ref(null)
@@ -1156,48 +1172,87 @@ const saveProfile = async () => {
     <div class="dashboard-user control-center">
       <!-- Sidebar / Navigation -->
       <div class="sidebar">
-        <!-- View Tabs -->
-        <div class="view-tabs">
-          <button 
-            class="view-tab" 
-            :class="{ active: activeView === 'cameras' }"
-            @click="activeView = 'cameras'"
-          >
-            🎥 Cámaras
-          </button>
-          <button 
-            class="view-tab" 
-            :class="{ active: activeView === 'monitoring' }"
-            @click="activeView = 'monitoring'"
-            title="Monitoreo sin video"
-          >
-            📡 Monitor
-          </button>
-          <button 
-            class="view-tab" 
-            :class="{ active: activeView === 'satellite' }"
-            @click="activeView = 'satellite'"
-          >
-            🛰️ Satélite
-          </button>
-          <button 
-            class="view-tab" 
-            :class="{ active: activeView === 'reports' }"
-            @click="activeView = 'reports'"
-          >
-            📊 Reportes
-          </button>
-          <button 
-            class="view-tab" 
-            :class="{ active: activeView === 'blueprints' }"
-            @click="activeView = 'blueprints'"
-          >
-            📐 Planos
-          </button>
-        </div>
+        <!-- Hierarchical Navigation Menu -->
+        <nav class="nav-menu">
+          <!-- 🎥 CÁMARAS (con sub-items) -->
+          <div class="nav-group" :class="{ expanded: expandedMenus.includes('cameras'), active: isMenuActive('cameras') }">
+            <button class="nav-group-header" @click="toggleMenu('cameras')">
+              <span class="nav-icon">🎥</span>
+              <span class="nav-label">Cámaras</span>
+              <span class="nav-arrow">{{ expandedMenus.includes('cameras') ? '▼' : '▶' }}</span>
+            </button>
+            <div class="nav-subitems" v-show="expandedMenus.includes('cameras')">
+              <button 
+                class="nav-subitem" 
+                :class="{ active: activeView === 'cameras-live' }"
+                @click="activeView = 'cameras-live'"
+              >
+                <span class="sub-icon">📺</span> Live / Ver Cámara
+              </button>
+              <button 
+                class="nav-subitem" 
+                :class="{ active: activeView === 'cameras-monitoring' }"
+                @click="activeView = 'cameras-monitoring'"
+                title="Monitoreo sin video"
+              >
+                <span class="sub-icon">📡</span> Monitoreo
+              </button>
+            </div>
+          </div>
+          
+          <!-- 🛰️ SATÉLITE (con sub-items) -->
+          <div class="nav-group" :class="{ expanded: expandedMenus.includes('satellite'), active: isMenuActive('satellite') }">
+            <button class="nav-group-header" @click="toggleMenu('satellite')">
+              <span class="nav-icon">🛰️</span>
+              <span class="nav-label">Satélite</span>
+              <span class="nav-arrow">{{ expandedMenus.includes('satellite') ? '▼' : '▶' }}</span>
+            </button>
+            <div class="nav-subitems" v-show="expandedMenus.includes('satellite')">
+              <button 
+                class="nav-subitem" 
+                :class="{ active: activeView === 'satellite-config' }"
+                @click="activeView = 'satellite-config'"
+              >
+                <span class="sub-icon">⚙️</span> Configuración
+              </button>
+              <button 
+                class="nav-subitem" 
+                :class="{ active: activeView === 'satellite-reports' }"
+                @click="activeView = 'satellite-reports'"
+              >
+                <span class="sub-icon">📊</span> Reportes
+              </button>
+            </div>
+          </div>
+          
+          <!-- 📐 PLANOS (con sub-items) -->
+          <div class="nav-group" :class="{ expanded: expandedMenus.includes('blueprints'), active: isMenuActive('blueprints') }">
+            <button class="nav-group-header" @click="toggleMenu('blueprints')">
+              <span class="nav-icon">📐</span>
+              <span class="nav-label">Planos</span>
+              <span class="nav-arrow">{{ expandedMenus.includes('blueprints') ? '▼' : '▶' }}</span>
+            </button>
+            <div class="nav-subitems" v-show="expandedMenus.includes('blueprints')">
+              <button 
+                class="nav-subitem" 
+                :class="{ active: activeView === 'blueprints-viewer' }"
+                @click="activeView = 'blueprints-viewer'"
+              >
+                <span class="sub-icon">👁️</span> Visor CAD
+              </button>
+              <button 
+                class="nav-subitem" 
+                :class="{ active: activeView === 'blueprints-projects' }"
+                @click="activeView = 'blueprints-projects'"
+              >
+                <span class="sub-icon">📁</span> Proyectos
+              </button>
+            </div>
+          </div>
+        </nav>
         
         <!-- Camera List (when cameras view active) -->
-        <template v-if="activeView === 'cameras'">
+        <template v-if="activeView.startsWith('cameras')">
           <div class="sidebar-header">
             <h3>🎥 Cámaras</h3>
             <button @click="showAdd = true" class="btn-icon" title="Añadir Cámara">+</button>
@@ -1228,7 +1283,7 @@ const saveProfile = async () => {
         </template>
         
         <!-- Satellite Info (when satellite view active) -->
-        <template v-if="activeView === 'satellite'">
+        <template v-if="activeView.startsWith('satellite')">
           <div class="sidebar-header">
             <h3>🛰️ Satélite</h3>
           </div>
@@ -1239,27 +1294,13 @@ const saveProfile = async () => {
               <li>✓ Actualización cada 5 días</li>
               <li>✓ Detección automática</li>
             </ul>
-          </div>
-        </template>
-        
-        <!-- Reports Info (when reports view active) -->
-        <template v-if="activeView === 'reports'">
-          <div class="sidebar-header">
-            <h3>📊 Reportes</h3>
-          </div>
-          <div class="satellite-info">
-            <p class="info-text">Análisis de cambios en imágenes satelitales.</p>
-            <ul class="feature-list">
-              <li>✓ Comparación de imágenes</li>
-              <li>✓ Detección de cambios</li>
-              <li>✓ Análisis con IA</li>
-              <li>✓ Historial de análisis</li>
-            </ul>
+            <div class="current-subview" v-if="activeView === 'satellite-config'">📍 Configuración de zonas</div>
+            <div class="current-subview" v-else-if="activeView === 'satellite-reports'">📊 Análisis y reportes</div>
           </div>
         </template>
         
         <!-- Blueprints Info (when blueprints view active) -->
-        <template v-if="activeView === 'blueprints'">
+        <template v-if="activeView.startsWith('blueprints')">
           <div class="sidebar-header">
             <h3>📐 Planos</h3>
           </div>
@@ -1272,11 +1313,13 @@ const saveProfile = async () => {
               <li>✓ Evaluación de seguridad</li>
               <li>✓ Estimación de dimensiones</li>
             </ul>
+            <div class="current-subview" v-if="activeView === 'blueprints-viewer'">👁️ Visor de planos</div>
+            <div class="current-subview" v-else-if="activeView === 'blueprints-projects'">📁 Gestión de proyectos</div>
           </div>
         </template>
         
-        <!-- Monitoring Info (when monitoring view active) -->
-        <template v-if="activeView === 'monitoring'">
+        <!-- Monitoring Info (when cameras-monitoring view active) -->
+        <template v-if="activeView === 'cameras-monitoring'">
           <div class="sidebar-header">
             <h3>📡 Monitor</h3>
           </div>
@@ -1303,8 +1346,8 @@ const saveProfile = async () => {
         </template>
     </div>
 
-    <!-- Main Content: Cameras -->
-    <div class="main-content" v-if="activeView === 'cameras' && activeCamera">
+    <!-- Main Content: Cameras Live View -->
+    <div class="main-content" v-if="activeView === 'cameras-live' && activeCamera">
       <header class="control-header">
         <div class="header-left">
           <h2>{{ activeCamera.name }}</h2>
@@ -1761,13 +1804,13 @@ const saveProfile = async () => {
 
     </div>
     
-    <!-- Empty State for Cameras -->
-    <div v-else-if="activeView === 'cameras'" class="empty-state">
+    <!-- Empty State for Cameras Live -->
+    <div v-else-if="activeView === 'cameras-live'" class="empty-state">
       <p>Seleccione una cámara para comenzar</p>
     </div>
     
-    <!-- Satellite View -->
-    <div class="main-content satellite-view" v-if="activeView === 'satellite'">
+    <!-- Satellite Config View -->
+    <div class="main-content satellite-view" v-if="activeView === 'satellite-config'">
       <SatellitePanel 
         :api-url="API_URL"
         :token="token"
@@ -1775,8 +1818,8 @@ const saveProfile = async () => {
       />
     </div>
     
-    <!-- Reports View -->
-    <div class="main-content reports-view" v-if="activeView === 'reports'">
+    <!-- Satellite Reports View -->
+    <div class="main-content reports-view" v-if="activeView === 'satellite-reports'">
       <SatelliteReportsPanel 
         :token="token"
         :zones="satelliteZones"
@@ -1784,16 +1827,26 @@ const saveProfile = async () => {
       />
     </div>
     
-    <!-- Blueprints View -->
-    <div class="main-content blueprints-view" v-if="activeView === 'blueprints'">
+    <!-- Blueprints Viewer -->
+    <div class="main-content blueprints-view" v-if="activeView === 'blueprints-viewer'">
       <BlueprintPanel 
         :api-url="API_URL"
         :storage-url="API_URL.replace('/api', '')"
+        mode="viewer"
+      />
+    </div>
+    
+    <!-- Blueprints Projects -->
+    <div class="main-content blueprints-view" v-if="activeView === 'blueprints-projects'">
+      <BlueprintPanel 
+        :api-url="API_URL"
+        :storage-url="API_URL.replace('/api', '')"
+        mode="projects"
       />
     </div>
 
     <!-- Monitoring View (Background Detection) -->
-    <div class="main-content monitoring-view" v-if="activeView === 'monitoring'">
+    <div class="main-content monitoring-view" v-if="activeView === 'cameras-monitoring'">
       <header class="control-header">
         <div class="header-left">
           <h2>📡 Monitoreo en Segundo Plano</h2>
@@ -1861,7 +1914,7 @@ const saveProfile = async () => {
         <div v-if="cameras.length === 0" class="monitoring-empty">
           <span class="empty-icon">📷</span>
           <p>No hay cámaras configuradas</p>
-          <button @click="activeView = 'cameras'; showAdd = true" class="btn-confirm">
+          <button @click="activeView = 'cameras-live'; showAdd = true" class="btn-confirm">
             + Agregar Cámara
           </button>
         </div>
@@ -2091,7 +2144,109 @@ const saveProfile = async () => {
   flex-direction: column;
 }
 
-/* View Tabs */
+/* Hierarchical Navigation Menu */
+.nav-menu {
+  padding: 0.5rem 0;
+  border-bottom: 1px solid #30363d;
+}
+
+.nav-group {
+  margin-bottom: 2px;
+}
+
+.nav-group-header {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  padding: 0.75rem 1rem;
+  background: transparent;
+  border: none;
+  color: #8b949e;
+  font-size: 0.9rem;
+  cursor: pointer;
+  transition: all 0.2s;
+  text-align: left;
+}
+
+.nav-group-header:hover {
+  background: rgba(255, 255, 255, 0.05);
+  color: #c9d1d9;
+}
+
+.nav-group.active .nav-group-header {
+  color: #58a6ff;
+  background: rgba(88, 166, 255, 0.05);
+}
+
+.nav-group.expanded .nav-group-header {
+  color: #c9d1d9;
+}
+
+.nav-icon {
+  font-size: 1.1rem;
+  margin-right: 0.75rem;
+  width: 24px;
+  text-align: center;
+}
+
+.nav-label {
+  flex: 1;
+  font-weight: 500;
+}
+
+.nav-arrow {
+  font-size: 0.65rem;
+  color: #6e7681;
+  transition: transform 0.2s;
+}
+
+.nav-subitems {
+  background: rgba(0, 0, 0, 0.2);
+  padding: 0.25rem 0;
+}
+
+.nav-subitem {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  padding: 0.6rem 1rem 0.6rem 2.5rem;
+  background: transparent;
+  border: none;
+  color: #8b949e;
+  font-size: 0.85rem;
+  cursor: pointer;
+  transition: all 0.2s;
+  text-align: left;
+}
+
+.nav-subitem:hover {
+  background: rgba(255, 255, 255, 0.05);
+  color: #c9d1d9;
+}
+
+.nav-subitem.active {
+  color: #58a6ff;
+  background: rgba(88, 166, 255, 0.1);
+  border-left: 3px solid #58a6ff;
+  padding-left: calc(2.5rem - 3px);
+}
+
+.sub-icon {
+  margin-right: 0.5rem;
+  font-size: 0.9rem;
+}
+
+.current-subview {
+  margin-top: 1rem;
+  padding: 0.5rem 0.75rem;
+  background: rgba(88, 166, 255, 0.1);
+  border-radius: 6px;
+  color: #58a6ff;
+  font-size: 0.8rem;
+  text-align: center;
+}
+
+/* Legacy view-tabs styles (for backwards compatibility) */
 .view-tabs {
   display: flex;
   border-bottom: 1px solid #30363d;
