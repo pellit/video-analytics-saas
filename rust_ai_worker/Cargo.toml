@@ -7,27 +7,24 @@ description = "High-performance AI worker for video analytics using ONNX Runtime
 
 [dependencies]
 # Async Runtime
-tokio = { version = "1.41", features = ["full", "rt-multi-thread", "macros", "sync"] }
+tokio = { version = "1.41", features = ["full", "rt-multi-thread", "macros", "sync", "signal"] }
 
 # ONNX Runtime for inference
 ort = { version = "2.0.0-rc.9", features = ["load-dynamic"] }
 
-# OpenCV bindings for video processing
-opencv = { version = "0.93", features = ["videoio", "imgproc", "core"] }
-
 # Redis communication
-redis = { version = "0.27", features = ["tokio-comp", "aio"] }
+redis = { version = "0.25", features = ["tokio-comp", "aio"] }
 
 # Serialization
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 
 # N-dimensional arrays (like numpy)
-ndarray = "0.16"
+ndarray = "0.15"
 
 # Error handling
 anyhow = "1.0"
-thiserror = "2.0"
+thiserror = "1.0"
 
 # Environment variables
 dotenvy = "0.15"
@@ -39,11 +36,8 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 # Time handling
 chrono = { version = "0.4", features = ["serde"] }
 
-# Image processing utilities
-image = "0.25"
-
-# HTTP client for health checks
-reqwest = { version = "0.12", features = ["json"] }
+# OpenCV - commented out until we fix bindings
+# opencv = { version = "0.92", default-features = false, features = ["clang-runtime"] }
 
 [profile.release]
 opt-level = 3

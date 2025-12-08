@@ -1,21 +1,14 @@
 //! Rust AI Worker for Video Analytics
 //! 
 //! High-performance video analysis worker using ONNX Runtime for inference.
-//! Designed to replace Python worker with 10x less RAM and 5x more FPS.
 
 use anyhow::{Context, Result};
-use ndarray::{Array, Array4, ArrayView4, s};
-use opencv::{
-    core::{Mat, Size, Vector, CV_32F, CV_8UC3},
-    imgproc,
-    prelude::*,
-    videoio::{VideoCapture, CAP_ANY, CAP_PROP_FRAME_WIDTH, CAP_PROP_FRAME_HEIGHT},
-};
-use ort::{GraphOptimizationLevel, Session};
+use ndarray::Array4;
+use ort::session::{builder::GraphOptimizationLevel, Session};
+use ort::value::Tensor;
 use redis::AsyncCommands;
 use serde::{Deserialize, Serialize};
 use std::env;
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::broadcast;
 use tracing::{debug, error, info, warn};
@@ -33,8 +26,6 @@ struct Config {
     rtsp_url: String,
     confidence_threshold: f32,
     target_fps: u32,
-    input_width: i32,
-    input_height: i32,
 }
 
 impl Config {
@@ -55,8 +46,6 @@ impl Config {
                 .unwrap_or_else(|_| "25".into())
                 .parse()
                 .unwrap_or(25),
-            input_width: 640,
-            input_height: 640,
         })
     }
 }
@@ -65,26 +54,17 @@ impl Config {
 // DATA STRUCTURES
 // ============================================================================
 
-/// Single detection result
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Detection {
-    /// Normalized x coordinate (0-1)
     x: f32,
-    /// Normalized y coordinate (0-1)
     y: f32,
-    /// Normalized width (0-1)
     w: f32,
-    /// Normalized height (0-1)
     h: f32,
-    /// Class label
     class: String,
-    /// Confidence score (0-1)
     confidence: f32,
-    /// Class ID
     class_id: i32,
 }
 
-/// Event sent to Redis
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct CameraEvent {
     #[serde(rename = "type")]
@@ -96,15 +76,6 @@ struct CameraEvent {
     processing_ms: u64,
     fps: f32,
     timestamp: String,
-}
-
-/// Statistics for monitoring
-#[derive(Debug, Default)]
-struct Stats {
-    frames_processed: u64,
-    total_detections: u64,
-    avg_inference_ms: f64,
-    current_fps: f32,
 }
 
 // ============================================================================
@@ -132,8 +103,6 @@ const COCO_CLASSES: [&str; 80] = [
 
 struct InferenceEngine {
     session: Session,
-    input_width: i32,
-    input_height: i32,
     confidence_threshold: f32,
 }
 
@@ -149,120 +118,70 @@ impl InferenceEngine {
         
         info!("✅ Model loaded successfully");
         
-        // Log model inputs/outputs
         for (i, input) in session.inputs.iter().enumerate() {
-            info!("Input {}: {} - {:?}", i, input.name, input.input_type);
+            info!("Input {}: {}", i, input.name);
         }
         for (i, output) in session.outputs.iter().enumerate() {
-            info!("Output {}: {} - {:?}", i, output.name, output.output_type);
+            info!("Output {}: {}", i, output.name);
         }
         
-        Ok(Self {
-            session,
-            input_width: 640,
-            input_height: 640,
-            confidence_threshold,
-        })
+        Ok(Self { session, confidence_threshold })
     }
     
-    /// Preprocess frame: BGR -> RGB, resize, normalize to 0-1, NCHW format
-    fn preprocess(&self, frame: &Mat) -> Result<Array4<f32>> {
-        let mut resized = Mat::default();
-        let mut rgb = Mat::default();
+    fn infer(&mut self, input_data: Array4<f32>) -> Result<Vec<Detection>> {
+        // Run inference - ort 2.0 API
+        // Convert ndarray to shape + vec for ort::Tensor
+        let shape = input_data.shape().to_vec();
+        let data_vec: Vec<f32> = input_data.into_raw_vec();
+        let input_tensor = Tensor::from_array((shape, data_vec.into_boxed_slice()))?;
         
-        // Resize to model input size
-        imgproc::resize(
-            frame,
-            &mut resized,
-            Size::new(self.input_width, self.input_height),
-            0.0,
-            0.0,
-            imgproc::INTER_LINEAR,
-        )?;
+        let outputs = self.session.run(ort::inputs!["images" => input_tensor])?;
         
-        // BGR to RGB
-        imgproc::cvt_color(&resized, &mut rgb, imgproc::COLOR_BGR2RGB, 0)?;
-        
-        // Convert to float and normalize
-        let mut float_mat = Mat::default();
-        rgb.convert_to(&mut float_mat, CV_32F, 1.0 / 255.0, 0.0)?;
-        
-        // Get raw data
-        let rows = float_mat.rows() as usize;
-        let cols = float_mat.cols() as usize;
-        let channels = 3usize;
-        
-        // Create ndarray from Mat data
-        let data: Vec<f32> = float_mat
-            .data_bytes()?
-            .chunks(4)
-            .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
-            .collect();
-        
-        // Reshape to NCHW format: [1, 3, 640, 640]
-        let array = Array::from_shape_vec((rows, cols, channels), data)?;
-        let array = array.permuted_axes([2, 0, 1]); // HWC -> CHW
-        let array = array.insert_axis(ndarray::Axis(0)); // Add batch dimension
-        
-        Ok(array.to_owned())
-    }
-    
-    /// Run inference and extract detections
-    fn infer(&self, input: ArrayView4<f32>, original_width: i32, original_height: i32) -> Result<Vec<Detection>> {
-        let outputs = self.session.run(ort::inputs![input]?)?;
-        
-        // YOLOv8 output shape: [1, 84, 8400] where 84 = 4 (bbox) + 80 (classes)
-        let output = outputs[0].try_extract_tensor::<f32>()?;
-        let output = output.view();
+        // Get first output - extract data before outputs is dropped
+        let (shape, data): (Vec<usize>, Vec<f32>) = {
+            let output_tensor = &outputs[0];
+            let (shape_ref, data_slice) = output_tensor.try_extract_tensor::<f32>()?;
+            let shape: Vec<usize> = shape_ref.iter().map(|&d| d as usize).collect();
+            let data: Vec<f32> = data_slice.to_vec();
+            (shape, data)
+        };
+        drop(outputs); // Explicitly drop to release the borrow
         
         let mut detections = Vec::new();
         
-        // Get dimensions
-        let shape = output.shape();
         if shape.len() != 3 {
             warn!("Unexpected output shape: {:?}", shape);
             return Ok(detections);
         }
         
-        let num_classes = shape[1] - 4; // 84 - 4 = 80 classes
+        let num_classes = shape[1] - 4;  // 84 - 4 = 80
         let num_predictions = shape[2]; // 8400
         
-        // Process each prediction
         for i in 0..num_predictions {
-            // Get bounding box (center x, center y, width, height)
-            let cx = output[[0, 0, i]];
-            let cy = output[[0, 1, i]];
-            let w = output[[0, 2, i]];
-            let h = output[[0, 3, i]];
+            let cx = data[0 * num_predictions + i];
+            let cy = data[1 * num_predictions + i];
+            let w = data[2 * num_predictions + i];
+            let h = data[3 * num_predictions + i];
             
-            // Find best class
             let mut best_class = 0;
             let mut best_conf = 0.0f32;
             
             for c in 0..num_classes {
-                let conf = output[[0, 4 + c, i]];
+                let conf = data[(4 + c) * num_predictions + i];
                 if conf > best_conf {
                     best_conf = conf;
                     best_class = c;
                 }
             }
             
-            // Filter by confidence
             if best_conf < self.confidence_threshold {
                 continue;
             }
             
-            // Convert to normalized coordinates (0-1)
-            let x = (cx - w / 2.0) / self.input_width as f32;
-            let y = (cy - h / 2.0) / self.input_height as f32;
-            let w_norm = w / self.input_width as f32;
-            let h_norm = h / self.input_height as f32;
-            
-            // Clamp to valid range
-            let x = x.max(0.0).min(1.0);
-            let y = y.max(0.0).min(1.0);
-            let w_norm = w_norm.max(0.0).min(1.0 - x);
-            let h_norm = h_norm.max(0.0).min(1.0 - y);
+            let x = ((cx - w / 2.0) / 640.0).max(0.0).min(1.0);
+            let y = ((cy - h / 2.0) / 640.0).max(0.0).min(1.0);
+            let w_norm = (w / 640.0).max(0.0).min(1.0 - x);
+            let h_norm = (h / 640.0).max(0.0).min(1.0 - y);
             
             let class_name = if best_class < COCO_CLASSES.len() {
                 COCO_CLASSES[best_class].to_string()
@@ -271,54 +190,39 @@ impl InferenceEngine {
             };
             
             detections.push(Detection {
-                x,
-                y,
-                w: w_norm,
-                h: h_norm,
+                x, y, w: w_norm, h: h_norm,
                 class: class_name,
                 confidence: best_conf,
                 class_id: best_class as i32,
             });
         }
         
-        // Apply NMS (simple version - filter overlapping boxes)
         detections = self.nms(detections, 0.45);
-        
         debug!("Found {} detections", detections.len());
         Ok(detections)
     }
     
-    /// Simple Non-Maximum Suppression
     fn nms(&self, mut detections: Vec<Detection>, iou_threshold: f32) -> Vec<Detection> {
-        // Sort by confidence (descending)
         detections.sort_by(|a, b| b.confidence.partial_cmp(&a.confidence).unwrap());
         
         let mut keep = Vec::new();
         let mut suppressed = vec![false; detections.len()];
         
         for i in 0..detections.len() {
-            if suppressed[i] {
-                continue;
-            }
-            
+            if suppressed[i] { continue; }
             keep.push(detections[i].clone());
             
             for j in (i + 1)..detections.len() {
-                if suppressed[j] {
-                    continue;
-                }
-                
+                if suppressed[j] { continue; }
                 let iou = self.compute_iou(&detections[i], &detections[j]);
                 if iou > iou_threshold && detections[i].class_id == detections[j].class_id {
                     suppressed[j] = true;
                 }
             }
         }
-        
         keep
     }
     
-    /// Compute Intersection over Union
     fn compute_iou(&self, a: &Detection, b: &Detection) -> f32 {
         let x1 = a.x.max(b.x);
         let y1 = a.y.max(b.y);
@@ -330,77 +234,7 @@ impl InferenceEngine {
         let area_b = b.w * b.h;
         let union = area_a + area_b - intersection;
         
-        if union > 0.0 {
-            intersection / union
-        } else {
-            0.0
-        }
-    }
-}
-
-// ============================================================================
-// VIDEO CAPTURE
-// ============================================================================
-
-struct VideoStream {
-    capture: VideoCapture,
-    width: i32,
-    height: i32,
-}
-
-impl VideoStream {
-    fn new(url: &str) -> Result<Self> {
-        info!("Opening video stream: {}", url);
-        
-        let mut capture = VideoCapture::from_file(url, CAP_ANY)?;
-        
-        if !capture.is_opened()? {
-            anyhow::bail!("Failed to open video stream: {}", url);
-        }
-        
-        let width = capture.get(CAP_PROP_FRAME_WIDTH)? as i32;
-        let height = capture.get(CAP_PROP_FRAME_HEIGHT)? as i32;
-        
-        info!("✅ Stream opened: {}x{}", width, height);
-        
-        Ok(Self {
-            capture,
-            width,
-            height,
-        })
-    }
-    
-    fn read_frame(&mut self) -> Result<Option<Mat>> {
-        let mut frame = Mat::default();
-        
-        if self.capture.read(&mut frame)? && !frame.empty() {
-            Ok(Some(frame))
-        } else {
-            Ok(None)
-        }
-    }
-    
-    fn reconnect(&mut self, url: &str) -> Result<()> {
-        warn!("Attempting to reconnect to stream...");
-        
-        // Close current capture
-        drop(std::mem::take(&mut self.capture));
-        
-        // Wait before reconnecting
-        std::thread::sleep(Duration::from_secs(2));
-        
-        // Try to reconnect
-        self.capture = VideoCapture::from_file(url, CAP_ANY)?;
-        
-        if !self.capture.is_opened()? {
-            anyhow::bail!("Reconnection failed");
-        }
-        
-        self.width = self.capture.get(CAP_PROP_FRAME_WIDTH)? as i32;
-        self.height = self.capture.get(CAP_PROP_FRAME_HEIGHT)? as i32;
-        
-        info!("✅ Reconnected successfully");
-        Ok(())
+        if union > 0.0 { intersection / union } else { 0.0 }
     }
 }
 
@@ -416,29 +250,17 @@ struct RedisPublisher {
 impl RedisPublisher {
     async fn new(redis_url: &str, camera_id: &str) -> Result<Self> {
         info!("Connecting to Redis: {}", redis_url);
-        
         let client = redis::Client::open(redis_url)?;
         let connection = client.get_multiplexed_async_connection().await?;
-        
         let channel = format!("camera:{}:detections", camera_id);
-        
-        info!("✅ Redis connected, publishing to: {}", channel);
-        
-        Ok(Self {
-            connection,
-            channel,
-        })
+        info!("✅ Redis connected");
+        Ok(Self { connection, channel })
     }
     
     async fn publish(&mut self, event: &CameraEvent) -> Result<()> {
         let json = serde_json::to_string(event)?;
-        
-        // Publish to camera-specific channel
         self.connection.publish::<_, _, ()>(&self.channel, &json).await?;
-        
-        // Also publish to general detections channel (for compatibility)
         self.connection.publish::<_, _, ()>("detections", &json).await?;
-        
         Ok(())
     }
     
@@ -450,92 +272,74 @@ impl RedisPublisher {
 }
 
 // ============================================================================
+// DUMMY VIDEO SOURCE
+// ============================================================================
+
+struct DummyVideoSource {
+    frame_count: u64,
+}
+
+impl DummyVideoSource {
+    fn new() -> Self {
+        Self { frame_count: 0 }
+    }
+    
+    fn next_frame(&mut self) -> Array4<f32> {
+        self.frame_count += 1;
+        
+        // Create test pattern [1, 3, 640, 640]
+        let mut data = vec![0.0f32; 1 * 3 * 640 * 640];
+        for c in 0..3 {
+            for y in 0..640 {
+                for x in 0..640 {
+                    let idx = c * 640 * 640 + y * 640 + x;
+                    data[idx] = ((x as f32 / 640.0) + (self.frame_count as f32 * 0.01)) % 1.0;
+                }
+            }
+        }
+        
+        Array4::from_shape_vec((1, 3, 640, 640), data).expect("shape error")
+    }
+}
+
+// ============================================================================
 // MAIN WORKER LOOP
 // ============================================================================
 
 async fn run_worker(config: Config, mut shutdown: broadcast::Receiver<()>) -> Result<()> {
-    // Initialize components
-    let engine = InferenceEngine::new(&config.model_path, config.confidence_threshold)?;
-    let mut stream = VideoStream::new(&config.rtsp_url)?;
+    let mut engine = InferenceEngine::new(&config.model_path, config.confidence_threshold)?;
     let mut publisher = RedisPublisher::new(&config.redis_url, &config.camera_id).await?;
+    let mut video = DummyVideoSource::new();
     
-    // Frame timing
+    info!("⚠️ Using dummy video (OpenCV pending)");
+    
     let frame_duration = Duration::from_millis(1000 / config.target_fps as u64);
     let mut last_frame_time = Instant::now();
     let mut fps_counter = 0u32;
     let mut fps_timer = Instant::now();
     let mut current_fps = 0.0f32;
-    
-    // Statistics
     let mut frame_number = 0u64;
     let mut total_inference_ms = 0u64;
-    let mut consecutive_errors = 0u32;
     
-    info!("🚀 Starting main processing loop (target {} FPS)", config.target_fps);
-    
-    // Set initial status
+    info!("🚀 Starting loop (target {} FPS)", config.target_fps);
     publisher.set_status(&config.camera_id, "running").await?;
     
     loop {
-        // Check for shutdown signal
         if shutdown.try_recv().is_ok() {
-            info!("Shutdown signal received");
+            info!("Shutdown signal");
             break;
         }
         
-        // Maintain target FPS
         let elapsed = last_frame_time.elapsed();
         if elapsed < frame_duration {
             tokio::time::sleep(frame_duration - elapsed).await;
         }
         last_frame_time = Instant::now();
         
-        // Read frame
-        let frame = match stream.read_frame() {
-            Ok(Some(frame)) => {
-                consecutive_errors = 0;
-                frame
-            }
-            Ok(None) => {
-                warn!("Empty frame received");
-                consecutive_errors += 1;
-                
-                if consecutive_errors > 10 {
-                    if let Err(e) = stream.reconnect(&config.rtsp_url) {
-                        error!("Reconnection failed: {}", e);
-                        tokio::time::sleep(Duration::from_secs(5)).await;
-                    }
-                    consecutive_errors = 0;
-                }
-                continue;
-            }
-            Err(e) => {
-                error!("Frame read error: {}", e);
-                consecutive_errors += 1;
-                
-                if consecutive_errors > 10 {
-                    if let Err(e) = stream.reconnect(&config.rtsp_url) {
-                        error!("Reconnection failed: {}", e);
-                        tokio::time::sleep(Duration::from_secs(5)).await;
-                    }
-                    consecutive_errors = 0;
-                }
-                continue;
-            }
-        };
-        
-        // Preprocess
         let inference_start = Instant::now();
-        let input = match engine.preprocess(&frame) {
-            Ok(input) => input,
-            Err(e) => {
-                error!("Preprocessing error: {}", e);
-                continue;
-            }
-        };
+        let input = video.next_frame();
         
-        // Inference
-        let detections = match engine.infer(input.view(), stream.width, stream.height) {
+        let detections = match engine.infer(input) {
             Ok(dets) => dets,
             Err(e) => {
                 error!("Inference error: {}", e);
@@ -548,28 +352,16 @@ async fn run_worker(config: Config, mut shutdown: broadcast::Receiver<()>) -> Re
         frame_number += 1;
         fps_counter += 1;
         
-        // Update FPS every second
         if fps_timer.elapsed() >= Duration::from_secs(1) {
             current_fps = fps_counter as f32;
             fps_counter = 0;
             fps_timer = Instant::now();
             
-            let avg_ms = if frame_number > 0 {
-                total_inference_ms as f64 / frame_number as f64
-            } else {
-                0.0
-            };
-            
-            info!(
-                "📊 FPS: {:.1} | Avg inference: {:.1}ms | Frames: {} | Detections: {}",
-                current_fps, avg_ms, frame_number, detections.len()
-            );
-            
-            // Update status in Redis
+            let avg_ms = total_inference_ms as f64 / frame_number as f64;
+            info!("📊 FPS: {:.1} | Avg: {:.1}ms | Frames: {}", current_fps, avg_ms, frame_number);
             let _ = publisher.set_status(&config.camera_id, "running").await;
         }
         
-        // Publish event (only if there are detections or periodically)
         if !detections.is_empty() || frame_number % 30 == 0 {
             let event = CameraEvent {
                 event_type: "detections".to_string(),
@@ -583,64 +375,44 @@ async fn run_worker(config: Config, mut shutdown: broadcast::Receiver<()>) -> Re
             };
             
             if let Err(e) = publisher.publish(&event).await {
-                error!("Failed to publish event: {}", e);
+                error!("Publish error: {}", e);
             }
         }
     }
     
-    // Cleanup
     publisher.set_status(&config.camera_id, "stopped").await?;
-    info!("Worker stopped gracefully");
-    
+    info!("Worker stopped");
     Ok(())
 }
 
 // ============================================================================
-// MAIN ENTRY POINT
+// MAIN
 // ============================================================================
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // Initialize logging
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"))
         )
         .with_target(false)
-        .with_thread_ids(true)
         .init();
     
     info!("🦀 Rust AI Worker v{}", env!("CARGO_PKG_VERSION"));
-    info!("Starting high-performance video analytics worker...");
     
-    // Load configuration
     let config = Config::from_env()?;
-    info!("Configuration loaded:");
-    info!("  Camera ID: {}", config.camera_id);
-    info!("  User ID: {}", config.user_id);
-    info!("  RTSP URL: {}", config.rtsp_url);
-    info!("  Model: {}", config.model_path);
-    info!("  Confidence threshold: {}", config.confidence_threshold);
-    info!("  Target FPS: {}", config.target_fps);
+    info!("Config: camera={}, model={}", config.camera_id, config.model_path);
     
-    // Setup shutdown signal
     let (shutdown_tx, shutdown_rx) = broadcast::channel::<()>(1);
     
-    // Handle Ctrl+C
-    let shutdown_tx_clone = shutdown_tx.clone();
     tokio::spawn(async move {
         tokio::signal::ctrl_c().await.ok();
-        info!("Received Ctrl+C, initiating shutdown...");
-        let _ = shutdown_tx_clone.send(());
+        info!("Ctrl+C");
+        let _ = shutdown_tx.send(());
     });
     
-    // Run worker
-    if let Err(e) = run_worker(config, shutdown_rx).await {
-        error!("Worker error: {}", e);
-        return Err(e);
-    }
-    
-    info!("👋 Goodbye!");
+    run_worker(config, shutdown_rx).await?;
+    info!("👋 Bye!");
     Ok(())
 }
