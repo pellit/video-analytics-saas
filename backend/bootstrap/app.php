@@ -16,6 +16,11 @@ return Application::configure(basePath: dirname(__DIR__))
         $middleware->alias([
             'superadmin' => \App\Http\Middleware\CheckSuperAdmin::class,
             'api.key' => \App\Http\Middleware\AuthenticateApiKey::class,
+            // Billing & Subscription middlewares
+            'subscription' => \App\Http\Middleware\CheckSubscription::class,
+            'camera.limit' => \App\Http\Middleware\CheckCameraLimit::class,
+            'api.limit' => \App\Http\Middleware\CheckApiLimit::class,
+            'analysis.limit' => \App\Http\Middleware\CheckAnalysisLimit::class,
         ]);
     })
     ->withExceptions(function (Exceptions $exceptions) {

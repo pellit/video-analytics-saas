@@ -13,20 +13,32 @@ use App\Http\Controllers\SceneAnalysisController;
 | en el archivo principal api.php
 */
 
-// Perfil del usuario
+// Perfil del usuario (incluye límites y plan)
 Route::get('/user', function (Request $request) {
-    return $request->user();
+    $user = $request->user();
+    return response()->json([
+        'id' => $user->id,
+        'name' => $user->name,
+        'email' => $user->email,
+        'role' => $user->role,
+        'last_login_at' => $user->last_login_at,
+        'plan' => $user->currentPlan()->only(['name', 'display_name']),
+        'limits' => $user->limits,
+        'is_superadmin' => $user->isSuperAdmin(),
+        'subscribed' => $user->subscribed(),
+        'on_trial' => $user->onTrial(),
+    ]);
 });
 
-// CRUD de Cámaras
-Route::get('/cameras', [CameraController::class, 'index']);      // Listar
-Route::post('/cameras', [CameraController::class, 'store']);     // Crear
-Route::patch('/cameras/{id}', [CameraController::class, 'update']);  // Actualizar cámara
-Route::delete('/cameras/{id}', [CameraController::class, 'destroy']); // Eliminar cámara
+// CRUD de Cámaras (con límite de cámaras en POST)
+Route::get('/cameras', [CameraController::class, 'index']);
+Route::post('/cameras', [CameraController::class, 'store'])->middleware('camera.limit');
+Route::patch('/cameras/{id}', [CameraController::class, 'update']);
+Route::delete('/cameras/{id}', [CameraController::class, 'destroy']);
 
-// Control de Video (Redis)
-Route::post('/camera/start', [CameraController::class, 'start']); // Iniciar stream
-Route::post('/camera/stop', [CameraController::class, 'stop']);   // Detener stream
+// Control de Video (Redis) - con verificación de análisis
+Route::post('/camera/start', [CameraController::class, 'start'])->middleware('analysis.limit');
+Route::post('/camera/stop', [CameraController::class, 'stop']);
 
 // Configuración de cámara (Wizard)
 Route::post('/cameras/{camera}/setup', [SceneAnalysisController::class, 'completeSetup']);

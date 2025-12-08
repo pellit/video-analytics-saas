@@ -47,6 +47,9 @@ Route::get('/health', function () {
 // 1. Cargar Rutas Públicas (Auth)
 require __DIR__ . '/api/auth.php';
 
+// 2. Cargar Rutas de Billing (pagos y suscripciones)
+require __DIR__ . '/api/billing.php';
+
 // Worker endpoints (simple API key based)
 use App\Http\Controllers\WorkerController;
 Route::post('/worker/detections', [WorkerController::class, 'postDetection']);
