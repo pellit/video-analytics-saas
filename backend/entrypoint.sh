@@ -3,6 +3,26 @@ set -e
 
 echo "🚀 Iniciando despliegue de Laravel..."
 
+# Wait for MySQL to be ready
+wait_for_mysql() {
+    echo "⏳ Esperando a que MySQL esté listo..."
+    max_attempts=30
+    attempt=1
+    
+    while [ $attempt -le $max_attempts ]; do
+        if php -r "try { new PDO('mysql:host=${DB_HOST:-db};port=${DB_PORT:-3306}', '${DB_USERNAME:-root}', '${DB_PASSWORD:-secret}'); echo 'ok'; } catch(Exception \$e) { exit(1); }" 2>/dev/null; then
+            echo "✅ MySQL está listo!"
+            return 0
+        fi
+        echo "   Intento $attempt/$max_attempts - MySQL no disponible aún..."
+        sleep 2
+        attempt=$((attempt + 1))
+    done
+    
+    echo "❌ Error: MySQL no respondió después de $max_attempts intentos"
+    return 1
+}
+
 # 0. Crear .env desde variables de entorno si no existe
 if [ ! -f .env ]; then
     echo "📝 Creando .env desde variables de entorno..."
@@ -45,6 +65,9 @@ fi
 # Esto es útil para ejecutar comandos puntuales en el contenedor (p.ej. composer require) sin que
 # el entrypoint intente correr migraciones o seeders antes de que estén satisfechas las dependencias.
 if [ "${ENTRYPOINT_RUN_MIGRATIONS:-true}" = "true" ]; then
+	# Wait for MySQL before running migrations
+	wait_for_mysql
+
 	# 1. Correr migraciones (Estructura de la BD)
 	echo "📦 Ejecutando migraciones de base de datos..."
 	php artisan migrate --force
