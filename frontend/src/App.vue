@@ -1,14 +1,22 @@
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, computed } from 'vue'
 import AuthLogin from './components/AuthLogin.vue'
 import UserDashboard from './components/UserDashboard.vue'
 import AdminDashboard from './components/AdminDashboard.vue'
+import OctopusLayout from './components/OctopusLayout.vue'
 
 // Estado Global
 const token = ref(localStorage.getItem('token'))
 const user = ref(JSON.parse(localStorage.getItem('user') || 'null'))
-const currentView = ref('dashboard') // 'dashboard' o 'admin'
+const currentView = ref('dashboard') // 'dashboard', 'admin', 'octopus'
+const viewMode = ref(localStorage.getItem('viewMode') || 'classic') // 'classic' or 'octopus'
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000/api'
+
+// Toggle view mode
+const toggleViewMode = () => {
+  viewMode.value = viewMode.value === 'classic' ? 'octopus' : 'classic'
+  localStorage.setItem('viewMode', viewMode.value)
+}
 
 // Función para iniciar sesión (se pasa a AuthLogin)
 const handleLoginSuccess = (data) => {
@@ -64,15 +72,36 @@ onMounted(async () => {
   />
 
   <div v-else class="app-container">
-    <UserDashboard 
-      v-if="currentView === 'dashboard'" 
-      :token="token" 
-      :user="user" 
-      @logout="handleLogout"
-      @navigate="handleNavigate"
-    />
-    <AdminDashboard 
-      v-if="currentView === 'admin'" 
+    <!-- View Mode Toggle Button -->
+    <button 
+      class="view-mode-toggle"
+      @click="toggleViewMode"
+      :title="viewMode === 'classic' ? 'Cambiar a vista Octopus 🐙' : 'Cambiar a vista Clásica'"
+    >
+      {{ viewMode === 'classic' ? '🐙' : '📊' }}
+    </button>
+
+    <!-- Classic View -->
+    <template v-if="viewMode === 'classic'">
+      <UserDashboard 
+        v-if="currentView === 'dashboard'" 
+        :token="token" 
+        :user="user" 
+        @logout="handleLogout"
+        @navigate="handleNavigate"
+      />
+      <AdminDashboard 
+        v-if="currentView === 'admin'" 
+        :token="token"
+        :user="user"
+        @logout="handleLogout"
+        @navigate="handleNavigate"
+      />
+    </template>
+
+    <!-- Octopus Command Center View -->
+    <OctopusLayout
+      v-else
       :token="token"
       :user="user"
       @logout="handleLogout"
@@ -97,5 +126,36 @@ body {
 .app-container {
   min-height: 100vh;
   background: #0d1117;
+  position: relative;
+}
+
+/* View Mode Toggle Button */
+.view-mode-toggle {
+  position: fixed;
+  bottom: 24px;
+  right: 24px;
+  z-index: 9999;
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  border: none;
+  background: linear-gradient(135deg, #6366f1, #8b5cf6);
+  color: white;
+  font-size: 24px;
+  cursor: pointer;
+  box-shadow: 0 4px 20px rgba(99, 102, 241, 0.4);
+  transition: all 0.3s ease;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.view-mode-toggle:hover {
+  transform: scale(1.1);
+  box-shadow: 0 6px 30px rgba(99, 102, 241, 0.6);
+}
+
+.view-mode-toggle:active {
+  transform: scale(0.95);
 }
 </style>

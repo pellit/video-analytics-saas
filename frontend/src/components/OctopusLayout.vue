@@ -386,8 +386,8 @@ import { ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue'
 import SmartPlayer from './SmartPlayer.vue'
 import SatellitePanel from './SatellitePanel.vue'
 import BlueprintPanel from './BlueprintPanel.vue'
-import PricingPlans from './PricingPlans.vue'
-import UsageStats from './UsageStats.vue'
+import PricingPlans from './billing/PricingPlans.vue'
+import UsageStats from './billing/UsageStats.vue'
 import AddCameraModal from './AddCameraModal.vue'
 
 const props = defineProps({
