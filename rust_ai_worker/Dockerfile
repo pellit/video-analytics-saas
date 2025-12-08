@@ -34,11 +34,12 @@ RUN touch src/main.rs && \
 # ==============================================================================
 FROM debian:bookworm-slim AS runtime
 
-# Install runtime dependencies only
+# Install runtime dependencies including FFmpeg for RTSP capture
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libssl3 \
     ca-certificates \
     curl \
+    ffmpeg \
     && rm -rf /var/lib/apt/lists/* \
     && apt-get clean
 
