@@ -34,12 +34,15 @@ RUN touch src/main.rs && \
 # ==============================================================================
 FROM debian:bookworm-slim AS runtime
 
-# Install runtime dependencies including FFmpeg for RTSP capture
+# Install runtime dependencies including FFmpeg and yt-dlp for YouTube support
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libssl3 \
     ca-certificates \
     curl \
     ffmpeg \
+    python3 \
+    python3-pip \
+    && pip3 install --break-system-packages yt-dlp \
     && rm -rf /var/lib/apt/lists/* \
     && apt-get clean
 

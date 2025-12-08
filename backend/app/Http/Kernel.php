@@ -10,6 +10,9 @@ use Illuminate\Routing\Middleware\SubstituteBindings;
 use Illuminate\Routing\Middleware\ThrottleRequests;
 use Illuminate\Http\Middleware\HandleCors;
 use App\Http\Middleware\CheckSuperAdmin;
+use App\Http\Middleware\CheckCameraLimit;
+use App\Http\Middleware\CheckAnalysisLimit;
+use App\Http\Middleware\CheckApiLimit;
 
 class Kernel extends HttpKernel
 {
@@ -46,5 +49,9 @@ class Kernel extends HttpKernel
         'throttle' => \Illuminate\Routing\Middleware\ThrottleRequests::class,
         'signed' => \Illuminate\Routing\Middleware\ValidateSignature::class,
         'substituteBindings' => SubstituteBindings::class,
+        // Subscription/Billing middleware
+        'camera.limit' => CheckCameraLimit::class,
+        'analysis.limit' => CheckAnalysisLimit::class,
+        'api.limit' => CheckApiLimit::class,
     ];
 }

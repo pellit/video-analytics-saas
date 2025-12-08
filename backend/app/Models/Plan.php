@@ -55,11 +55,37 @@ class Plan extends Model
     }
 
     /**
-     * Get the free plan
+     * Get the free plan (with fallback if not in DB)
      */
     public static function free()
     {
-        return static::where('name', 'free')->first();
+        $plan = static::where('name', 'free')->first();
+        
+        // If no plan in DB, return a default free plan object
+        if (!$plan) {
+            $plan = new static([
+                'name' => 'free',
+                'display_name' => 'Plan Free',
+                'price' => 0,
+                'currency' => 'USD',
+                'camera_limit' => 1,
+                'analysis_hours_per_day' => 1,
+                'ai_advanced' => false,
+                'vlm_access' => false,
+                'satellite_access' => false,
+                'cad_access' => false,
+                'api_access' => false,
+                'api_calls_per_day' => 0,
+                'email_alerts' => false,
+                'telegram_alerts' => false,
+                'recording' => false,
+                'retention_days' => 0,
+                'features' => ['yolo_basic' => true, 'live_view' => true],
+                'is_active' => true,
+            ]);
+        }
+        
+        return $plan;
     }
 
     /**
