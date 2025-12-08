@@ -1092,10 +1092,21 @@ const initGlobalMap = async () => {
 const updateGlobalMapMarkers = () => {
   if (!globalMap || !window.L) return
   
+  // Extra safety check - verify map container still exists
+  try {
+    if (!globalMap.getContainer()) return
+  } catch (e) {
+    return
+  }
+  
   const L = window.L
   
   // Clear existing markers
-  globalMapMarkers.value.forEach(m => globalMap.removeLayer(m))
+  globalMapMarkers.value.forEach(m => {
+    try {
+      if (globalMap) globalMap.removeLayer(m)
+    } catch (e) { /* ignore */ }
+  })
   globalMapMarkers.value = []
   
   // Add markers for each zone
@@ -1115,7 +1126,10 @@ const updateGlobalMapMarkers = () => {
           selectedZoneOnMap.value = zone
           // Zoom to zone with appropriate level based on radius
           const zoomLevel = getZoomLevelForRadius(zone.radius_km)
-          globalMap.setView([zone.latitude, zone.longitude], zoomLevel, { animate: true })
+          // Safety check before setView
+          if (globalMap && globalMap.getContainer()) {
+            globalMap.setView([zone.latitude, zone.longitude], zoomLevel, { animate: true })
+          }
           // Also select in sidebar
           sidebarSelectedZone.value = zone
           loadZoneHistory(zone)
@@ -1313,13 +1327,21 @@ const openReportsModal = (zone) => {
 // Watch zones changes to update markers
 watch(zones, () => {
   if (globalMap) {
-    updateGlobalMapMarkers()
+    // Debounce marker updates to prevent rapid fire
+    setTimeout(() => {
+      if (globalMap) updateGlobalMapMarkers()
+    }, 100)
   }
 }, { deep: true })
 
 // Destroy global map
 const destroyGlobalMap = () => {
   if (globalMap) {
+    // Stop all event listeners first
+    try {
+      globalMap.off()
+    } catch (e) { /* ignore */ }
+    
     // Clear markers first
     globalMapMarkers.value.forEach(m => {
       try {
