@@ -53,7 +53,8 @@ RUN mkdir -p /app/models && chown -R worker:worker /app
 COPY --from=builder /app/target/release/rust_ai_worker /app/rust_ai_worker
 
 # Download ONNX Runtime library (needed at runtime)
-ARG ORT_VERSION=1.19.2
+# ort 2.0.0-rc.10 requires ONNX Runtime 1.22.x
+ARG ORT_VERSION=1.22.0
 RUN curl -L -o /tmp/ort.tgz \
     https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VERSION}/onnxruntime-linux-x64-${ORT_VERSION}.tgz && \
     tar -xzf /tmp/ort.tgz -C /tmp && \
