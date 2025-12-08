@@ -13,8 +13,9 @@ return new class extends Migration
      */
     public function up(): void
     {
-        // Tabla de planes
-        Schema::create('plans', function (Blueprint $table) {
+        // Tabla de planes (idempotente)
+        if (!Schema::hasTable('plans')) {
+            Schema::create('plans', function (Blueprint $table) {
             $table->id();
             $table->string('name');              // free, pro, enterprise
             $table->string('display_name');      // Plan Free, Plan Pro, Enterprise
@@ -37,10 +38,12 @@ return new class extends Migration
             $table->boolean('is_active')->default(true);
             $table->integer('sort_order')->default(0);
             $table->timestamps();
-        });
+            });
+        }
 
-        // Tabla de suscripciones (simplificada, compatible con Cashier)
-        Schema::create('subscriptions', function (Blueprint $table) {
+        // Tabla de suscripciones (idempotente)
+        if (!Schema::hasTable('subscriptions')) {
+            Schema::create('subscriptions', function (Blueprint $table) {
             $table->id();
             $table->foreignId('user_id')->constrained()->onDelete('cascade');
             $table->foreignId('plan_id')->constrained()->onDelete('restrict');
@@ -55,10 +58,12 @@ return new class extends Migration
             $table->timestamps();
 
             $table->index(['user_id', 'stripe_status']);
-        });
+            });
+        }
 
-        // Tabla de items de suscripción (para planes con múltiples items)
-        Schema::create('subscription_items', function (Blueprint $table) {
+        // Tabla de items de suscripción (idempotente)
+        if (!Schema::hasTable('subscription_items')) {
+            Schema::create('subscription_items', function (Blueprint $table) {
             $table->id();
             $table->foreignId('subscription_id')->constrained()->onDelete('cascade');
             $table->string('stripe_id')->nullable()->unique(); // si_xxx de Stripe
@@ -66,10 +71,12 @@ return new class extends Migration
             $table->string('stripe_price')->nullable();
             $table->integer('quantity')->default(1);
             $table->timestamps();
-        });
+            });
+        }
 
-        // Historial de uso (para facturación por uso)
-        Schema::create('usage_records', function (Blueprint $table) {
+        // Historial de uso (idempotente)
+        if (!Schema::hasTable('usage_records')) {
+            Schema::create('usage_records', function (Blueprint $table) {
             $table->id();
             $table->foreignId('user_id')->constrained()->onDelete('cascade');
             $table->foreignId('camera_id')->nullable()->constrained()->onDelete('set null');
@@ -79,16 +86,19 @@ return new class extends Migration
             $table->timestamps();
 
             $table->index(['user_id', 'metric', 'recorded_date']);
-        });
+            });
+        }
 
-        // Agregar campos al usuario para billing
-        Schema::table('users', function (Blueprint $table) {
+        // Agregar campos al usuario para billing (idempotente)
+        if (!Schema::hasColumn('users', 'stripe_id')) {
+            Schema::table('users', function (Blueprint $table) {
             $table->string('stripe_id')->nullable()->unique()->after('role');
             $table->string('pm_type')->nullable()->after('stripe_id');      // visa, mastercard
             $table->string('pm_last_four', 4)->nullable()->after('pm_type');
             $table->timestamp('trial_ends_at')->nullable()->after('pm_last_four');
             $table->foreignId('plan_id')->nullable()->after('trial_ends_at');
-        });
+            });
+        }
     }
 
     /**
