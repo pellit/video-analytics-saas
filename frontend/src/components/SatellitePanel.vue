@@ -59,11 +59,13 @@
           <button class="popup-close" @click="selectedZoneOnMap = null">✕</button>
           <h4>{{ selectedZoneOnMap.name }}</h4>
           <img 
-            v-if="selectedZoneOnMap.last_image_path" 
-            :src="getImageUrl(selectedZoneOnMap.last_image_path)" 
+            :src="getImageUrl(selectedZoneOnMap.last_image_path, selectedZoneOnMap)" 
             class="popup-image"
+            @error="onImageError"
           />
-          <div v-else class="popup-no-image">Sin imagen</div>
+          <div v-if="!selectedZoneOnMap.last_image_path && !serviceAvailable" class="popup-no-sentinel">
+            <small>⚠️ Sentinel no configurado</small>
+          </div>
           <div class="popup-info">
             <span>📍 {{ formatCoords(selectedZoneOnMap.latitude, selectedZoneOnMap.longitude) }}</span>
             <span>📏 Radio: {{ selectedZoneOnMap.radius_km }} km</span>
@@ -112,7 +114,7 @@
               <div class="sidebar-image-container">
                 <img 
                   v-if="sidebarSelectedZone.last_image_path"
-                  :src="getImageUrl(sidebarSelectedZone.last_image_path)"
+                  :src="getImageUrl(sidebarSelectedZone.last_image_path, sidebarSelectedZone)"
                   @click="openImageViewer(sidebarSelectedZone)"
                   class="sidebar-main-image"
                 />
@@ -222,7 +224,7 @@
                 >
                   <img 
                     v-if="zone.last_image_path" 
-                    :src="getImageUrl(zone.last_image_path)"
+                    :src="getImageUrl(zone.last_image_path, zone)"
                   />
                   <div v-else class="thumb-placeholder">
                     🛰️
@@ -297,11 +299,11 @@
         <div class="zone-preview">
           <img 
             v-if="zone.last_image_path" 
-            :src="getImageUrl(zone.last_image_path)" 
+            :src="getImageUrl(zone.last_image_path, zone)" 
             :alt="zone.name"
             @error="onImageError"
           />
-          <div v-else class="no-image">
+          <div v-if="!zone.last_image_path && !getImageUrl(null, zone)" class="no-image">
             <span class="globe-icon">🌍</span>
             <span class="no-image-text">Sin imagen</span>
           </div>
@@ -895,12 +897,33 @@ const loadZones = async () => {
   }
 }
 
-// Check service status
+// Check service status - verify AI worker satellite service
 const checkServiceStatus = async () => {
   try {
-    // Podríamos hacer un health check al worker
-    serviceAvailable.value = true
-  } catch {
+    // Get Worker base URL (same logic as UserDashboard)
+    const getWorkerUrl = () => {
+      if (window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1') {
+        return `${window.location.origin}/worker`
+      }
+      return 'http://localhost:5000'
+    }
+    
+    const workerUrl = getWorkerUrl()
+    const response = await fetch(`${workerUrl}/satellite/status`, {
+      headers: { 'Accept': 'application/json' }
+    })
+    
+    if (response.ok) {
+      const data = await response.json()
+      serviceAvailable.value = data.configured === true
+      if (!data.configured) {
+        console.warn('🛰️ Sentinel Hub not configured. Set SENTINEL_CLIENT_ID and SENTINEL_CLIENT_SECRET.')
+      }
+    } else {
+      serviceAvailable.value = false
+    }
+  } catch (error) {
+    console.error('Error checking satellite service:', error)
     serviceAvailable.value = false
   }
 }
@@ -976,12 +999,32 @@ const closeModal = () => {
   }
 }
 
-const getImageUrl = (path) => {
-  if (!path) return ''
+const getImageUrl = (path, zone = null) => {
+  if (!path) {
+    // Fallback: generate static map thumbnail if we have zone coords
+    if (zone && zone.latitude && zone.longitude) {
+      return getStaticMapUrl(zone.latitude, zone.longitude, zone.radius_km || 1)
+    }
+    return ''
+  }
   if (path.startsWith('http')) return path
   // Adjust base URL for storage
   const baseUrl = props.apiUrl.replace('/api', '')
   return `${baseUrl}/storage/${path}`
+}
+
+// Generate static map thumbnail using free services
+const getStaticMapUrl = (lat, lon, radiusKm = 1) => {
+  // Calculate zoom level based on radius (approximate)
+  const zoom = radiusKm <= 0.5 ? 16 : radiusKm <= 1 ? 15 : radiusKm <= 2 ? 14 : radiusKm <= 5 ? 13 : 12
+  
+  // Option 1: OpenStreetMap static tiles (no API key needed)
+  // Using osm-static-maps service or direct tile URL
+  const osmUrl = `https://staticmap.openstreetmap.de/staticmap.php?center=${lat},${lon}&zoom=${zoom}&size=400x300&maptype=osmarenderer&markers=${lat},${lon},red-pushpin`
+  
+  // Option 2: Use a simple tile layer approach with direct URL
+  // This creates a URL that shows the area on the map
+  return osmUrl
 }
 
 const onImageError = (e) => {
