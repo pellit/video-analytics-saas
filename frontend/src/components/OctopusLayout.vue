@@ -398,6 +398,18 @@ const props = defineProps({
 const emit = defineEmits(['logout', 'navigate'])
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000/api'
+const STREAM_URL = import.meta.env.VITE_STREAM_URL || 'http://localhost:5000/video_feed'
+
+// Helper to get Worker base URL (for SSE events) - works in both dev and prod
+const getWorkerBaseUrl = () => {
+  // In production (non-localhost), use the Traefik route
+  if (window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1') {
+    return `${window.location.origin}/worker`
+  }
+  // In dev, use STREAM_URL with /video_feed stripped
+  return STREAM_URL.replace('/video_feed', '')
+}
+const WORKER_BASE_URL = getWorkerBaseUrl()
 
 // ============================================================================
 // STATE
@@ -628,15 +640,49 @@ const onDragStart = (event, cam) => {
 }
 
 // ============================================================================
-// SSE CONNECTION
+// SSE CONNECTION (via AI Worker)
 // ============================================================================
 
 const connectSSE = () => {
   if (eventSource) eventSource.close()
   
-  const url = `${API_URL}/sse/stream?token=${props.token}`
+  // Use AI Worker SSE endpoint instead of backend PHP
+  const url = `${WORKER_BASE_URL}/stream/events`
+  console.log('🐙 Connecting SSE to:', url)
   eventSource = new EventSource(url)
   
+  eventSource.addEventListener('connected', (e) => {
+    console.log('🐙 SSE Connected:', e.data)
+  })
+  
+  eventSource.addEventListener('detections', (e) => {
+    try {
+      const data = JSON.parse(e.data)
+      if (data.camera_id === selectedCamera.value?.id) {
+        handleDetection({ detections: data.detections || [] })
+      }
+    } catch (err) {
+      console.error('SSE detections parse error:', err)
+    }
+  })
+  
+  eventSource.addEventListener('alerts', (e) => {
+    try {
+      const data = JSON.parse(e.data)
+      recentAlerts.value.unshift(data)
+      if (recentAlerts.value.length > 20) recentAlerts.value.pop()
+      
+      latestAlert.value = data
+      setTimeout(() => {
+        if (latestAlert.value?.id === data.id) latestAlert.value = null
+      }, 5000)
+      
+      metrics.value.alertCount++
+    } catch (err) {
+      console.error('SSE alert parse error:', err)
+    }
+  })
+
   eventSource.onmessage = (e) => {
     try {
       const data = JSON.parse(e.data)

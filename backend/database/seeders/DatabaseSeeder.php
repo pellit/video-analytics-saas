@@ -50,14 +50,6 @@ class DatabaseSeeder extends Seeder
                 ['name' => 'Demo - Tokyo Street'],
                 ['url' => 'https://www.youtube.com/watch?v=gFRtAAmiFbE', 'status' => 'offline', 'detection_enabled' => true, 'detection_model' => 'yolov8n']
             );
-                        $admin->cameras()->updateOrCreate(
-                ['name' => 'Inside Living ROOM'],
-                ['url' => 'https://www.youtube.com/watch?v=BJ7fql5fKsU', 'status' => 'offline', 'detection_enabled' => true, 'detection_model' => 'yolov8n']
-            );
-            $admin->cameras()->updateOrCreate(
-                ['name' => 'Traffic Cam Fresno'],
-                ['url' => 'https://www.youtube.com/watch?v=HiOvVp-wMj0', 'status' => 'offline', 'detection_enabled' => true, 'detection_model' => 'yolov8n']
-            );
         }
 
         // Crear una cámara por defecto para el SuperAdmin si no existe
