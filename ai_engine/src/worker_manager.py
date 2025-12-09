@@ -695,7 +695,25 @@ def stream_thread(camera_id, url):
                         
                         # Draw minimal face detection (corners only for speed)
                         x, y, fw, fh = box
-                        x1, y1, x2, y2 = x, y, x + fw, y + fh
+                        
+                        # Validate coordinates before drawing
+                        import math
+                        if any(math.isnan(v) or math.isinf(v) for v in [x, y, fw, fh]):
+                            continue  # Skip invalid face detection
+                        
+                        x1, y1, x2, y2 = int(x), int(y), int(x + fw), int(y + fh)
+                        
+                        # Clamp to frame bounds
+                        h_frame, w_frame = annotated_frame.shape[:2]
+                        x1 = max(0, min(x1, w_frame - 1))
+                        y1 = max(0, min(y1, h_frame - 1))
+                        x2 = max(0, min(x2, w_frame - 1))
+                        y2 = max(0, min(y2, h_frame - 1))
+                        
+                        if x2 <= x1 or y2 <= y1:
+                            continue  # Skip invalid box
+                        
+                        fw, fh = x2 - x1, y2 - y1
                         
                         # Color for faces (magenta/pink)
                         face_color = (200, 100, 220)  # BGR
