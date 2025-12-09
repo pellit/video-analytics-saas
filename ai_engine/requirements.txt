@@ -17,6 +17,10 @@ yt-dlp
 # --- Image Processing ---
 Pillow>=9.0.0
 
+# --- JPEG Encoding Optimization ---
+# simplejpeg uses libjpeg-turbo with SIMD (4x faster than cv2.imencode)
+simplejpeg>=1.6.0
+
 # --- ONNX Runtime (Inferencia principal - YOLO-NAS) ---
 onnxruntime>=1.16.0
 

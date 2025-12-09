@@ -22,3 +22,9 @@
 docker-compose.override.yml
 **/*.log
 .env
+# Rust build artifacts
+**/target/
+*.rs.bk
+
+# Go binaries
+ai_engine_go/benchmark_go

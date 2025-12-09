@@ -272,11 +272,19 @@ async function initHLS() {
  * Inicia conexión para recibir detecciones
  */
 function startDetectionStream() {
-  const workerUrl = props.wsUrl || 
-    (import.meta.env.VITE_STREAM_URL || 'http://localhost:5000').replace('/video_feed', '')
+  // In production, AI worker is behind /worker/ proxy path
+  let workerUrl = props.wsUrl
+  if (!workerUrl) {
+    if (window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1') {
+      workerUrl = `${window.location.origin}/worker`
+    } else {
+      workerUrl = (import.meta.env.VITE_STREAM_URL || 'http://localhost:5000').replace('/video_feed', '')
+    }
+  }
   
-  // Usar SSE para detecciones
-  const sseUrl = `${workerUrl}/events/detections?camera_id=${props.cameraId}`
+  // Usar SSE endpoint correcto del AI worker
+  const sseUrl = `${workerUrl}/stream/events/${props.cameraId}`
+  console.log('[SmartPlayer] Connecting SSE:', sseUrl)
   
   eventSource = new EventSource(sseUrl)
   

@@ -83,6 +83,19 @@ services:
       - vlm_service
     networks:
       - saas_net
+      - dokploy-network
+    labels:
+      - "traefik.enable=true"
+      # Route /worker/* to AI worker
+      - "traefik.http.routers.ai-worker.rule=Host(`dev.pellit.com.ar`) && PathPrefix(`/worker`)"
+      - "traefik.http.routers.ai-worker.entrypoints=websecure"
+      - "traefik.http.routers.ai-worker.tls=true"
+      - "traefik.http.routers.ai-worker.tls.certresolver=letsencrypt"
+      # Strip /worker prefix before sending to backend
+      - "traefik.http.middlewares.strip-worker.stripprefix.prefixes=/worker"
+      - "traefik.http.routers.ai-worker.middlewares=strip-worker"
+      # Service config
+      - "traefik.http.services.ai-worker.loadbalancer.server.port=5000"
 
   # --- RUST AI WORKER (High Performance) ---
   # Use this for: High FPS detection, low latency video processing
@@ -249,6 +262,8 @@ services:
 networks:
   saas_net:
     driver: bridge
+  dokploy-network:
+    external: true
 
 volumes:
   db_data:

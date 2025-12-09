@@ -16,6 +16,44 @@ from pydantic import BaseModel
 from typing import Optional, List, Dict, Any
 from .depth_service import DepthService
 from .models import get_detector, ModelFactory, ModelType, Resolution
+
+# --- JPEG Encoding Optimization ---
+# simplejpeg uses libjpeg-turbo (SIMD optimized) - 4x faster than cv2.imencode
+try:
+    import simplejpeg
+    SIMPLEJPEG_AVAILABLE = True
+    print("✅ simplejpeg disponible - usando encoding JPEG optimizado (libjpeg-turbo)")
+except ImportError:
+    SIMPLEJPEG_AVAILABLE = False
+    print("⚠️ simplejpeg no disponible - usando cv2.imencode (más lento)")
+
+
+def fast_jpeg_encode(frame: np.ndarray, quality: int = 85) -> bytes:
+    """
+    Encode frame to JPEG using the fastest available method.
+    Uses simplejpeg (libjpeg-turbo) if available, falls back to cv2.imencode.
+    
+    simplejpeg is ~4x faster than cv2.imencode because:
+    - Uses SIMD instructions (AVX2, SSE4, NEON)
+    - Zero-copy memory handling
+    - Optimized for continuous video encoding
+    
+    Args:
+        frame: BGR image (numpy array)
+        quality: JPEG quality (1-100)
+    
+    Returns:
+        JPEG encoded bytes
+    """
+    if SIMPLEJPEG_AVAILABLE:
+        # simplejpeg expects RGB, but we have BGR from OpenCV
+        # Convert BGR to RGB for simplejpeg
+        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        return simplejpeg.encode_jpeg(rgb_frame, quality=quality, colorspace='RGB')
+    else:
+        # Fallback to OpenCV
+        _, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, quality])
+        return buffer.tobytes()
 from .core.satellite import get_satellite_service, SatelliteService
 from .core.vlm_client import VLMClient, VLMPrompts  # Now using remote VLM service
 from .core.hybrid import get_hybrid_analyzer, init_hybrid_analyzer, AlertSeverity
@@ -922,11 +960,13 @@ def generate_mjpeg():
             time.sleep(0.1)
             continue
 
-        (flag, encodedImage) = cv2.imencode(".jpg", frame)
-        if not flag: continue
-            
-        yield (b'--frame\r\n'
-               b'Content-Type: image/jpeg\r\n\r\n' + bytearray(encodedImage) + b'\r\n')
+        # Use optimized JPEG encoding (simplejpeg if available)
+        try:
+            encodedImage = fast_jpeg_encode(frame, quality=85)
+            yield (b'--frame\r\n'
+                   b'Content-Type: image/jpeg\r\n\r\n' + encodedImage + b'\r\n')
+        except Exception:
+            pass
         time.sleep(0.04)
 
 @app.get("/video_feed")
@@ -947,9 +987,12 @@ def video_feed(camera_id: str = None):
                             frame = s['current_frame']; break
             if frame is None:
                 time.sleep(0.1); continue
-            (flag, encodedImage) = cv2.imencode('.jpg', frame)
-            if not flag: continue
-            yield (b'--frame\r\n' b'Content-Type: image/jpeg\r\n\r\n' + bytearray(encodedImage) + b'\r\n')
+            # Use optimized JPEG encoding (simplejpeg if available)
+            try:
+                encodedImage = fast_jpeg_encode(frame, quality=85)
+                yield (b'--frame\r\n' b'Content-Type: image/jpeg\r\n\r\n' + encodedImage + b'\r\n')
+            except Exception:
+                pass
             time.sleep(0.04)
     return StreamingResponse(generator(), media_type='multipart/x-mixed-replace; boundary=frame')
 
@@ -2694,6 +2737,60 @@ async def detection_events_sse(camera_id: str):
             pass
         finally:
             pubsub.unsubscribe('detections', 'camera_detections')
+            pubsub.close()
+    
+    return StreamingResponse(
+        event_generator(),
+        media_type='text/event-stream',
+        headers={
+            'Cache-Control': 'no-cache',
+            'Connection': 'keep-alive',
+            'X-Accel-Buffering': 'no'  # Disable nginx buffering
+        }
+    )
+
+
+@app.get('/stream/events')
+async def detection_events_sse_global():
+    """
+    Global Server-Sent Events endpoint for all detection updates.
+    Used by UserDashboard.vue for monitoring all cameras.
+    
+    Subscribes to Redis pub/sub and streams detection data to frontend.
+    """
+    async def event_generator():
+        pubsub = r.pubsub()
+        pubsub.subscribe('detections', 'camera_detections', 'alerts', 'bev_events')
+        
+        try:
+            # Send connection confirmation
+            yield f"data: {json.dumps({'event': 'connected', 'message': 'Global SSE stream started'})}\n\n"
+            
+            while True:
+                message = pubsub.get_message(timeout=0.5)
+                if message and message['type'] == 'message':
+                    try:
+                        data = json.loads(message['data'])
+                        channel = message['channel']
+                        if isinstance(channel, bytes):
+                            channel = channel.decode('utf-8')
+                        
+                        # Map channel name to event name for frontend
+                        event_name = 'bev' if channel == 'bev_events' else channel
+                        
+                        # Send event with channel name
+                        yield f"event: {event_name}\ndata: {json.dumps(data)}\n\n"
+                    except json.JSONDecodeError:
+                        pass
+                else:
+                    # Send keepalive every 500ms
+                    yield f": keepalive\n\n"
+                
+                await asyncio.sleep(0.05)  # 20 updates/sec max
+        except asyncio.CancelledError:
+            pass
+        finally:
+            pubsub.unsubscribe('detections', 'camera_detections', 'alerts', 'bev_events')
             pubsub.close()
     
     return StreamingResponse(

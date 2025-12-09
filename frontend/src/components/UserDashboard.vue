@@ -35,7 +35,14 @@ const getStreamUrl = () => {
     return 'http://192.168.0.38:5000/video_feed';
 }
 const STREAM_URL = getStreamUrl();
-const WORKER_URL = STREAM_URL.replace('/video_feed', '');
+// In production, AI worker is behind /worker/ proxy path
+const getWorkerUrl = () => {
+    if (window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1') {
+        return `${window.location.origin}/worker`;
+    }
+    return STREAM_URL.replace('/video_feed', '');
+}
+const WORKER_URL = getWorkerUrl();
 
 // COCO Classes for Multi-select (defined early for use in initializeCameraDefaults)
 const availableClasses = [
@@ -268,7 +275,8 @@ const getYoutubeEmbedUrl = (url) => {
 const addCamera = async () => {
   try {
     // Default detection_enabled to true for new cameras so they are analyzed immediately
-    const payload = { ...newCam.value, detection_enabled: true, detection_model: 'yolov8n' }
+    // Using YOLO-Fastest as default model - best balance of speed/accuracy on CPU
+    const payload = { ...newCam.value, detection_enabled: true, detection_model: 'yolo_fastest' }
     const res = await fetch(`${API_URL}/cameras`, {
       method: 'POST', headers: { 'Authorization': `Bearer ${props.token}`, 'Content-Type': 'application/json' }, body: JSON.stringify(payload)
     })
@@ -1053,10 +1061,14 @@ watch([activeCamera, isProcessing], ([newCam, processing]) => {
 // SSE subscription for real-time events (detections/alerts)
 let eventSource = null
 const initSSE = () => {
-  if (!props.token) return
-  // We pass the token as a query param since EventSource doesn't support Authorization header
-  const url = `${API_URL.replace('/api', '')}/api/sse/stream?token=${encodeURIComponent(props.token)}`
-  eventSource = new EventSource(url + '&_t=' + Math.random())
+  // Use AI worker SSE directly - more reliable than PHP backend SSE
+  // Worker URL should be accessible from browser (port 5000 must be exposed)
+  const workerUrl = WORKER_URL || 'http://localhost:5000'
+  const url = `${workerUrl}/stream/events`
+  
+  console.log('[SSE] Connecting to AI Worker SSE:', url)
+  eventSource = new EventSource(url)
+  
   eventSource.addEventListener('detections', (e) => {
     try {
       const data = JSON.parse(e.data)
@@ -1491,12 +1503,16 @@ const saveProfile = async () => {
                   <div class="setting-row">
                     <label class="setting-label">🤖 Modelo AI</label>
                     <select v-model="activeCamera.detection_model" class="compact-select" @change="onModelChange">
-                      <optgroup label="🐍 Python Worker">
-                        <option value="mobilenet_ssd">🚀 MobileNet-SSD (~25 FPS)</option>
-                        <option value="yolo_fastest">⚡ YOLO-Fastest (~15 FPS)</option>
+                      <optgroup label="⚡ Ultra-rápidos (>10 FPS) - Recomendados para CPU">
+                        <option value="mobilenet_ssd">🚀 MobileNet-SSD (~25 FPS) - VOC classes</option>
+                        <option value="yolo_fastest">⭐ YOLO-Fastest (~12 FPS) - RECOMENDADO</option>
+                      </optgroup>
+                      <optgroup label="🎯 Rápidos (5-10 FPS)">
                         <option value="mediapipe">📱 MediaPipe (~9 FPS)</option>
                         <option value="yolov4_tiny">🎯 YOLOv4-tiny (~7 FPS)</option>
                         <option value="nanodet">🔬 NanoDet-Plus (~6 FPS)</option>
+                      </optgroup>
+                      <optgroup label="🏆 Alta precisión (<5 FPS) - Para GPU">
                         <option value="onnx">🎖️ YOLO-NAS ONNX (~1 FPS)</option>
                         <option value="rt_detr">🏆 RT-DETR (~0.3 FPS)</option>
                       </optgroup>
