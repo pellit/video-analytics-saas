@@ -1,10 +1,7 @@
 # ==============================================================================
-# Dockerfile Jetson Nano - SOLUCIÓN NUCLEAR
-# Usamos "l4t-ml" que ya trae OpenCV con CUDA + PyTorch preinstalados.
+# Dockerfile Jetson Nano - FINAL DEFINITIVO
+# Base: l4t-ml (OpenCV CUDA + PyTorch preinstalados)
 # ==============================================================================
-
-# CAMBIO DE BASE: Esta imagen de dustynv es la "navaja suiza" de la Jetson Nano.
-# Trae Python 3.6, PyTorch, y OpenCV (con soporte DNN y CUDA) ya compilado.
 ARG BASE_IMAGE=dustynv/l4t-ml:r32.7.1
 FROM ${BASE_IMAGE}
 
@@ -15,8 +12,7 @@ ENV LANG=C.UTF-8
 
 WORKDIR /jetson-inference
 
-# 1. INSTALACIÓN DE DEPENDENCIAS MÍNIMAS (Solo herramientas, NADA de OpenCV)
-# No instalamos opencv aquí porque YA VIENE en la imagen base.
+# 1. INSTALACIÓN DE DEPENDENCIAS MÍNIMAS
 RUN rm -f /etc/apt/sources.list.d/kitware* && \
     apt-get update || true && \
     apt-get install -y --no-install-recommends \
@@ -33,10 +29,15 @@ RUN rm -f /etc/apt/sources.list.d/kitware* && \
 # 2. ACTUALIZAR PIP
 RUN pip3 install --no-cache-dir --verbose --upgrade pip setuptools wheel Cython
 
-# 3. INSTALAR DEPENDENCIAS DE TU API
-# (OJO: Asegúrate que requirements.jetson.txt NO tenga 'opencv' ni 'numpy')
+# 3. INSTALAR DEPENDENCIAS (CON EL FIX DE PyYAML)
 COPY requirements.jetson.txt /app/requirements.txt
 WORKDIR /app
+
+# --- EL FIX DE PyYAML ---
+# Esto fuerza la instalación de una versión nueva ignorando la del sistema
+RUN pip3 install --no-cache-dir --ignore-installed PyYAML
+
+# Instalar el resto de requerimientos
 RUN pip3 install --no-cache-dir -r requirements.txt
 
 # 4. COPIAR CÓDIGO
