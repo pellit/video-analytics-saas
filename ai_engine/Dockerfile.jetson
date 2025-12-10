@@ -12,6 +12,11 @@ FROM nvcr.io/nvidia/l4t-pytorch:r32.7.1-pth1.10-py3
 # Alternativa para JetPack 5.x (Jetson Orin):
 # FROM nvcr.io/nvidia/l4t-pytorch:r35.2.1-pth2.0-py3
 
+# --- AGREGA ESTO PARA EVITAR ERRORES DE TEXTO ---
+ENV LC_ALL=C.UTF-8
+ENV LANG=C.UTF-8
+# -----------------------------------------------
+
 WORKDIR /app
 
 # Variables de entorno para optimización
@@ -48,6 +53,10 @@ COPY requirements.jetson.txt .
 # Instalar dependencias Python
 # Nota: torch ya viene preinstalado en la imagen base
 RUN pip3 install --no-cache-dir -r requirements.jetson.txt
+
+RUN wget https://nvidia.box.com/shared/static/pms2seoyhu9b22b5qoc11dbm1800cc69.whl -O onnxruntime_gpu-1.10.0-cp36-cp36m-linux_aarch64.whl \
+    && pip3 install onnxruntime_gpu-1.10.0-cp36-cp36m-linux_aarch64.whl \
+    && rm onnxruntime_gpu-1.10.0-cp36-cp36m-linux_aarch64.whl
 
 # Copiar código fuente
 COPY src/ ./src/
