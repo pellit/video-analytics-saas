@@ -28,11 +28,17 @@ ENV PYTHONUNBUFFERED=1 \
 # Nota: La imagen L4T ya tiene muchas dependencias preinstaladas
 # Solo instalamos lo mínimo necesario
 # Fix: Eliminar repositorio de Kitware con clave GPG expirada/inválida
-RUN rm -f /etc/apt/sources.list.d/kitware.list 2>/dev/null || true && \
-    apt-get update && apt-get install -y --no-install-recommends \
+# Corrección del error GPG de Kitware y actualización de repositorios
+RUN rm -f /etc/apt/sources.list.d/kitware* \
+    && apt-get update || true \
+    && apt-get install -y --no-install-recommends \
+    gnupg \
+    ca-certificates \
+    wget \
     libglib2.0-0 \
     libsm6 \
     libxext6 \
+    libxrender-dev \
     && rm -rf /var/lib/apt/lists/* \
     && apt-get clean
 
