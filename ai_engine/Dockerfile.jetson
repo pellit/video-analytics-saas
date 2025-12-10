@@ -25,18 +25,12 @@ ENV PYTHONUNBUFFERED=1 \
     PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:128
 
 # Instalar dependencias del sistema
+# Nota: La imagen L4T ya tiene muchas dependencias preinstaladas
+# Solo instalamos lo mínimo necesario
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    # OpenCV dependencies
-    libgl1-mesa-glx \
     libglib2.0-0 \
     libsm6 \
     libxext6 \
-    libxrender-dev \
-    # Build tools
-    build-essential \
-    pkg-config \
-    # Networking
-    curl \
     && rm -rf /var/lib/apt/lists/* \
     && apt-get clean
 
@@ -56,9 +50,9 @@ RUN mkdir -p ./models
 # Puerto de la API
 EXPOSE 5050
 
-# Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
-    CMD curl -f http://localhost:5050/health || exit 1
+# Health check (usando python ya que curl no está disponible)
+HEALTHCHECK --interval=30s --timeout=10s --start-period=120s --retries=3 \
+    CMD python3 -c "import urllib.request; urllib.request.urlopen('http://localhost:5050/health')" || exit 1
 
 # Comando por defecto: API de inferencia
 CMD ["python3", "-m", "uvicorn", "src.inference_api:app", "--host", "0.0.0.0", "--port", "5050"]
