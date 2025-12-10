@@ -5,7 +5,7 @@
 
 # --- Core ---
 redis
-numpy
+numpy<2.0.0
 requests
 fastapi
 uvicorn[standard]
@@ -13,7 +13,6 @@ uvicorn[standard]
 # --- Image Processing ---
 opencv-python-headless
 Pillow>=9.0.0
-pyvips
 
 # ============================================
 # Moondream2 VLM
