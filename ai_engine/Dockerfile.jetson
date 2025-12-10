@@ -1,8 +1,11 @@
 # ==============================================================================
-# Dockerfile Jetson Nano - SOPORTE GPU (CUDA) ACTIVADO
-# Usa OpenCV 4.5.5 compilado a medida para Tegra X1
+# Dockerfile Jetson Nano - SOLUCIÓN NUCLEAR
+# Usamos "l4t-ml" que ya trae OpenCV con CUDA + PyTorch preinstalados.
 # ==============================================================================
-ARG BASE_IMAGE=nvcr.io/nvidia/l4t-pytorch:r32.7.1-pth1.10-py3
+
+# CAMBIO DE BASE: Esta imagen de dustynv es la "navaja suiza" de la Jetson Nano.
+# Trae Python 3.6, PyTorch, y OpenCV (con soporte DNN y CUDA) ya compilado.
+ARG BASE_IMAGE=dustynv/l4t-ml:r32.7.1
 FROM ${BASE_IMAGE}
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -12,12 +15,11 @@ ENV LANG=C.UTF-8
 
 WORKDIR /jetson-inference
 
-# 1. INSTALACIÓN DE DEPENDENCIAS DE SISTEMA
-# Necesitamos librerías matemáticas (BLAS/LAPACK) para que corra el OpenCV acelerado
+# 1. INSTALACIÓN DE DEPENDENCIAS MÍNIMAS (Solo herramientas, NADA de OpenCV)
+# No instalamos opencv aquí porque YA VIENE en la imagen base.
 RUN rm -f /etc/apt/sources.list.d/kitware* && \
     apt-get update || true && \
     apt-get install -y --no-install-recommends \
-            cmake \
             nano \
             wget \
             curl \
@@ -25,35 +27,20 @@ RUN rm -f /etc/apt/sources.list.d/kitware* && \
             libsm6 \
             libxext6 \
             libxrender-dev \
-            libgstreamer1.0-0 \
-            gstreamer1.0-tools \
-            gstreamer1.0-plugins-good \
-            libgstreamer-plugins-base1.0-dev \
-            libopenblas-base \
-            libopenmpi-dev \
-            libomp-dev \
-            libjpeg-dev \
-            zlib1g-dev \
     && rm -rf /var/lib/apt/lists/* \
     && apt-get clean
 
 # 2. ACTUALIZAR PIP
 RUN pip3 install --no-cache-dir --verbose --upgrade pip setuptools wheel Cython
 
-# 3. INSTALAR NUMPY PRIMERO (Vital para OpenCV)
-# La versión 1.19.5 es la más estable para JetPack 4.6
-RUN pip3 install --no-cache-dir numpy==1.19.5
-
-# 4. INSTALAR OPENCV CON ACELERACIÓN GPU (CUDA)
-# Descargamos el wheel pre-compilado por mdegans para JetPack 4.6 (L4T 32.7.1)
-# Esto habilita: cv2.cuda y cv2.dnn.DNN_BACKEND_CUDA
-RUN pip3 install --no-cache-dir https://github.com/mdegans/nano_build_opencv/releases/download/v4.5.5/opencv_python-4.5.5-cp36-cp36m-linux_aarch64.whl
-
-# 5. INSTALAR RESTO DE DEPENDENCIAS
+# 3. INSTALAR DEPENDENCIAS DE TU API
+# (OJO: Asegúrate que requirements.jetson.txt NO tenga 'opencv' ni 'numpy')
 COPY requirements.jetson.txt /app/requirements.txt
 WORKDIR /app
 RUN pip3 install --no-cache-dir -r requirements.txt
 
-# 6. COPIAR CÓDIGO Y ARRANCAR
+# 4. COPIAR CÓDIGO
 COPY . /app
+
+# 5. ARRANQUE
 CMD ["uvicorn", "src.inference_api:app", "--host", "0.0.0.0", "--port", "5050", "--workers", "1"]
