@@ -25,13 +25,13 @@ class MoondreamAnalyzer:
     - Optimizado para CPU
     """
     
-    def __init__(self, model_id: str = "vikhyatk/moondream2", revision: str = "2025-01-09"):
+    def __init__(self, model_id: str = "vikhyatk/moondream2", revision: str = "2024-08-26"):
         """
         Inicializa el analizador.
         
         Args:
             model_id: ID del modelo en HuggingFace
-            revision: Versión/revisión del modelo
+            revision: Versión/revisión del modelo (2024-08-26 is stable and doesn't require pyvips)
         """
         self.model_id = model_id
         self.revision = revision

@@ -42,7 +42,7 @@ from .vlm_engine import MoondreamAnalyzer, get_prompt, list_prompts, PREDEFINED_
 REDIS_HOST = os.environ.get('REDIS_HOST', 'redis')
 REDIS_PORT = int(os.environ.get('REDIS_PORT', 6379))
 VLM_MODEL = os.environ.get('VLM_MODEL', 'vikhyatk/moondream2')
-VLM_REVISION = os.environ.get('VLM_REVISION', '2025-01-09')
+VLM_REVISION = os.environ.get('VLM_REVISION', '2024-08-26')
 LAZY_LOAD = os.environ.get('VLM_LAZY_LOAD', 'true').lower() == 'true'
 PRELOAD_MODEL = os.environ.get('VLM_PRELOAD', 'false').lower() == 'true'
 
