@@ -74,8 +74,8 @@ services:
       - "${INFERENCE_PORT:-5050}:5050"
     
     volumes:
-      # Modelos persistentes
-      - ./ai_engine/models:/app/models:ro
+      # Modelos persistentes (se descargan automáticamente si no existen)
+      - jetson_models:/app/models
       # Cache de TensorRT (para modelos optimizados)
       - jetson_tensorrt_cache:/root/.cache/tensorrt
       
@@ -108,6 +108,8 @@ services:
 
 volumes:
   jetson_tensorrt_cache:
+    driver: local
+  jetson_models:
     driver: local
 
 # =============================================================

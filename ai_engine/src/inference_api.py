@@ -26,6 +26,7 @@ import time
 import base64
 import numpy as np
 import cv2
+import requests
 from typing import Optional, List, Dict, Any
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
@@ -39,9 +40,75 @@ DEVICE_NAME = os.environ.get('DEVICE_NAME', 'jetson-nano')
 ENABLE_TENSORRT = os.environ.get('ENABLE_TENSORRT', 'false').lower() == 'true'
 ENABLE_CUDA = os.environ.get('ENABLE_CUDA', 'true').lower() == 'true'
 
+# Models directory
+MODELS_DIR = os.path.join(os.path.dirname(__file__), "../models")
+os.makedirs(MODELS_DIR, exist_ok=True)
+
 # Global model instance
 model = None
 model_name = None
+
+# --- Model Download URLs ---
+MODEL_URLS = {
+    "yolo-fastest-xl.cfg": "https://raw.githubusercontent.com/dog-qiuqiu/Yolo-Fastest/master/ModelZoo/yolo-fastest-xl.cfg",
+    "yolo-fastest-xl.weights": "https://github.com/dog-qiuqiu/Yolo-Fastest/raw/master/ModelZoo/yolo-fastest-xl.weights",
+    "yolov4-tiny.cfg": "https://raw.githubusercontent.com/AlexeyAB/darknet/master/cfg/yolov4-tiny.cfg",
+    "yolov4-tiny.weights": "https://github.com/AlexeyAB/darknet/releases/download/darknet_yolo_v4_pre/yolov4-tiny.weights",
+    "face_detection_yunet_2023mar.onnx": "https://github.com/opencv/opencv_zoo/raw/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx",
+    "yolov8n.onnx": "https://github.com/ultralytics/assets/releases/download/v8.1.0/yolov8n.onnx",
+}
+
+
+def download_file(url: str, dest: str) -> bool:
+    """Download a file from URL to destination."""
+    if os.path.exists(dest):
+        print(f"✅ Model already exists: {os.path.basename(dest)}")
+        return True
+    
+    print(f"⬇️ Downloading {os.path.basename(dest)}...")
+    try:
+        response = requests.get(url, stream=True, timeout=60)
+        response.raise_for_status()
+        
+        os.makedirs(os.path.dirname(dest), exist_ok=True)
+        
+        total_size = int(response.headers.get('content-length', 0))
+        downloaded = 0
+        
+        with open(dest, 'wb') as f:
+            for chunk in response.iter_content(chunk_size=8192):
+                f.write(chunk)
+                downloaded += len(chunk)
+                if total_size > 0:
+                    percent = (downloaded / total_size) * 100
+                    print(f"\r  Progress: {percent:.1f}%", end="", flush=True)
+        
+        print(f"\n✅ Downloaded {os.path.basename(dest)}")
+        return True
+    except Exception as e:
+        print(f"\n❌ Failed to download {dest}: {e}")
+        return False
+
+
+def ensure_models_exist():
+    """Ensure required models are downloaded."""
+    print("🔍 Checking models...")
+    
+    # Download YOLO-Fastest (default model)
+    yolo_cfg = os.path.join(MODELS_DIR, "yolo-fastest-xl.cfg")
+    yolo_weights = os.path.join(MODELS_DIR, "yolo-fastest-xl.weights")
+    
+    if not os.path.exists(yolo_cfg):
+        download_file(MODEL_URLS["yolo-fastest-xl.cfg"], yolo_cfg)
+    if not os.path.exists(yolo_weights):
+        download_file(MODEL_URLS["yolo-fastest-xl.weights"], yolo_weights)
+    
+    # Download YuNet for face detection
+    yunet = os.path.join(MODELS_DIR, "face_detection_yunet_2023mar.onnx")
+    if not os.path.exists(yunet):
+        download_file(MODEL_URLS["face_detection_yunet_2023mar.onnx"], yunet)
+    
+    print("✅ Models check complete")
 
 
 def load_model(model_type: str = None, resolution: str = None):
@@ -86,7 +153,8 @@ def load_model(model_type: str = None, resolution: str = None):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Startup and shutdown events."""
-    # Startup: Load model
+    # Startup: Ensure models exist and load
+    ensure_models_exist()
     load_model()
     yield
     # Shutdown: Cleanup

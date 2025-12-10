@@ -48,7 +48,9 @@ RUN pip3 install --no-cache-dir -r requirements.jetson.txt
 
 # Copiar código fuente
 COPY src/ ./src/
-COPY models/ ./models/
+
+# Crear directorio para modelos (se montará como volumen o se descargarán)
+RUN mkdir -p ./models
 
 # Puerto de la API
 EXPOSE 5050
