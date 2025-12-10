@@ -27,7 +27,9 @@ ENV PYTHONUNBUFFERED=1 \
 # Instalar dependencias del sistema
 # Nota: La imagen L4T ya tiene muchas dependencias preinstaladas
 # Solo instalamos lo mínimo necesario
-RUN apt-get update && apt-get install -y --no-install-recommends \
+# Fix: Eliminar repositorio de Kitware con clave GPG expirada/inválida
+RUN rm -f /etc/apt/sources.list.d/kitware.list 2>/dev/null || true && \
+    apt-get update && apt-get install -y --no-install-recommends \
     libglib2.0-0 \
     libsm6 \
     libxext6 \
