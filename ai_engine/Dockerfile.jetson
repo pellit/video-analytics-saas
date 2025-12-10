@@ -44,7 +44,6 @@ RUN rm -f /etc/apt/sources.list.d/kitware* \
     libsm6 \
     libxext6 \
     libxrender-dev \
-    python3-opencv \ 
     && rm -rf /var/lib/apt/lists/* \
     && apt-get clean
 
@@ -54,6 +53,9 @@ COPY requirements.jetson.txt .
 # Instalar dependencias Python
 # Nota: torch ya viene preinstalado en la imagen base
 RUN pip3 install --no-cache-dir -r requirements.jetson.txt
+
+RUN pip3 install --no-cache-dir opencv-python-headless==4.5.5.64 && \
+    pip3 install --no-cache-dir -r requirements.jetson.txt
 
 # RUN wget https://nvidia.box.com/shared/static/pms2seoyhu9b22b5qoc11dbm1800cc69.whl -O onnxruntime_gpu-1.10.0-cp36-cp36m-linux_aarch64.whl \
 #     && pip3 install onnxruntime_gpu-1.10.0-cp36-cp36m-linux_aarch64.whl \
