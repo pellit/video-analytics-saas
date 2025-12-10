@@ -6,4 +6,3 @@ python-multipart
 requests
 numpy==1.19.5
 Pillow<9.0.0
-onnxruntime==1.10.0

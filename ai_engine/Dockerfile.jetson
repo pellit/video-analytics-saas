@@ -54,9 +54,9 @@ COPY requirements.jetson.txt .
 # Nota: torch ya viene preinstalado en la imagen base
 RUN pip3 install --no-cache-dir -r requirements.jetson.txt
 
-# RUN wget https://nvidia.box.com/shared/static/pms2seoyhu9b22b5qoc11dbm1800cc69.whl -O onnxruntime_gpu-1.10.0-cp36-cp36m-linux_aarch64.whl \
-#     && pip3 install onnxruntime_gpu-1.10.0-cp36-cp36m-linux_aarch64.whl \
-#     && rm onnxruntime_gpu-1.10.0-cp36-cp36m-linux_aarch64.whl
+RUN wget https://nvidia.box.com/shared/static/pms2seoyhu9b22b5qoc11dbm1800cc69.whl -O onnxruntime_gpu-1.10.0-cp36-cp36m-linux_aarch64.whl \
+    && pip3 install onnxruntime_gpu-1.10.0-cp36-cp36m-linux_aarch64.whl \
+    && rm onnxruntime_gpu-1.10.0-cp36-cp36m-linux_aarch64.whl
 
 # Copiar código fuente
 COPY src/ ./src/
