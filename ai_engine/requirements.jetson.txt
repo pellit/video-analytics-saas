@@ -1,27 +1,20 @@
-# ============================================
-# Requirements for Jetson Nano
-# Optimized for ARM64 + CUDA
-# ============================================
-#
-# NOTE: PyTorch and torchvision are pre-installed
-# in NVIDIA L4T base image. Do not include here.
-#
-# ============================================
-
-# --- Core API ---
-fastapi>=0.100.0
-uvicorn[standard]>=0.22.0
-pydantic>=2.0.0
+# --- Core API (Versiones para Python 3.6) ---
+fastapi==0.83.0
+uvicorn[standard]==0.16.0
+pydantic<2.0.0
+typing_extensions>=4.1.1
 
 # --- Image Processing ---
-numpy>=1.21.0
-Pillow>=9.0.0
-
-# --- ONNX Runtime for Jetson ---
-onnxruntime>=1.14.0
-
-# --- Tracking (ByteTrack) ---
-supervision>=0.16.0
+# Numpy 1.19.5 es la última versión oficial para Python 3.6
+numpy==1.19.5
+Pillow<9.0.0
 
 # --- HTTP client ---
-requests>=2.28.0
+requests
+
+# --- NOTA SOBRE ONNX Y SUPERVISION ---
+# 'supervision' moderno no funciona en Python 3.6. 
+# 'onnxruntime' en Jetson se recomienda instalar via wheel de NVIDIA, 
+# no por pip, para tener aceleración GPU. 
+# Si necesitas onnx por CPU básico, usa una versión vieja:
+onnxruntime==1.10.0
