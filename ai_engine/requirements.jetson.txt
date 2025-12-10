@@ -1,20 +1,9 @@
-# --- Core API (Versiones para Python 3.6) ---
 fastapi==0.83.0
 uvicorn[standard]==0.16.0
 pydantic<2.0.0
 typing_extensions>=4.1.1
-
-# --- Image Processing ---
-# Numpy 1.19.5 es la última versión oficial para Python 3.6
+python-multipart
+requests
 numpy==1.19.5
 Pillow<9.0.0
-
-# --- HTTP client ---
-requests
-
-# --- NOTA SOBRE ONNX Y SUPERVISION ---
-# 'supervision' moderno no funciona en Python 3.6. 
-# 'onnxruntime' en Jetson se recomienda instalar via wheel de NVIDIA, 
-# no por pip, para tener aceleración GPU. 
-# Si necesitas onnx por CPU básico, usa una versión vieja:
 onnxruntime==1.10.0
