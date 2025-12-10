@@ -22,7 +22,7 @@ import base64
 import threading
 import time
 from io import BytesIO
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, List
 
 import cv2
 import numpy as np
@@ -316,6 +316,127 @@ async def preload_model(background_tasks: BackgroundTasks):
     background_tasks.add_task(analyzer.ensure_loaded)
     
     return {"status": "started", "message": "Carga del modelo iniciada en background"}
+
+
+# ============================================================================
+# Suggest Classes Endpoint (for camera scene analysis)
+# ============================================================================
+
+# COCO class names for reference
+COCO_CLASSES = [
+    "person", "bicycle", "car", "motorcycle", "airplane", "bus", "train", "truck", "boat",
+    "traffic light", "fire hydrant", "stop sign", "parking meter", "bench", "bird", "cat",
+    "dog", "horse", "sheep", "cow", "elephant", "bear", "zebra", "giraffe", "backpack",
+    "umbrella", "handbag", "tie", "suitcase", "frisbee", "skis", "snowboard", "sports ball",
+    "kite", "baseball bat", "baseball glove", "skateboard", "surfboard", "tennis racket",
+    "bottle", "wine glass", "cup", "fork", "knife", "spoon", "bowl", "banana", "apple",
+    "sandwich", "orange", "broccoli", "carrot", "hot dog", "pizza", "donut", "cake", "chair",
+    "couch", "potted plant", "bed", "dining table", "toilet", "tv", "laptop", "mouse",
+    "remote", "keyboard", "cell phone", "microwave", "oven", "toaster", "sink", "refrigerator",
+    "book", "clock", "vase", "scissors", "teddy bear", "hair drier", "toothbrush"
+]
+
+class SuggestClassesRequest(BaseModel):
+    """Request para sugerir clases COCO"""
+    image_base64: str = Field(..., description="Imagen codificada en base64")
+    user_context: Optional[str] = Field(None, description="Contexto opcional del usuario")
+
+class SuggestClassesResponse(BaseModel):
+    """Response con clases sugeridas"""
+    success: bool
+    scene_description: Optional[str] = None
+    objects_found: Optional[str] = None
+    suggested_classes: Optional[List[str]] = None
+    confidence: Optional[int] = None
+    error: Optional[str] = None
+    processing_time_ms: Optional[float] = None
+
+
+@app.post("/suggest-classes", response_model=SuggestClassesResponse)
+async def suggest_classes(request: SuggestClassesRequest):
+    """
+    Analyze a camera scene and suggest optimal COCO classes for detection.
+    
+    - **image_base64**: Image encoded in base64
+    - **user_context**: (Optional) User-provided context about the scene
+    
+    Returns suggested COCO classes based on what's visible in the scene.
+    """
+    start_time = time.time()
+    
+    try:
+        # Decode image
+        image = decode_base64_image(request.image_base64)
+        
+        # Get analyzer
+        analyzer = get_vlm_analyzer()
+        
+        # Step 1: Describe the scene
+        scene_prompt = "Describe this scene briefly. What type of location is it? (indoor/outdoor, commercial/residential, etc.)"
+        if request.user_context:
+            scene_prompt = f"Context: {request.user_context}. " + scene_prompt
+        
+        scene_description = analyzer.analyze_image(image, scene_prompt)
+        
+        if scene_description.startswith("Error:"):
+            return SuggestClassesResponse(
+                success=False,
+                error=scene_description,
+                processing_time_ms=(time.time() - start_time) * 1000
+            )
+        
+        # Step 2: Identify objects in the scene
+        objects_prompt = "List all objects and beings you can see in this image. Be specific and comprehensive."
+        objects_found = analyzer.analyze_image(image, objects_prompt)
+        
+        # Step 3: Map to COCO classes
+        coco_list = ", ".join(COCO_CLASSES)
+        class_prompt = f"""Based on what you see in this image, which of these COCO detection classes would be useful to detect?
+        
+Available classes: {coco_list}
+
+Reply with ONLY a comma-separated list of class names from the list above that you would recommend detecting. Include only classes that are either:
+1. Currently visible in the image
+2. Likely to appear in this type of scene
+
+Reply with just the class names, nothing else."""
+        
+        class_response = analyzer.analyze_image(image, class_prompt)
+        
+        # Parse suggested classes
+        suggested = []
+        class_response_lower = class_response.lower()
+        for coco_class in COCO_CLASSES:
+            if coco_class.lower() in class_response_lower:
+                suggested.append(coco_class)
+        
+        # Ensure we have at least person if the scene seems to have activity
+        if not suggested and ("people" in objects_found.lower() or "person" in objects_found.lower()):
+            suggested = ["person"]
+        
+        # Calculate confidence based on clarity of response
+        confidence = 80 if suggested else 50
+        if len(suggested) >= 3:
+            confidence = 85
+        if request.user_context:
+            confidence = min(confidence + 5, 95)
+        
+        return SuggestClassesResponse(
+            success=True,
+            scene_description=scene_description,
+            objects_found=objects_found,
+            suggested_classes=suggested,
+            confidence=confidence,
+            processing_time_ms=(time.time() - start_time) * 1000
+        )
+        
+    except Exception as e:
+        return SuggestClassesResponse(
+            success=False,
+            error=str(e),
+            processing_time_ms=(time.time() - start_time) * 1000
+        )
+
 
 # ============================================================================
 # Redis Async Processing
