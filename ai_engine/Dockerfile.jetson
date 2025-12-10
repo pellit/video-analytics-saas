@@ -1,5 +1,6 @@
 # Dockerfile optimizado para Jetson Nano (JetPack 4.6+)
 # =====================================================
+# Updated: 2025-12-10 - Fixed models copy issue
 #
 # Usa imagen base de NVIDIA con CUDA preinstalado
 # Optimizado para inferencia en GPU Maxwell (128 CUDA cores)
