@@ -1,0 +1,61 @@
+# Dockerfile optimizado para Jetson Nano (JetPack 4.6+)
+# =====================================================
+#
+# Usa imagen base de NVIDIA con CUDA preinstalado
+# Optimizado para inferencia en GPU Maxwell (128 CUDA cores)
+
+# Imagen base: L4T (Linux for Tegra) con Python
+# JetPack 4.6.1 = L4T R32.7.1
+FROM nvcr.io/nvidia/l4t-pytorch:r32.7.1-pth1.10-py3
+
+# Alternativa para JetPack 5.x (Jetson Orin):
+# FROM nvcr.io/nvidia/l4t-pytorch:r35.2.1-pth2.0-py3
+
+WORKDIR /app
+
+# Variables de entorno para optimización
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    # Desactivar GUI de OpenCV
+    OPENCV_VIDEOIO_PRIORITY_GSTREAMER=0 \
+    # Optimizaciones CUDA para Jetson
+    CUDA_MODULE_LOADING=LAZY \
+    # Usar memoria unificada (compartida CPU/GPU en Jetson)
+    PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:128
+
+# Instalar dependencias del sistema
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    # OpenCV dependencies
+    libgl1-mesa-glx \
+    libglib2.0-0 \
+    libsm6 \
+    libxext6 \
+    libxrender-dev \
+    # Build tools
+    build-essential \
+    pkg-config \
+    # Networking
+    curl \
+    && rm -rf /var/lib/apt/lists/* \
+    && apt-get clean
+
+# Copiar requirements específicos para Jetson
+COPY requirements.jetson.txt .
+
+# Instalar dependencias Python
+# Nota: torch ya viene preinstalado en la imagen base
+RUN pip3 install --no-cache-dir -r requirements.jetson.txt
+
+# Copiar código fuente
+COPY src/ ./src/
+COPY models/ ./models/
+
+# Puerto de la API
+EXPOSE 5050
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+    CMD curl -f http://localhost:5050/health || exit 1
+
+# Comando por defecto: API de inferencia
+CMD ["python3", "-m", "uvicorn", "src.inference_api:app", "--host", "0.0.0.0", "--port", "5050"]

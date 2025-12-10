@@ -1,0 +1,56 @@
+# ============================================
+# Requirements para Jetson Nano
+# Optimizado para ARM64 + CUDA
+# ============================================
+#
+# NOTA: PyTorch y torchvision ya vienen preinstalados
+# en la imagen base de NVIDIA L4T. No los incluyas aquí.
+#
+# ============================================
+
+# --- Core API ---
+fastapi>=0.100.0
+uvicorn[standard]>=0.22.0
+pydantic>=2.0.0
+
+# --- Image Processing ---
+# OpenCV para Jetson (usar version compatible con CUDA)
+# Si usas la imagen L4T, opencv ya está instalado
+# opencv-python-headless>=4.5.0
+numpy>=1.21.0
+Pillow>=9.0.0
+
+# --- ONNX Runtime para Jetson ---
+# Usar onnxruntime-gpu específico para Jetson
+# Instalar desde NVIDIA: https://elinux.org/Jetson_Zoo#ONNX_Runtime
+# pip3 install https://nvidia.box.com/shared/static/...
+# Por ahora usar CPU fallback:
+onnxruntime>=1.14.0
+
+# --- Tracking (ByteTrack) ---
+supervision>=0.16.0
+
+# --- Requests (para health checks) ---
+requests>=2.28.0
+
+# --- Optional: JPEG Encoding optimization ---
+# simplejpeg puede no compilar en ARM, usar Pillow como fallback
+# simplejpeg>=1.6.0
+
+# ============================================
+# NOTAS DE INSTALACIÓN EN JETSON:
+# ============================================
+#
+# 1. Para ONNX Runtime con GPU:
+#    wget https://nvidia.box.com/shared/static/pmsqsiaw4pg9qrbeckcbymho6c01jj4z.whl \
+#        -O onnxruntime_gpu-1.11.0-cp38-cp38-linux_aarch64.whl
+#    pip3 install onnxruntime_gpu-1.11.0-cp38-cp38-linux_aarch64.whl
+#
+# 2. Para TensorRT (máxima velocidad):
+#    Ya incluido en JetPack SDK
+#    pip3 install tensorrt (si no está)
+#
+# 3. Para OpenCV con CUDA:
+#    Ya incluido en imagen L4T de NVIDIA
+#
+# ============================================

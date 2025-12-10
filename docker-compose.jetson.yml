@@ -1,0 +1,139 @@
+# =============================================================
+# Docker Compose para Jetson Nano (Solo Inferencia AI)
+# =============================================================
+#
+# ARQUITECTURA DISTRIBUIDA:
+# -------------------------
+# [Servidor Principal]           [Jetson Nano]
+#   - Frontend                     - API de Inferencia (GPU CUDA)
+#   - Backend Laravel              - Modelo YOLO optimizado
+#   - Redis                        - TensorRT (opcional)
+#   - Streaming video
+#         |                              |
+#         |  HTTP POST /detect           |
+#         |  (frame base64)              |
+#         +----------------------------->|
+#         |<-----------------------------+
+#         |  JSON (detections)           |
+#
+# USO:
+# ----
+# En Jetson Nano:
+#   docker-compose -f docker-compose.jetson.yml up -d
+#
+# El servidor principal enviará frames a:
+#   http://<jetson-ip>:5050/detect
+#
+# OPTIMIZACIONES JETSON:
+# ----------------------
+# - Usa runtime nvidia para acceso a GPU
+# - CUDA habilitado por defecto
+# - TensorRT opcional para máxima velocidad
+# - Modelo ligero por defecto (yolo_fastest)
+#
+# =============================================================
+
+services:
+  # --- INFERENCE API (Solo detección, sin streaming) ---
+  inference_api:
+    build:
+      context: ./ai_engine
+      dockerfile: Dockerfile.jetson
+    image: video-analytics-inference:jetson
+    container_name: jetson_inference
+    
+    # Usar runtime NVIDIA para acceso a GPU
+    runtime: nvidia
+    
+    # Comando: API de inferencia ligera
+    command: uvicorn src.inference_api:app --host 0.0.0.0 --port 5050 --workers 1
+    
+    environment:
+      # Configuración del dispositivo
+      - DEVICE_NAME=${DEVICE_NAME:-jetson-nano}
+      - PYTHONUNBUFFERED=1
+      
+      # Modelo de detección
+      # Opciones: yolo_fastest (default), mobilenet_ssd, onnx, yolov4_tiny
+      - DETECTION_MODEL=${DETECTION_MODEL:-yolo_fastest}
+      - DETECTION_RESOLUTION=${DETECTION_RESOLUTION:-medium}
+      
+      # GPU/CUDA
+      - ENABLE_CUDA=${ENABLE_CUDA:-true}
+      - ENABLE_TENSORRT=${ENABLE_TENSORRT:-false}
+      
+      # CUDA visible devices (usa GPU 0 por defecto)
+      - CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0}
+      
+      # Optimizaciones de memoria para Jetson
+      - MALLOC_TRIM_THRESHOLD_=65536
+      - PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:128
+      
+    ports:
+      # Puerto expuesto para recibir frames del servidor principal
+      - "${INFERENCE_PORT:-5050}:5050"
+    
+    volumes:
+      # Modelos persistentes
+      - ./ai_engine/models:/app/models:ro
+      # Cache de TensorRT (para modelos optimizados)
+      - jetson_tensorrt_cache:/root/.cache/tensorrt
+      
+    deploy:
+      resources:
+        limits:
+          # Jetson Nano tiene 4GB RAM compartida con GPU
+          memory: 3G
+        reservations:
+          # Reservar GPU
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5050/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    
+    restart: unless-stopped
+    
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  jetson_tensorrt_cache:
+    driver: local
+
+# =============================================================
+# INSTRUCCIONES DE INSTALACIÓN EN JETSON NANO:
+# =============================================================
+#
+# 1. Instalar JetPack SDK (incluye CUDA, cuDNN, TensorRT)
+#    https://developer.nvidia.com/embedded/jetpack
+#
+# 2. Instalar Docker con soporte NVIDIA:
+#    sudo apt-get install -y nvidia-docker2
+#    sudo systemctl restart docker
+#
+# 3. Clonar solo los archivos necesarios:
+#    scp -r ai_engine/ jetson@<jetson-ip>:~/inference/
+#    scp docker-compose.jetson.yml jetson@<jetson-ip>:~/inference/
+#
+# 4. Construir y ejecutar:
+#    cd ~/inference
+#    docker-compose -f docker-compose.jetson.yml build
+#    docker-compose -f docker-compose.jetson.yml up -d
+#
+# 5. Verificar funcionamiento:
+#    curl http://localhost:5050/health
+#
+# 6. En el servidor principal, configurar:
+#    JETSON_INFERENCE_URL=http://<jetson-ip>:5050
+#
+# =============================================================
