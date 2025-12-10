@@ -7,15 +7,18 @@ services:
       dockerfile: Dockerfile.jetson
     image: video-analytics-inference:jetson
     container_name: jetson_inference
-    # Habilitar el Runtime de NVIDIA explícitamente es vital en JetPack 4.6
-    runtime: nvidia 
+    
+    # IMPORTANTE: Esto asegura que arranque solo al reiniciar la Jetson
+    restart: always 
     
     command: uvicorn src.inference_api:app --host 0.0.0.0 --port 5050 --workers 1
     
     environment:
       - DEVICE_NAME=jetson-nano
       - PYTHONUNBUFFERED=1
-      # ... (resto de tus variables igual)
+      - DETECTION_MODEL=yolo_fastest
+      - ENABLE_CUDA=true
+      - CUDA_VISIBLE_DEVICES=0
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=compute,video,utility
       
@@ -25,11 +28,10 @@ services:
     volumes:
       - jetson_models:/app/models
       - jetson_tensorrt_cache:/root/.cache/tensorrt
-      # Agregamos acceso al socket de docker y video para debugging si fuera necesario
       - /tmp/argus_socket:/tmp/argus_socket
       
     mem_limit: 3g
-    restart: unless-stopped
+    
     logging:
       driver: "json-file"
       options:
