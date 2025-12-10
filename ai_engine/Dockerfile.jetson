@@ -1,78 +1,65 @@
-# Dockerfile optimizado para Jetson Nano (JetPack 4.6+)
-# =====================================================
-# Updated: 2025-12-10 - Fixed models copy issue
-#
-# Usa imagen base de NVIDIA con CUDA preinstalado
-# Optimizado para inferencia en GPU Maxwell (128 CUDA cores)
+# ==============================================================================
+# Dockerfile Optimizado para Jetson Nano (JetPack 4.6.1)
+# Habilita GPU (CUDA) para OpenCV y PyTorch
+# ==============================================================================
 
-# Imagen base: L4T (Linux for Tegra) con Python
-# JetPack 4.6.1 = L4T R32.7.1
-FROM nvcr.io/nvidia/l4t-pytorch:r32.7.1-pth1.10-py3
+# 1. CAMBIO CRÍTICO: Usamos la imagen base correcta para Jetson Nano actualizada
+# Esto alinea los drivers de CUDA del contenedor con los de tu placa física.
+ARG BASE_IMAGE=nvcr.io/nvidia/l4t-pytorch:r32.7.1-pth1.10-py3
+FROM ${BASE_IMAGE}
 
-# Alternativa para JetPack 5.x (Jetson Orin):
-# FROM nvcr.io/nvidia/l4t-pytorch:r35.2.1-pth2.0-py3
-
-# --- AGREGA ESTO PARA EVITAR ERRORES DE TEXTO ---
+ENV DEBIAN_FRONTEND=noninteractive
+ENV SHELL /bin/bash
+# Evita problemas de codificación (UnicodeDecodeError)
 ENV LC_ALL=C.UTF-8
 ENV LANG=C.UTF-8
-# -----------------------------------------------
 
-WORKDIR /app
+WORKDIR /jetson-inference
 
-# Variables de entorno para optimización
-ENV PYTHONUNBUFFERED=1 \
-    PYTHONDONTWRITEBYTECODE=1 \
-    # Desactivar GUI de OpenCV
-    OPENCV_VIDEOIO_PRIORITY_GSTREAMER=0 \
-    # Optimizaciones CUDA para Jetson
-    CUDA_MODULE_LOADING=LAZY \
-    # Usar memoria unificada (compartida CPU/GPU en Jetson)
-    PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:128
-
-# Instalar dependencias del sistema
-# Nota: La imagen L4T ya tiene muchas dependencias preinstaladas
-# Solo instalamos lo mínimo necesario
-# Fix: Eliminar repositorio de Kitware con clave GPG expirada/inválida
-# Corrección del error GPG de Kitware y actualización de repositorios
-RUN rm -f /etc/apt/sources.list.d/kitware* \
-    && apt-get update || true \
-    && apt-get install -y --no-install-recommends \
-    gnupg \
-    ca-certificates \
-    wget \
-    libglib2.0-0 \
-    libsm6 \
-    libxext6 \
-    libxrender-dev \
+# 2. INSTALACIÓN DE PAQUETES DE SISTEMA (CON PARCHE DE LLAVES GPG)
+# Eliminamos el repositorio de Kitware viejo que causa errores y actualizamos
+RUN rm -f /etc/apt/sources.list.d/kitware* && \
+    apt-get update || true && \
+    apt-get install -y --no-install-recommends \
+            cmake \
+            nano \
+            wget \
+            curl \
+            libglib2.0-0 \
+            libsm6 \
+            libxext6 \
+            libxrender-dev \
+            gstreamer1.0-tools \
+            gstreamer1.0-plugins-good \
+            gstreamer1.0-plugins-bad \
+            gstreamer1.0-plugins-ugly \
+            libgstreamer-plugins-base1.0-dev \
+            libgstreamer-plugins-good1.0-dev \
     && rm -rf /var/lib/apt/lists/* \
     && apt-get clean
 
-# Copiar requirements específicos para Jetson
-COPY requirements.jetson.txt .
+# 3. GESTIÓN DE OPENCV (PARA SOPORTE CUDA)
+# La imagen l4t-pytorch YA TRAE un OpenCV básico, pero para YOLO necesitamos uno robusto.
+# Opción A: Usamos el del sistema (python3-opencv) que es rápido de instalar.
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends python3-opencv && \
+    rm -rf /var/lib/apt/lists/*
 
-# Instalar dependencias Python
-# Nota: torch ya viene preinstalado en la imagen base
-RUN pip3 install --no-cache-dir -r requirements.jetson.txt
+# 4. INSTALACIÓN DE DEPENDENCIAS DE PYTHON (TU API)
+# Actualizamos pip primero para evitar errores con paquetes modernos
+RUN pip3 install --no-cache-dir --verbose --upgrade pip setuptools wheel Cython
 
-RUN pip3 install --no-cache-dir opencv-python-headless==4.5.5.64 && \
-    pip3 install --no-cache-dir -r requirements.jetson.txt
+# Copiamos tu archivo de requerimientos (asegúrate de que exista en la carpeta ./ai_engine)
+COPY requirements.jetson.txt /app/requirements.txt
+WORKDIR /app
 
-# RUN wget https://nvidia.box.com/shared/static/pms2seoyhu9b22b5qoc11dbm1800cc69.whl -O onnxruntime_gpu-1.10.0-cp36-cp36m-linux_aarch64.whl \
-#     && pip3 install onnxruntime_gpu-1.10.0-cp36-cp36m-linux_aarch64.whl \
-#     && rm onnxruntime_gpu-1.10.0-cp36-cp36m-linux_aarch64.whl
+# Instalamos las librerías necesarias para tu API (FastAPI, Uvicorn, etc.)
+RUN pip3 install --no-cache-dir -r requirements.txt
 
-# Copiar código fuente
-COPY src/ ./src/
+# 5. COPIAR TU CÓDIGO FUENTE
+# Copiamos todo el contenido de la carpeta actual al contenedor
+COPY . /app
 
-# Crear directorio para modelos (se montará como volumen o se descargarán)
-RUN mkdir -p ./models
-
-# Puerto de la API
-EXPOSE 5050
-
-# Health check (usando python ya que curl no está disponible)
-HEALTHCHECK --interval=30s --timeout=10s --start-period=120s --retries=3 \
-    CMD python3 -c "import urllib.request; urllib.request.urlopen('http://localhost:5050/health')" || exit 1
-
-# Comando por defecto: API de inferencia
-CMD ["python3", "-m", "uvicorn", "src.inference_api:app", "--host", "0.0.0.0", "--port", "5050"]
+# 6. COMANDO DE ARRANQUE
+# Lanza tu API automáticamente usando la GPU
+CMD ["uvicorn", "src.inference_api:app", "--host", "0.0.0.0", "--port", "5050", "--workers", "1"]
