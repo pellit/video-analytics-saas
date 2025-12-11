@@ -26,8 +26,9 @@ COPY requirements.jetson.txt /app/requirements.txt
 RUN pip3 install --no-cache-dir --upgrade pip setuptools wheel && \
     pip3 install --no-cache-dir --ignore-installed PyYAML && \
     pip3 install --no-cache-dir -r requirements.txt && \
-    cd /opt/jetson-inference/python/training/classification && \
-    ./download-models.sh
+    if [ -d /opt/jetson-inference/python/training/classification ]; then \
+        cd /opt/jetson-inference/python/training/classification && ./download-models.sh; \
+    fi
 
 # 3. Copiar código
 COPY . /app
