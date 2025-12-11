@@ -30,6 +30,7 @@ services:
       - jetson_models:/app/models
       - jetson_tensorrt_cache:/root/.cache/tensorrt
       - /tmp/argus_socket:/tmp/argus_socket
+      - ./data/networks:/jetson-inference/data/networks
     logging:
       driver: "json-file"
       options:
