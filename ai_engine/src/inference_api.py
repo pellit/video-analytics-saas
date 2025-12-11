@@ -6,6 +6,7 @@ UPDATED: Uses YOLOv4-Tiny (Reliable & DNN Compatible)
 import os
 import time
 import base64
+import tempfile
 import numpy as np
 import cv2
 import requests
@@ -120,78 +121,163 @@ class DetectionRequest(BaseModel):
     confidence: float = 0.5
     nms_threshold: float = 0.4
 
+class BatchDetectionRequest(BaseModel):
+    images_base64: List[str]
+    confidence: float = 0.5
+    nms_threshold: float = 0.4
+
 @app.get("/health")
 def health():
     return {"status": "ok", "model": model_name, "cuda": cv2.cuda.getCudaEnabledDeviceCount() > 0}
 
-@app.post("/detect")
-def detect(req: DetectionRequest):
+def _decode_base64_image(image_base64: str) -> np.ndarray:
+    """Decode a base64 image string into a numpy array."""
+    try:
+        payload = image_base64.split(",")[1] if "," in image_base64 else image_base64
+        img_bytes = base64.b64decode(payload)
+        nparr = np.frombuffer(img_bytes, np.uint8)
+        img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+    except Exception:
+        raise HTTPException(400, "Invalid image payload")
+    if img is None:
+        raise HTTPException(400, "Unable to decode image")
+    return img
+
+
+def _run_inference(img: np.ndarray, confidence: float, nms_threshold: float) -> dict:
+    """Run YOLO inference on a decoded frame."""
     global net
     if net is None:
         raise HTTPException(503, "Model not loaded")
 
-    # Decode Image
-    try:
-        if ',' in req.image_base64:
-            b64 = req.image_base64.split(',')[1]
-        else:
-            b64 = req.image_base64
-        img_bytes = base64.b64decode(b64)
-        nparr = np.frombuffer(img_bytes, np.uint8)
-        img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-    except:
-        raise HTTPException(400, "Invalid image")
-
     height, width = img.shape[:2]
-    
-    # Inference
     start = time.perf_counter()
-    blob = cv2.dnn.blobFromImage(img, 1/255.0, (416, 416), (0,0,0), swapRB=True, crop=False)
+    blob = cv2.dnn.blobFromImage(img, 1 / 255.0, (416, 416), (0, 0, 0), swapRB=True, crop=False)
     net.setInput(blob)
     outs = net.forward(output_layers)
-    
-    # Process outputs
+
     class_ids = []
     confidences = []
     boxes = []
-    
+
     for out in outs:
         for detection in out:
             scores = detection[5:]
             class_id = np.argmax(scores)
-            confidence = scores[class_id]
-            if confidence > req.confidence:
-                # YOLO returns center_x, center_y, w, h
+            conf = scores[class_id]
+            if conf > confidence:
                 cx = int(detection[0] * width)
                 cy = int(detection[1] * height)
                 w = int(detection[2] * width)
                 h = int(detection[3] * height)
                 x = int(cx - w / 2)
                 y = int(cy - h / 2)
-                
                 boxes.append([x, y, w, h])
-                confidences.append(float(confidence))
+                confidences.append(float(conf))
                 class_ids.append(class_id)
-    
-    # NMS (Non-Maximum Suppression)
-    indices = cv2.dnn.NMSBoxes(boxes, confidences, req.confidence, req.nms_threshold)
-    
-    results = []
+
+    indices = cv2.dnn.NMSBoxes(boxes, confidences, confidence, nms_threshold)
+    detections = []
     if len(indices) > 0:
         for i in indices.flatten():
             x, y, w, h = boxes[i]
-            label = str(classes[class_ids[i]])
-            results.append({
-                "class_name": label,
-                "confidence": round(confidences[i], 2),
-                "bbox": [x, y, x+w, y+h] # x1, y1, x2, y2
-            })
-            
+            detections.append(
+                {
+                    "class_name": str(classes[class_ids[i]]),
+                    "confidence": round(confidences[i], 2),
+                    "bbox": [x, y, x + w, y + h],
+                }
+            )
+
     return {
         "success": True,
-        "detections": results,
-        "time_ms": round((time.perf_counter() - start) * 1000, 2)
+        "detections": detections,
+        "time_ms": round((time.perf_counter() - start) * 1000, 2),
     }
+
+
+@app.post("/detect")
+def detect(req: DetectionRequest):
+    img = _decode_base64_image(req.image_base64)
+    return _run_inference(img, req.confidence, req.nms_threshold)
+
+
+@app.post("/detect/batch")
+def detect_batch(req: BatchDetectionRequest):
+    """Analyze multiple images in a single request."""
+    if not req.images_base64:
+        raise HTTPException(400, "images_base64 list cannot be empty")
+
+    batch_results = []
+    for idx, image_base64 in enumerate(req.images_base64):
+        try:
+            img = _decode_base64_image(image_base64)
+            result = _run_inference(img, req.confidence, req.nms_threshold)
+            batch_results.append({"index": idx, **result})
+        except HTTPException as exc:
+            batch_results.append({"index": idx, "success": False, "error": exc.detail})
+
+    return {"success": True, "frames": len(batch_results), "results": batch_results}
+
+
+@app.post("/detect/video")
+async def detect_video(
+    file: UploadFile = File(...),
+    confidence: float = Form(0.5),
+    nms_threshold: float = Form(0.4),
+    max_frames: int = Form(200),
+    frame_stride: int = Form(5),
+):
+    """Upload a short video and analyze sampled frames."""
+    if max_frames <= 0:
+        raise HTTPException(400, "max_frames must be > 0")
+    if frame_stride <= 0:
+        raise HTTPException(400, "frame_stride must be > 0")
+
+    try:
+        contents = await file.read()
+    except Exception:
+        raise HTTPException(400, "Failed to read uploaded file")
+
+    tmp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(file.filename or "")[1]) as tmp:
+            tmp.write(contents)
+            tmp_path = tmp.name
+
+        cap = cv2.VideoCapture(tmp_path)
+        if not cap.isOpened():
+            raise HTTPException(400, "Unable to open uploaded video")
+
+        results = []
+        frame_idx = 0
+        processed = 0
+
+        while processed < max_frames:
+            ret, frame = cap.read()
+            if not ret:
+                break
+
+            if frame_idx % frame_stride != 0:
+                frame_idx += 1
+                continue
+
+            result = _run_inference(frame, confidence, nms_threshold)
+            result["frame_number"] = frame_idx
+            results.append(result)
+            processed += 1
+            frame_idx += 1
+
+        cap.release()
+        return {
+            "success": True,
+            "frames_analyzed": processed,
+            "frame_stride": frame_stride,
+            "results": results,
+        }
+    finally:
+        if tmp_path and os.path.exists(tmp_path):
+            os.remove(tmp_path)
 
 if __name__ == "__main__":
     import uvicorn
