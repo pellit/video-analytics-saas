@@ -33,6 +33,7 @@ RUN apt-get update && \
         gstreamer1.0-plugins-bad \
         libgstreamer1.0-dev \
         libgstreamer-plugins-base1.0-dev \
+        libgstreamer-plugins-bad1.0-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # 2. Construir e instalar jetson-inference (ActionNet + DepthNet)
