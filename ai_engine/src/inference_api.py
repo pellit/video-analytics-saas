@@ -15,11 +15,24 @@ from fastapi import FastAPI, HTTPException, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
+try:
+    import jetson.inference
+    import jetson.utils
+    JETSON_INFERENCE_AVAILABLE = True
+except ImportError:
+    JETSON_INFERENCE_AVAILABLE = False
+
 # --- Configuration ---
 # CAMBIO: Usamos yolov4-tiny por defecto porque es 100% compatible con OpenCV DNN
 DETECTION_MODEL = os.environ.get('DETECTION_MODEL', 'yolov4-tiny')
 DETECTION_RESOLUTION = os.environ.get('DETECTION_RESOLUTION', 'medium')
 DEVICE_NAME = os.environ.get('DEVICE_NAME', 'jetson-nano')
+MAX_VIDEO_DURATION_S = 60
+
+# Optional NVIDIA jetson-inference models
+ACTIONNET_MODEL = os.environ.get('ACTIONNET_MODEL', 'resnet18')
+ACTIONNET_LABELS = os.environ.get('ACTIONNET_LABELS')
+DEPTHNET_MODEL = os.environ.get('DEPTHNET_MODEL', 'resnet18')
 
 # Models directory
 MODELS_DIR = os.path.join(os.path.dirname(__file__), "../models")
@@ -30,6 +43,8 @@ net = None
 output_layers = None
 classes = []
 model_name = None
+actionnet = None
+depthnet = None
 
 # --- Reliable Model URLs (AlexeyAB Darknet) ---
 MODEL_URLS = {
@@ -125,10 +140,34 @@ class BatchDetectionRequest(BaseModel):
     images_base64: List[str]
     confidence: float = 0.5
     nms_threshold: float = 0.4
+class ActionImageRequest(BaseModel):
+    image_base64: str
+    top_k: int = 3
 
 @app.get("/health")
 def health():
     return {"status": "ok", "model": model_name, "cuda": cv2.cuda.getCudaEnabledDeviceCount() > 0}
+
+
+def _load_actionnet():
+    global actionnet
+    if actionnet is None:
+        if not JETSON_INFERENCE_AVAILABLE:
+            raise HTTPException(503, "jetson-inference is not available on this device")
+        if ACTIONNET_LABELS:
+            actionnet = jetson.inference.actionNet(ACTIONNET_MODEL, ACTIONNET_LABELS)
+        else:
+            actionnet = jetson.inference.actionNet(ACTIONNET_MODEL)
+    return actionnet
+
+
+def _load_depthnet():
+    global depthnet
+    if depthnet is None:
+        if not JETSON_INFERENCE_AVAILABLE:
+            raise HTTPException(503, "jetson-inference is not available on this device")
+        depthnet = jetson.inference.depthNet(DEPTHNET_MODEL)
+    return depthnet
 
 def _decode_base64_image(image_base64: str) -> np.ndarray:
     """Decode a base64 image string into a numpy array."""
@@ -142,6 +181,38 @@ def _decode_base64_image(image_base64: str) -> np.ndarray:
     if img is None:
         raise HTTPException(400, "Unable to decode image")
     return img
+
+
+def _save_upload_to_temp(file: UploadFile) -> str:
+    try:
+        file.file.seek(0)
+        contents = file.file.read()
+    except Exception:
+        raise HTTPException(400, "Failed to read uploaded file")
+
+    if not contents:
+        raise HTTPException(400, "Uploaded file is empty")
+
+    suffix = os.path.splitext(file.filename or "")[1]
+    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
+    tmp.write(contents)
+    tmp.close()
+    return tmp.name
+
+
+def _ensure_video_duration(path: str, max_seconds: int = MAX_VIDEO_DURATION_S):
+    cap = cv2.VideoCapture(path)
+    if not cap.isOpened():
+        raise HTTPException(400, "Unable to open uploaded video")
+    fps = cap.get(cv2.CAP_PROP_FPS) or 0
+    frames = cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0
+    cap.release()
+    if fps <= 0 or frames <= 0:
+        raise HTTPException(400, "Unable to determine video duration")
+    duration = frames / fps
+    if duration > max_seconds:
+        raise HTTPException(400, f"Video duration {duration:.1f}s exceeds limit of {max_seconds}s")
+    return duration
 
 
 def _run_inference(img: np.ndarray, confidence: float, nms_threshold: float) -> dict:
@@ -196,6 +267,148 @@ def _run_inference(img: np.ndarray, confidence: float, nms_threshold: float) -> 
     }
 
 
+def _cuda_from_bgr(frame: np.ndarray):
+    rgba = cv2.cvtColor(frame, cv2.COLOR_BGR2RGBA)
+    return jetson.utils.cudaFromNumpy(rgba)
+
+
+def _run_actionnet_on_image(image: np.ndarray, top_k: int):
+    net = _load_actionnet()
+    cuda_img = _cuda_from_bgr(image)
+    class_id, confidence = net.Classify(cuda_img)
+
+    top_predictions = []
+    classifications = net.GetClassifications()
+    for cls in classifications:
+        top_predictions.append({
+            "class_id": int(cls.classID),
+            "label": net.GetClassDesc(int(cls.classID)),
+            "confidence": float(cls.confidence)
+        })
+        if len(top_predictions) >= top_k:
+            break
+
+    return {
+        "predicted_class": {
+            "class_id": int(class_id),
+            "label": net.GetClassDesc(int(class_id)),
+            "confidence": float(confidence)
+        },
+        "top_predictions": top_predictions
+    }
+
+
+def _run_actionnet_on_video(video_path: str, frame_stride: int, top_k: int):
+    net = _load_actionnet()
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        raise HTTPException(400, "Unable to open uploaded video")
+
+    frame_idx = 0
+    processed = 0
+    predictions = []
+
+    while cap.isOpened():
+        ret, frame = cap.read()
+        if not ret:
+            break
+
+        if frame_idx % frame_stride != 0:
+            frame_idx += 1
+            continue
+
+        cuda_img = _cuda_from_bgr(frame)
+        class_id, confidence = net.Classify(cuda_img)
+        predictions.append({
+            "frame": frame_idx,
+            "class_id": int(class_id),
+            "label": net.GetClassDesc(int(class_id)),
+            "confidence": float(confidence)
+        })
+        processed += 1
+        frame_idx += 1
+
+    cap.release()
+
+    aggregates = {}
+    for pred in predictions:
+        label = pred["label"]
+        aggregates.setdefault(label, {"count": 0, "max_confidence": 0.0})
+        aggregates[label]["count"] += 1
+        aggregates[label]["max_confidence"] = max(aggregates[label]["max_confidence"], pred["confidence"])
+
+    top_labels = sorted(
+        [{"label": label, **stats} for label, stats in aggregates.items()],
+        key=lambda x: (x["count"], x["max_confidence"]),
+        reverse=True
+    )[:top_k]
+
+    return {
+        "frames_analyzed": processed,
+        "predictions": predictions,
+        "top_labels": top_labels
+    }
+
+
+def _run_depthnet_on_video(video_path: str, frame_stride: int, max_frames: int, preview_frames: int = 3):
+    net = _load_depthnet()
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        raise HTTPException(400, "Unable to open uploaded video")
+
+    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
+    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
+    if width <= 0 or height <= 0:
+        cap.release()
+        raise HTTPException(400, "Invalid video dimensions")
+
+    frame_idx = 0
+    processed = 0
+    summaries = []
+    previews = []
+
+    while processed < max_frames:
+        ret, frame = cap.read()
+        if not ret:
+            break
+
+        if frame_idx % frame_stride != 0:
+            frame_idx += 1
+            continue
+
+        cuda_img = _cuda_from_bgr(frame)
+        depth_img = net.Process(cuda_img, disparity=False)
+        depth_np = jetson.utils.cudaToNumpy(depth_img, width, height, 1).squeeze()
+
+        summaries.append({
+            "frame": frame_idx,
+            "mean_depth": float(np.mean(depth_np)),
+            "min_depth": float(np.min(depth_np)),
+            "max_depth": float(np.max(depth_np)),
+        })
+
+        if len(previews) < preview_frames:
+            normalized = cv2.normalize(depth_np, None, 0, 255, cv2.NORM_MINMAX)
+            normalized = normalized.astype(np.uint8)
+            heatmap = cv2.applyColorMap(normalized, cv2.COLORMAP_PLASMA)
+            _, buffer = cv2.imencode('.jpg', heatmap, [cv2.IMWRITE_JPEG_QUALITY, 85])
+            previews.append({
+                "frame": frame_idx,
+                "preview_base64": "data:image/jpeg;base64," + base64.b64encode(buffer).decode()
+            })
+
+        processed += 1
+        frame_idx += 1
+
+    cap.release()
+
+    return {
+        "frames_analyzed": processed,
+        "summaries": summaries,
+        "previews": previews
+    }
+
+
 @app.post("/detect")
 def detect(req: DetectionRequest):
     img = _decode_base64_image(req.image_base64)
@@ -234,17 +447,8 @@ async def detect_video(
     if frame_stride <= 0:
         raise HTTPException(400, "frame_stride must be > 0")
 
+    tmp_path = _save_upload_to_temp(file)
     try:
-        contents = await file.read()
-    except Exception:
-        raise HTTPException(400, "Failed to read uploaded file")
-
-    tmp_path = None
-    try:
-        with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(file.filename or "")[1]) as tmp:
-            tmp.write(contents)
-            tmp_path = tmp.name
-
         cap = cv2.VideoCapture(tmp_path)
         if not cap.isOpened():
             raise HTTPException(400, "Unable to open uploaded video")
@@ -276,7 +480,76 @@ async def detect_video(
             "results": results,
         }
     finally:
-        if tmp_path and os.path.exists(tmp_path):
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+
+
+@app.post("/actionnet/video")
+async def actionnet_video(
+    file: UploadFile = File(...),
+    frame_stride: int = Form(8),
+    top_k: int = Form(3),
+):
+    if frame_stride <= 0:
+        raise HTTPException(400, "frame_stride must be > 0")
+    if top_k <= 0:
+        raise HTTPException(400, "top_k must be > 0")
+    if not JETSON_INFERENCE_AVAILABLE:
+        raise HTTPException(503, "jetson-inference is required for ActionNet endpoints")
+
+    tmp_path = _save_upload_to_temp(file)
+    try:
+        duration = _ensure_video_duration(tmp_path)
+        results = _run_actionnet_on_video(tmp_path, frame_stride, top_k)
+        return {
+            "success": True,
+            "video_duration_s": duration,
+            **results
+        }
+    finally:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+
+
+@app.post("/actionnet/image")
+def actionnet_image(req: ActionImageRequest):
+    if req.top_k <= 0:
+        raise HTTPException(400, "top_k must be > 0")
+    if not JETSON_INFERENCE_AVAILABLE:
+        raise HTTPException(503, "jetson-inference is required for ActionNet endpoints")
+
+    img = _decode_base64_image(req.image_base64)
+    result = _run_actionnet_on_image(img, req.top_k)
+    return {
+        "success": True,
+        **result
+    }
+
+
+@app.post("/depthnet/video")
+async def depthnet_video(
+    file: UploadFile = File(...),
+    frame_stride: int = Form(5),
+    max_frames: int = Form(120),
+):
+    if frame_stride <= 0:
+        raise HTTPException(400, "frame_stride must be > 0")
+    if max_frames <= 0:
+        raise HTTPException(400, "max_frames must be > 0")
+    if not JETSON_INFERENCE_AVAILABLE:
+        raise HTTPException(503, "jetson-inference is required for DepthNet endpoints")
+
+    tmp_path = _save_upload_to_temp(file)
+    try:
+        duration = _ensure_video_duration(tmp_path)
+        results = _run_depthnet_on_video(tmp_path, frame_stride, max_frames)
+        return {
+            "success": True,
+            "video_duration_s": duration,
+            **results
+        }
+    finally:
+        if os.path.exists(tmp_path):
             os.remove(tmp_path)
 
 if __name__ == "__main__":
