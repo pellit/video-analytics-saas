@@ -1,4 +1,4 @@
-version: "3.3"
+version: "2.3"
 
 services:
   inference_api:
@@ -23,13 +23,6 @@ services:
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=compute,video,utility
       
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
     ports:
       - "5050:5050"
     
@@ -37,9 +30,6 @@ services:
       - jetson_models:/app/models
       - jetson_tensorrt_cache:/root/.cache/tensorrt
       - /tmp/argus_socket:/tmp/argus_socket
-      
-    mem_limit: 3g
-    
     logging:
       driver: "json-file"
       options:
