@@ -2,46 +2,54 @@
 # Dockerfile Jetson Nano - FINAL DEFINITIVO
 # Base: l4t-ml (OpenCV CUDA + PyTorch preinstalados)
 # ==============================================================================
-ARG BASE_IMAGE=dustynv/l4t-ml:r32.7.1
+ARG BASE_IMAGE=nvcr.io/nvidia/l4t-ml:r32.7.1-py3
 FROM ${BASE_IMAGE}
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV SHELL /bin/bash
 ENV LC_ALL=C.UTF-8
 ENV LANG=C.UTF-8
+ENV PYTHONPATH=/usr/local/python
 
-WORKDIR /jetson-inference
-
-# 1. INSTALACIÓN DE DEPENDENCIAS MÍNIMAS
-RUN rm -f /etc/apt/sources.list.d/kitware* && \
-    apt-get update || true && \
+# 1. Dependencias del sistema y herramientas de build
+RUN apt-get update && \
     apt-get install -y --no-install-recommends \
-            nano \
-            wget \
-            curl \
-            libglib2.0-0 \
-            libsm6 \
-            libxext6 \
-            libxrender-dev \
-    && rm -rf /var/lib/apt/lists/* \
-    && apt-get clean
+        git \
+        cmake \
+        nano \
+        wget \
+        curl \
+        libglib2.0-0 \
+        libsm6 \
+        libxext6 \
+        libxrender-dev \
+        python3-dev \
+        python3-numpy \
+        libpython3-dev \
+        pkg-config \
+    && rm -rf /var/lib/apt/lists/*
 
-# 2. ACTUALIZAR PIP
-RUN pip3 install --no-cache-dir --verbose --upgrade pip setuptools wheel Cython
+# 2. Construir e instalar jetson-inference (ActionNet + DepthNet)
+WORKDIR /opt
+RUN git clone --recursive https://github.com/dusty-nv/jetson-inference.git && \
+    cd jetson-inference && \
+    mkdir -p build && cd build && \
+    cmake .. && \
+    make -j"$(nproc)" && \
+    make install && \
+    ldconfig && \
+    cd /opt/jetson-inference/python/training/classification && \
+    ./download-models.sh
 
-# 3. INSTALAR DEPENDENCIAS (CON EL FIX DE PyYAML)
-COPY requirements.jetson.txt /app/requirements.txt
+# 3. Dependencias Python del proyecto
 WORKDIR /app
+COPY requirements.jetson.txt /app/requirements.txt
+RUN pip3 install --no-cache-dir --upgrade pip setuptools wheel && \
+    pip3 install --no-cache-dir --ignore-installed PyYAML && \
+    pip3 install --no-cache-dir -r requirements.txt
 
-# --- EL FIX DE PyYAML ---
-# Esto fuerza la instalación de una versión nueva ignorando la del sistema
-RUN pip3 install --no-cache-dir --ignore-installed PyYAML
-
-# Instalar el resto de requerimientos
-RUN pip3 install --no-cache-dir -r requirements.txt
-
-# 4. COPIAR CÓDIGO
+# 4. Copiar código
 COPY . /app
 
-# 5. ARRANQUE
+# 5. Comando por defecto
 CMD ["uvicorn", "src.inference_api:app", "--host", "0.0.0.0", "--port", "5050", "--workers", "1"]

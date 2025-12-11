@@ -1,0 +1,47 @@
+# ==============================================================================
+# Dockerfile Jetson Nano - FINAL DEFINITIVO
+# Base: l4t-ml (OpenCV CUDA + PyTorch preinstalados)
+# ==============================================================================
+ARG BASE_IMAGE=dustynv/l4t-ml:r32.7.1
+FROM ${BASE_IMAGE}
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV SHELL /bin/bash
+ENV LC_ALL=C.UTF-8
+ENV LANG=C.UTF-8
+
+WORKDIR /jetson-inference
+
+# 1. INSTALACIÓN DE DEPENDENCIAS MÍNIMAS
+RUN rm -f /etc/apt/sources.list.d/kitware* && \
+    apt-get update || true && \
+    apt-get install -y --no-install-recommends \
+            nano \
+            wget \
+            curl \
+            libglib2.0-0 \
+            libsm6 \
+            libxext6 \
+            libxrender-dev \
+    && rm -rf /var/lib/apt/lists/* \
+    && apt-get clean
+
+# 2. ACTUALIZAR PIP
+RUN pip3 install --no-cache-dir --verbose --upgrade pip setuptools wheel Cython
+
+# 3. INSTALAR DEPENDENCIAS (CON EL FIX DE PyYAML)
+COPY requirements.jetson.txt /app/requirements.txt
+WORKDIR /app
+
+# --- EL FIX DE PyYAML ---
+# Esto fuerza la instalación de una versión nueva ignorando la del sistema
+RUN pip3 install --no-cache-dir --ignore-installed PyYAML
+
+# Instalar el resto de requerimientos
+RUN pip3 install --no-cache-dir -r requirements.txt
+
+# 4. COPIAR CÓDIGO
+COPY . /app
+
+# 5. ARRANQUE
+CMD ["uvicorn", "src.inference_api:app", "--host", "0.0.0.0", "--port", "5050", "--workers", "1"]

@@ -7,6 +7,7 @@ services:
       dockerfile: Dockerfile.jetson
     image: video-analytics-inference:jetson
     container_name: jetson_inference
+    runtime: nvidia
     
     # IMPORTANTE: Esto asegura que arranque solo al reiniciar la Jetson
     restart: always 
@@ -17,6 +18,8 @@ services:
       - DEVICE_NAME=jetson-nano
       - PYTHONUNBUFFERED=1
       - DETECTION_MODEL=yolo_fastest
+      - ACTIONNET_MODEL=resnet18
+      - DEPTHNET_MODEL=resnet18
       - ENABLE_CUDA=true
       - CUDA_VISIBLE_DEVICES=0
       - NVIDIA_VISIBLE_DEVICES=all
