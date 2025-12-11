@@ -402,6 +402,7 @@ const STREAM_URL = import.meta.env.VITE_STREAM_URL || 'http://localhost:5000/vid
 
 // Helper to get Worker base URL (for SSE events) - works in both dev and prod
 const getWorkerBaseUrl = () => {
+  if (import.meta.env.VITE_WORKER_URL) return import.meta.env.VITE_WORKER_URL
   // In production (non-localhost), use the Traefik route
   if (window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1') {
     return `${window.location.origin}/worker`

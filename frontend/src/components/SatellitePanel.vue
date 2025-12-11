@@ -902,8 +902,19 @@ const checkServiceStatus = async () => {
   try {
     // Get Worker base URL (same logic as UserDashboard)
     const getWorkerUrl = () => {
+      if (import.meta.env.VITE_WORKER_URL) return import.meta.env.VITE_WORKER_URL
       if (window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1') {
         return `${window.location.origin}/worker`
+      }
+      if (import.meta.env.VITE_API_URL) {
+        try {
+          const url = new URL(import.meta.env.VITE_API_URL)
+          url.port = url.port || '5000'
+          url.pathname = ''
+          return url.toString().replace(/\/$/, '')
+        } catch (e) {
+          console.error('Error parsing API URL para worker', e)
+        }
       }
       return 'http://localhost:5000'
     }

@@ -17,30 +17,41 @@ const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000/api'
 const GO_WORKER_URL = import.meta.env.VITE_GO_WORKER_URL || 'https://worker-go-dev.pellit.com.ar'
 // Prefer explicit stream URL; fallback to computed from API URL to be compatible with existing setups
 const getStreamUrl = () => {
-    if (import.meta.env.VITE_STREAM_URL) return import.meta.env.VITE_STREAM_URL;
+    if (import.meta.env.VITE_STREAM_URL) return import.meta.env.VITE_STREAM_URL
     // In production, use relative URLs that go through nginx proxy
     if (window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1') {
-        return `${window.location.origin}/video_feed`;
+        return `${window.location.origin}/video_feed`
     }
     if (import.meta.env.VITE_API_URL) {
         try {
-            const url = new URL(import.meta.env.VITE_API_URL);
-            url.port = '5000';
-            url.pathname = '/video_feed';
-            return url.toString();
+            const url = new URL(import.meta.env.VITE_API_URL)
+            url.port = url.port || '5000'
+            url.pathname = '/video_feed'
+            return url.toString()
         } catch (e) {
-            console.error('Error parsing API URL for stream', e);
+            console.error('Error parsing API URL for stream', e)
         }
     }
-    return 'http://192.168.0.38:5000/video_feed';
+    return 'http://localhost:5000/video_feed'
 }
 const STREAM_URL = getStreamUrl();
 // In production, AI worker is behind /worker/ proxy path
 const getWorkerUrl = () => {
+    if (import.meta.env.VITE_WORKER_URL) return import.meta.env.VITE_WORKER_URL
     if (window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1') {
-        return `${window.location.origin}/worker`;
+        return `${window.location.origin}/worker`
     }
-    return STREAM_URL.replace('/video_feed', '');
+    if (import.meta.env.VITE_API_URL) {
+        try {
+            const url = new URL(import.meta.env.VITE_API_URL)
+            url.port = url.port || '5000'
+            url.pathname = ''
+            return url.toString().replace(/\/$/, '')
+        } catch (e) {
+            console.error('Error parsing API URL for worker', e)
+        }
+    }
+    return STREAM_URL.replace('/video_feed', '')
 }
 const WORKER_URL = getWorkerUrl();
 
