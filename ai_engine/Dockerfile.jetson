@@ -11,8 +11,12 @@ ENV LC_ALL=C.UTF-8
 ENV LANG=C.UTF-8
 ENV PYTHONPATH=/usr/local/python
 
-# 1. Dependencias del sistema y herramientas de build
-RUN apt-get update && \
+# 1. Repositorios NVIDIA + dependencias del sistema
+RUN echo "deb https://repo.download.nvidia.com/jetson/common r32.7 main" > /etc/apt/sources.list.d/nvidia-l4t.list && \
+    echo "deb https://repo.download.nvidia.com/jetson/t194 r32.7 main" >> /etc/apt/sources.list.d/nvidia-l4t.list && \
+    echo "deb https://repo.download.nvidia.com/jetson/t210 r32.7 main" >> /etc/apt/sources.list.d/nvidia-l4t.list && \
+    apt-key adv --fetch-keys https://repo.download.nvidia.com/jetson/jetson-ota-public.asc && \
+    apt-get update && \
     apt-get install -y --no-install-recommends \
         git \
         cmake \
