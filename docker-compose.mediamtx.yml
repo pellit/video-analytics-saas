@@ -149,7 +149,7 @@ services:
   # --- MEDIA SERVER (MediaMTX - Go) ---
   media_server:
     image: bluenviron/mediamtx:latest
-    container_name: saas_media
+    # container_name eliminado para evitar conflictos
     ports:
       - "8554:8554"   # RTSP entrada (Worker → MediaMTX)
       - "8889:8889"   # WebRTC salida (Navegadores desktop)
