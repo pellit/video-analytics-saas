@@ -31,6 +31,13 @@ services:
       - saas_net
     links:
       - redis
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.api.rule=Host(`dev.pellit.com.ar`) && PathPrefix(`/api`)"
+      - "traefik.http.routers.api.entrypoints=websecure"
+      - "traefik.http.routers.api.tls=true"
+      - "traefik.http.routers.api.tls.certresolver=letsencrypt"
+      - "traefik.http.services.api.loadbalancer.server.port=8000"
 
   # --- FRONTEND (Vue.js) ---
   frontend:
