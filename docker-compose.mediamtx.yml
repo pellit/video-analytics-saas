@@ -143,7 +143,7 @@ services:
       - REDIS_HOST=redis
       - PYTHONUNBUFFERED=1
       - VLM_MODEL=${VLM_MODEL:-vikhyatk/moondream2}
-      - VLM_REVISION=${VLM_REVISION:-2025-01-09}
+      - VLM_REVISION=${VLM_REVISION:-2024-08-26}
       - VLM_LAZY_LOAD=${VLM_LAZY_LOAD:-true}
       - VLM_PRELOAD=${VLM_PRELOAD:-false}
     volumes:
