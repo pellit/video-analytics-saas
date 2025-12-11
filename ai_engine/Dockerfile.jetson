@@ -2,7 +2,7 @@
 # Dockerfile Jetson Nano - FINAL DEFINITIVO
 # Base: l4t-ml (OpenCV CUDA + PyTorch preinstalados)
 # ==============================================================================
-ARG BASE_IMAGE=nvcr.io/nvidia/l4t-ml:r32.7.1-py3
+ARG BASE_IMAGE=dustynv/jetson-inference:r32.7.1
 FROM ${BASE_IMAGE}
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -11,56 +11,24 @@ ENV LC_ALL=C.UTF-8
 ENV LANG=C.UTF-8
 ENV PYTHONPATH=/usr/local/python
 
-# 1. Repositorios NVIDIA + dependencias del sistema
-RUN echo "deb https://repo.download.nvidia.com/jetson/common r32.7 main" > /etc/apt/sources.list.d/nvidia-l4t.list && \
-    echo "deb https://repo.download.nvidia.com/jetson/t194 r32.7 main" >> /etc/apt/sources.list.d/nvidia-l4t.list && \
-    echo "deb https://repo.download.nvidia.com/jetson/t210 r32.7 main" >> /etc/apt/sources.list.d/nvidia-l4t.list && \
-    apt-key adv --fetch-keys https://repo.download.nvidia.com/jetson/jetson-ota-public.asc && \
-    apt-get update && \
+# 1. Dependencias de sistema básicas (pip ya viene instalado)
+RUN apt-get update && \
     apt-get install -y --no-install-recommends \
-        git \
-        cmake \
         nano \
         wget \
         curl \
-        libglib2.0-0 \
-        libsm6 \
-        libxext6 \
-        libxrender-dev \
-        python3-dev \
-        python3-numpy \
-        libpython3-dev \
-        pkg-config \
-        gstreamer1.0-tools \
-        gstreamer1.0-plugins-base \
-        gstreamer1.0-plugins-good \
-        gstreamer1.0-plugins-bad \
-        libgstreamer1.0-dev \
-        libgstreamer-plugins-base1.0-dev \
-        libgstreamer-plugins-bad1.0-dev \
+        python3-pip \
     && rm -rf /var/lib/apt/lists/*
 
-# 2. Construir e instalar jetson-inference (ActionNet + DepthNet)
-WORKDIR /opt
-RUN git clone --recursive https://github.com/dusty-nv/jetson-inference.git && \
-    cd jetson-inference && \
-    mkdir -p build && cd build && \
-    cmake .. && \
-    make -j"$(nproc)" && \
-    make install && \
-    ldconfig && \
-    cd /opt/jetson-inference/python/training/classification && \
-    ./download-models.sh
-
-# 3. Dependencias Python del proyecto
+# 2. Dependencias Python del proyecto
 WORKDIR /app
 COPY requirements.jetson.txt /app/requirements.txt
 RUN pip3 install --no-cache-dir --upgrade pip setuptools wheel && \
     pip3 install --no-cache-dir --ignore-installed PyYAML && \
     pip3 install --no-cache-dir -r requirements.txt
 
-# 4. Copiar código
+# 3. Copiar código
 COPY . /app
 
-# 5. Comando por defecto
+# 4. Comando por defecto
 CMD ["uvicorn", "src.inference_api:app", "--host", "0.0.0.0", "--port", "5050", "--workers", "1"]
