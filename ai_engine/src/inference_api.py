@@ -52,8 +52,37 @@ POSENET_MODEL = os.environ.get('POSENET_MODEL', 'resnet18-body')
 MODELS_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "../models"))
 os.makedirs(MODELS_DIR, exist_ok=True)
 
-FACE_DETECT_MODEL_PATH = os.environ.get('FACE_DETECT_MODEL_PATH', os.path.join(MODELS_DIR, 'face_detection_yunet_2023mar.onnx'))
-FACE_RECOGNITION_MODEL_PATH = os.environ.get('FACE_RECOGNITION_MODEL_PATH', os.path.join(MODELS_DIR, 'face_recognition_sface_2021dec.onnx'))
+
+def _resolve_model_path(preferred_path: str, filename: str) -> str:
+    search_dirs = [
+        os.path.dirname(preferred_path),
+        MODELS_DIR,
+        os.path.abspath(os.path.join(os.path.dirname(__file__), "../models")),
+        os.path.abspath(os.path.join(os.path.dirname(__file__), "../../models")),
+        os.path.abspath(os.path.join(os.getcwd(), "models")),
+        "/app/ai_engine/models",
+        "/app/models",
+    ]
+    candidates = [preferred_path]
+    for directory in search_dirs:
+        if directory:
+            candidate = os.path.join(directory, filename)
+            if candidate not in candidates:
+                candidates.append(candidate)
+    for candidate in candidates:
+        if candidate and os.path.exists(candidate):
+            return os.path.abspath(candidate)
+    return preferred_path
+
+
+FACE_DETECT_MODEL_PATH = _resolve_model_path(
+    os.environ.get('FACE_DETECT_MODEL_PATH', os.path.join(MODELS_DIR, 'face_detection_yunet_2023mar.onnx')),
+    'face_detection_yunet_2023mar.onnx'
+)
+FACE_RECOGNITION_MODEL_PATH = _resolve_model_path(
+    os.environ.get('FACE_RECOGNITION_MODEL_PATH', os.path.join(MODELS_DIR, 'face_recognition_sface_2021dec.onnx')),
+    'face_recognition_sface_2021dec.onnx'
+)
 SUPERRES_MODEL_PATH = os.environ.get('SUPERRES_MODEL_PATH')
 SUPERRES_MODEL_DIR = os.environ.get('SUPERRES_MODEL_DIR', '/usr/local/bin/networks/Super-Resolution-BSD500')
 
