@@ -5,6 +5,7 @@ UPDATED: Uses YOLOv4-Tiny (Reliable & DNN Compatible)
 
 import os
 import time
+import math
 import base64
 import tempfile
 import numpy as np
@@ -90,6 +91,8 @@ def _resolve_hit_model_path():
 
 
 HIT_DETECTION_MODEL_PATH = _resolve_hit_model_path()
+
+SOCCER_BALL_LABELS = {"sports_ball", "ball", "frisbee"}
 
 
 def _resolve_superres_model_path():
@@ -385,6 +388,25 @@ def _ensure_video_duration(path: str, max_seconds: int = MAX_VIDEO_DURATION_S):
     return duration
 
 
+def _get_video_metadata(path: str) -> Dict[str, float]:
+    cap = cv2.VideoCapture(path)
+    if not cap.isOpened():
+        raise HTTPException(400, "Unable to open uploaded video")
+    fps = cap.get(cv2.CAP_PROP_FPS) or 0
+    frames = cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0
+    width = cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0
+    height = cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0
+    cap.release()
+    if fps <= 0 or frames <= 0:
+        raise HTTPException(400, "Unable to read video metadata")
+    return {
+        "fps": float(fps),
+        "frame_count": int(frames),
+        "width": int(width),
+        "height": int(height)
+    }
+
+
 def _run_inference(img: np.ndarray, confidence: float, nms_threshold: float) -> dict:
     """Run YOLO inference on a decoded frame."""
     global net
@@ -434,6 +456,174 @@ def _run_inference(img: np.ndarray, confidence: float, nms_threshold: float) -> 
         "success": True,
         "detections": detections,
         "time_ms": round((time.perf_counter() - start) * 1000, 2),
+    }
+
+
+def _select_best_detection(detections: List[Dict[str, Any]], label_set: set) -> Optional[Dict[str, Any]]:
+    best = None
+    for det in detections:
+        if det.get("class_name", "").lower() in label_set:
+            if best is None or det.get("confidence", 0) > best.get("confidence", 0):
+                best = det
+    return best
+
+
+def _bbox_center(bbox: List[int]) -> tuple:
+    x1, y1, x2, y2 = bbox
+    return ((x1 + x2) / 2.0, (y1 + y2) / 2.0)
+
+
+def _center_distance(bbox_a: List[int], bbox_b: List[int]) -> float:
+    ax, ay = _bbox_center(bbox_a)
+    bx, by = _bbox_center(bbox_b)
+    return math.hypot(ax - bx, ay - by)
+
+
+def _analyze_soccer_detections(
+    video_path: str,
+    frame_stride: int,
+    max_frames: int,
+    confidence: float,
+    possession_distance_px: int,
+    nms_threshold: float = 0.4
+) -> Dict[str, Any]:
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        raise HTTPException(400, "Unable to open uploaded video")
+
+    frame_idx = 0
+    processed = 0
+    timeline = []
+    player_frames = 0
+    ball_frames = 0
+    possession_frames = 0
+
+    while processed < max_frames:
+        ret, frame = cap.read()
+        if not ret:
+            break
+        if frame_idx % frame_stride != 0:
+            frame_idx += 1
+            continue
+
+        inference = _run_inference(frame, confidence, nms_threshold)
+        detections = inference.get("detections", [])
+        player_det = _select_best_detection(detections, {"person"})
+        ball_det = _select_best_detection(detections, SOCCER_BALL_LABELS)
+
+        entry: Dict[str, Any] = {"frame": frame_idx}
+        if player_det:
+            entry["player"] = player_det
+            player_frames += 1
+        if ball_det:
+            entry["ball"] = ball_det
+            ball_frames += 1
+
+        if player_det and ball_det:
+            distance = _center_distance(player_det["bbox"], ball_det["bbox"])
+            entry["player_ball_distance"] = round(distance, 2)
+            if distance <= possession_distance_px:
+                possession_frames += 1
+
+        timeline.append(entry)
+        processed += 1
+        frame_idx += 1
+
+    cap.release()
+    total = len(timeline)
+
+    def _ratio(count: int) -> float:
+        return round((count / total) if total else 0.0, 4)
+
+    return {
+        "frames_analyzed": processed,
+        "timeline": timeline,
+        "player_presence_ratio": _ratio(player_frames),
+        "ball_presence_ratio": _ratio(ball_frames),
+        "possession_ratio": _ratio(possession_frames)
+    }
+
+
+def _read_frame_at(path: str, frame_index: int) -> Optional[np.ndarray]:
+    cap = cv2.VideoCapture(path)
+    if not cap.isOpened():
+        return None
+    frame_index = max(0, frame_index)
+    cap.set(cv2.CAP_PROP_POS_FRAMES, frame_index)
+    ret, frame = cap.read()
+    cap.release()
+    return frame if ret else None
+
+
+def _match_face_embeddings(embedding_a: List[float], embedding_b: List[float]) -> float:
+    recognizer = _load_face_recognizer()
+    vec_a = np.array(embedding_a, dtype=np.float32).reshape(1, -1)
+    vec_b = np.array(embedding_b, dtype=np.float32).reshape(1, -1)
+    return float(recognizer.match(vec_a, vec_b, cv2.FaceRecognizerSF_FR_COSINE))
+
+
+def _evaluate_face_consistency(
+    video_path: str,
+    frame_count: int,
+    score_threshold: float,
+    match_threshold: float
+) -> Dict[str, Any]:
+    if frame_count <= 0:
+        return {
+            "threshold": match_threshold,
+            "samples": [],
+            "pairwise": [],
+            "consistent": False,
+            "note": "El video no contiene frames válidos"
+        }
+
+    targets = [
+        ("start", 0),
+        ("middle", max(frame_count // 2, 0)),
+        ("end", max(frame_count - 1, 0)),
+    ]
+
+    samples = []
+    embeddings: Dict[str, List[float]] = {}
+
+    for label, idx in targets:
+        frame = _read_frame_at(video_path, idx)
+        sample = {
+            "position": label,
+            "frame": int(idx),
+            "success": False
+        }
+        if frame is None:
+            sample["error"] = "frame_unavailable"
+        else:
+            face = _get_primary_face_embedding(frame, score_threshold)
+            if face:
+                sample["success"] = True
+                sample["score"] = float(face["score"])
+                sample["face_id"] = face["face_id"]
+                embeddings[label] = face["embedding"]
+            else:
+                sample["error"] = "face_not_detected"
+        samples.append(sample)
+
+    pairwise = []
+    positions_to_compare = [("start", "middle"), ("middle", "end"), ("start", "end")]
+    for ref, other in positions_to_compare:
+        if ref in embeddings and other in embeddings:
+            similarity = _match_face_embeddings(embeddings[ref], embeddings[other])
+            pairwise.append({
+                "pair": f"{ref}-{other}",
+                "similarity": similarity,
+                "match": similarity >= match_threshold
+            })
+
+    consistent = bool(pairwise) and all(item["match"] for item in pairwise)
+    return {
+        "threshold": match_threshold,
+        "samples": samples,
+        "pairwise": pairwise,
+        "consistent": consistent,
+        "successful_samples": sum(1 for sample in samples if sample["success"])
     }
 
 
@@ -833,6 +1023,110 @@ async def analyze_depth_pose_video(
             "success": True,
             "video_duration_s": duration,
             **results
+        }
+    finally:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+
+
+@app.post("/analyze/football/video")
+async def analyze_football_video(
+    file: UploadFile = File(...),
+    frame_stride: int = Form(4),
+    max_frames: int = Form(180),
+    detection_confidence: float = Form(0.45),
+    contact_distance_px: int = Form(45),
+    possession_distance_px: int = Form(90),
+    action_frame_stride: int = Form(8),
+    action_top_k: int = Form(3),
+    face_score_threshold: float = Form(0.6),
+    face_match_threshold: float = Form(0.6)
+):
+    if frame_stride <= 0 or max_frames <= 0:
+        raise HTTPException(400, "frame_stride and max_frames must be > 0")
+    if not (0.0 < detection_confidence <= 1.0):
+        raise HTTPException(400, "detection_confidence must be between 0 and 1")
+    if contact_distance_px <= 0 or possession_distance_px <= 0:
+        raise HTTPException(400, "contact_distance_px and possession_distance_px must be > 0")
+    if action_frame_stride <= 0 or action_top_k <= 0:
+        raise HTTPException(400, "action_frame_stride and action_top_k must be > 0")
+    if not (0.0 < face_score_threshold <= 1.0):
+        raise HTTPException(400, "face_score_threshold must be between 0 and 1")
+    if not (0.0 < face_match_threshold <= 1.0):
+        raise HTTPException(400, "face_match_threshold must be between 0 and 1")
+
+    tmp_path = _save_upload_to_temp(file)
+    try:
+        duration = _ensure_video_duration(tmp_path)
+        metadata = _get_video_metadata(tmp_path)
+        frame_count = int(metadata["frame_count"])
+
+        detection_summary = _analyze_soccer_detections(
+            tmp_path,
+            frame_stride=frame_stride,
+            max_frames=max_frames,
+            confidence=detection_confidence,
+            possession_distance_px=possession_distance_px
+        )
+
+        depth_pose = depth_pose_service_analyze(
+            tmp_path,
+            frame_stride=frame_stride,
+            max_frames=max_frames,
+            detection_confidence=detection_confidence,
+            contact_distance_px=contact_distance_px,
+            detection_fn=_run_inference,
+            depth_model_name=DEPTHNET_MODEL,
+            pose_model_name=POSENET_MODEL,
+            cuda_from_bgr=bgr_to_cuda
+        )
+
+        if JETSON_INFERENCE_AVAILABLE:
+            action_analysis = _run_actionnet_on_video(tmp_path, action_frame_stride, action_top_k)
+        else:
+            action_analysis = {
+                "frames_analyzed": 0,
+                "predictions": [],
+                "top_labels": [],
+                "warning": "jetson-inference no está disponible en este dispositivo"
+            }
+
+        face_checks = _evaluate_face_consistency(
+            tmp_path,
+            frame_count,
+            score_threshold=face_score_threshold,
+            match_threshold=face_match_threshold
+        )
+
+        summary = {
+            "player_presence_ratio": detection_summary["player_presence_ratio"],
+            "ball_presence_ratio": detection_summary["ball_presence_ratio"],
+            "possession_ratio": detection_summary["possession_ratio"],
+            "person_depth_trend": depth_pose["person_depth_trend"],
+            "ball_depth_trend": depth_pose["ball_depth_trend"],
+            "face_consistent": face_checks["consistent"],
+            "dominant_actions": action_analysis.get("top_labels", [])
+        }
+
+        analysis = {
+            "summary": summary,
+            "face_checks": face_checks,
+            "detection_frames_analyzed": detection_summary["frames_analyzed"],
+            "detection_timeline": detection_summary["timeline"],
+            "depth": {
+                "frames_analyzed": depth_pose["frames_analyzed"],
+                "person_series": depth_pose["person_depth_series"],
+                "ball_series": depth_pose["ball_depth_series"],
+                "contact_events": depth_pose["contact_events"],
+            },
+            "action_analysis": action_analysis,
+        }
+
+        return {
+            "success": True,
+            "video_duration_s": duration,
+            "frames_total": frame_count,
+            "analysis": analysis
         }
     finally:
         if os.path.exists(tmp_path):
