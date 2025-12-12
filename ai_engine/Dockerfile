@@ -23,5 +23,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
+# Ensure custom ONNX model is available inside /app/models
+RUN mkdir -p /app/models && \
+    if [ -f /app/hit_detect.onnx ]; then cp /app/hit_detect.onnx /app/models/hit_detect.onnx; fi
+
 # Usamos -u para ver logs en tiempo real (unbuffered)
 CMD ["python", "-u", "src/worker_manager.py"]

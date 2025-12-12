@@ -81,10 +81,27 @@ actionnet = None
 depthnet = None
 hit_detection_net = None
 
-HIT_DETECTION_MODEL_PATH = os.path.join(
-    os.path.dirname(__file__),
-    "../models/hit_detect.onnx"
-)
+HIT_DETECT_MODEL_OVERRIDE = os.environ.get('HIT_DETECT_MODEL_PATH')
+
+
+def _resolve_hit_model_path():
+    base_dir = os.path.dirname(__file__)
+    candidates = [
+        HIT_DETECT_MODEL_OVERRIDE,
+        os.path.join(base_dir, "../models/hit_detect.onnx"),
+        os.path.join(base_dir, "../hit_detect.onnx"),
+        os.path.join(base_dir, "hit_detect.onnx"),
+        os.path.join(MODELS_DIR, "hit_detect.onnx"),
+    ]
+    for candidate in candidates:
+        if candidate:
+            resolved = os.path.abspath(candidate)
+            if os.path.exists(resolved):
+                return resolved
+    return os.path.abspath(os.path.join(base_dir, "../models/hit_detect.onnx"))
+
+
+HIT_DETECTION_MODEL_PATH = _resolve_hit_model_path()
 
 # --- Reliable Model URLs (AlexeyAB Darknet) ---
 MODEL_URLS = {
@@ -470,15 +487,22 @@ def _run_depthnet_on_video(video_path: str, frame_stride: int, max_frames: int, 
 def _load_hit_detection_model():
     global hit_detection_net
     if hit_detection_net is None:
-        if not os.path.exists(HIT_DETECTION_MODEL_PATH):
-            raise HTTPException(503, "hit_detect.onnx no está disponible en el dispositivo")
+        model_path = HIT_DETECTION_MODEL_PATH
+        if not os.path.exists(model_path):
+            model_path = _resolve_hit_model_path()
+        if not os.path.exists(model_path):
+            raise HTTPException(
+                503,
+                "hit_detect.onnx no está disponible en el dispositivo. "
+                "Configura HIT_DETECT_MODEL_PATH o copia el archivo a ai_engine/models/."
+            )
         try:
-            hit_detection_net = cv2.dnn.readNetFromONNX(HIT_DETECTION_MODEL_PATH)
+            hit_detection_net = cv2.dnn.readNetFromONNX(model_path)
             hit_detection_net.setPreferableBackend(cv2.dnn.DNN_BACKEND_CUDA)
             hit_detection_net.setPreferableTarget(cv2.dnn.DNN_TARGET_CUDA)
         except Exception:
             # Fallback a CPU silencioso
-            hit_detection_net = cv2.dnn.readNetFromONNX(HIT_DETECTION_MODEL_PATH)
+            hit_detection_net = cv2.dnn.readNetFromONNX(model_path)
             hit_detection_net.setPreferableBackend(cv2.dnn.DNN_BACKEND_DEFAULT)
             hit_detection_net.setPreferableTarget(cv2.dnn.DNN_TARGET_CPU)
     return hit_detection_net
