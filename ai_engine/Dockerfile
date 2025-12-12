@@ -27,5 +27,15 @@ COPY . .
 RUN mkdir -p /app/models && \
     if [ -f /app/hit_detect.onnx ]; then cp /app/hit_detect.onnx /app/models/hit_detect.onnx; fi
 
+# Download face detection/recognition models during build if missing
+RUN mkdir -p /app/ai_engine/models && \
+    cd /app/ai_engine/models && \
+    if [ ! -f face_detection_yunet_2023mar.onnx ]; then \
+        curl -L -o face_detection_yunet_2023mar.onnx https://github.com/opencv/opencv_zoo/raw/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx ; \
+    fi && \
+    if [ ! -f face_recognition_sface_2021dec.onnx ]; then \
+        curl -L -o face_recognition_sface_2021dec.onnx https://github.com/opencv/opencv_zoo/raw/main/models/face_recognition_sface/face_recognition_sface_2021dec.onnx ; \
+    fi
+
 # Usamos -u para ver logs en tiempo real (unbuffered)
 CMD ["python", "-u", "src/worker_manager.py"]

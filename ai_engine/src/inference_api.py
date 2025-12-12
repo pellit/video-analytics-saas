@@ -11,43 +11,16 @@ import numpy as np
 import cv2
 import requests
 from collections import defaultdict
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
+from uuid import uuid4
 
-
-# --- Jetson data directory configuration ------------------------------------
-DEFAULT_JETSON_DATA_DIR = '/home/jetson/video-analytics-saas/data'
-CUSTOM_JETSON_DATA_DIR = os.environ.get('JETSON_DATA_DIR_OVERRIDE')
-
-
-def _configure_jetson_data_dir():
-    candidate = None
-    if CUSTOM_JETSON_DATA_DIR:
-        candidate = CUSTOM_JETSON_DATA_DIR
-    elif os.path.isdir(DEFAULT_JETSON_DATA_DIR):
-        candidate = DEFAULT_JETSON_DATA_DIR
-
-    if candidate and os.path.isdir(candidate):
-        if not os.environ.get('JETSON_DATA_DIR'):
-            os.environ['JETSON_DATA_DIR'] = candidate
-        root_guess = os.path.dirname(candidate)
-        os.environ.setdefault('JETSON_INFERENCE_ROOT', root_guess)
-        print(f"📁 Jetson data dir: {os.environ['JETSON_DATA_DIR']}")
-
-
-_configure_jetson_data_dir()
-
-JETSON_DATA_DIR_ACTIVE = os.environ.get('JETSON_DATA_DIR')
-JETSON_NETWORKS_DIR = (
-    os.path.join(JETSON_DATA_DIR_ACTIVE, 'networks')
-    if JETSON_DATA_DIR_ACTIVE else None
-)
-JETSON_MODELS_MANIFEST = (
-    os.path.join(JETSON_NETWORKS_DIR, 'models.json')
-    if JETSON_NETWORKS_DIR else None
-)
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
+
+from services.jetson_env import JETSON_MODELS_MANIFEST
+from services.video_utils import bgr_to_cuda
+from services.depth_pose import run_depthnet_video, analyze_depth_pose_video as depth_pose_service_analyze
 
 try:
     import jetson.inference
@@ -67,6 +40,9 @@ MAX_VIDEO_DURATION_S = 60
 ACTIONNET_MODEL = os.environ.get('ACTIONNET_MODEL', 'resnet18')
 ACTIONNET_LABELS = os.environ.get('ACTIONNET_LABELS')
 DEPTHNET_MODEL = os.environ.get('DEPTHNET_MODEL', 'resnet18')
+POSENET_MODEL = os.environ.get('POSENET_MODEL', 'resnet18-body')
+FACE_DETECT_MODEL_PATH = os.environ.get('FACE_DETECT_MODEL_PATH', os.path.join(MODELS_DIR, 'face_detection_yunet_2023mar.onnx'))
+FACE_RECOGNITION_MODEL_PATH = os.environ.get('FACE_RECOGNITION_MODEL_PATH', os.path.join(MODELS_DIR, 'face_recognition_sface_2021dec.onnx'))
 
 # Models directory
 MODELS_DIR = os.path.join(os.path.dirname(__file__), "../models")
@@ -78,8 +54,9 @@ output_layers = None
 classes = []
 model_name = None
 actionnet = None
-depthnet = None
 hit_detection_net = None
+face_detector = None
+face_recognizer = None
 
 HIT_DETECT_MODEL_OVERRIDE = os.environ.get('HIT_DETECT_MODEL_PATH')
 
@@ -201,6 +178,17 @@ class ActionImageRequest(BaseModel):
     image_base64: str
     top_k: int = 3
 
+
+class FaceDetectionRequest(BaseModel):
+    image_base64: str
+    score_threshold: float = 0.6
+
+
+class FaceCompareRequest(BaseModel):
+    image_a_base64: str
+    image_b_base64: str
+    score_threshold: float = 0.6
+
 @app.get("/health")
 def health():
     return {"status": "ok", "model": model_name, "cuda": cv2.cuda.getCudaEnabledDeviceCount() > 0}
@@ -226,21 +214,31 @@ def _load_actionnet():
     return actionnet
 
 
-def _load_depthnet():
-    global depthnet
-    if depthnet is None:
-        if not JETSON_INFERENCE_AVAILABLE:
-            raise HTTPException(503, "jetson-inference is not available on this device")
+def _load_face_detector():
+    global face_detector
+    if face_detector is None:
+        model_path = FACE_DETECT_MODEL_PATH
+        if not os.path.exists(model_path):
+            raise HTTPException(503, f"No se encontró el modelo de detección facial en {model_path}")
         try:
-            depthnet = jetson.inference.depthNet(DEPTHNET_MODEL)
+            face_detector = cv2.FaceDetectorYN.create(model_path, "", (320, 320))
         except Exception as exc:
-            manifest_hint = JETSON_MODELS_MANIFEST or "networks/models.json"
-            raise HTTPException(
-                503,
-                f"jetson-inference depthNet failed to load '{DEPTHNET_MODEL}'. "
-                f"Verifica que exista {manifest_hint} y los pesos requeridos. Detalle: {exc}"
-            )
-    return depthnet
+            raise HTTPException(503, f"cv2.FaceDetectorYN no pudo cargar '{model_path}': {exc}")
+    return face_detector
+
+
+def _load_face_recognizer():
+    global face_recognizer
+    if face_recognizer is None:
+        model_path = FACE_RECOGNITION_MODEL_PATH
+        if not os.path.exists(model_path):
+            raise HTTPException(503, f"No se encontró el modelo de reconocimiento facial en {model_path}")
+        try:
+            face_recognizer = cv2.FaceRecognizerSF.create(model_path, "")
+        except Exception as exc:
+            raise HTTPException(503, f"cv2.FaceRecognizerSF no pudo cargar '{model_path}': {exc}")
+    return face_recognizer
+
 
 def _decode_base64_image(image_base64: str) -> np.ndarray:
     """Decode a base64 image string into a numpy array."""
@@ -340,14 +338,9 @@ def _run_inference(img: np.ndarray, confidence: float, nms_threshold: float) -> 
     }
 
 
-def _cuda_from_bgr(frame: np.ndarray):
-    rgba = cv2.cvtColor(frame, cv2.COLOR_BGR2RGBA)
-    return jetson.utils.cudaFromNumpy(rgba)
-
-
 def _run_actionnet_on_image(image: np.ndarray, top_k: int):
     net = _load_actionnet()
-    cuda_img = _cuda_from_bgr(image)
+    cuda_img = bgr_to_cuda(image)
     class_id, confidence = net.Classify(cuda_img)
 
     top_predictions = []
@@ -390,7 +383,7 @@ def _run_actionnet_on_video(video_path: str, frame_stride: int, top_k: int):
             frame_idx += 1
             continue
 
-        cuda_img = _cuda_from_bgr(frame)
+        cuda_img = bgr_to_cuda(frame)
         class_id, confidence = net.Classify(cuda_img)
         predictions.append({
             "frame": frame_idx,
@@ -422,81 +415,6 @@ def _run_actionnet_on_video(video_path: str, frame_stride: int, top_k: int):
         "frames_analyzed": processed,
         "predictions": predictions,
         "top_labels": top_labels
-    }
-
-
-def _run_depthnet_on_video(video_path: str, frame_stride: int, max_frames: int, preview_frames: int = 3):
-    net = _load_depthnet()
-    cap = cv2.VideoCapture(video_path)
-    if not cap.isOpened():
-        raise HTTPException(400, "Unable to open uploaded video")
-
-    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
-    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
-    if width <= 0 or height <= 0:
-        cap.release()
-        raise HTTPException(400, "Invalid video dimensions")
-
-    frame_idx = 0
-    processed = 0
-    summaries = []
-    previews = []
-
-    while processed < max_frames:
-        ret, frame = cap.read()
-        if not ret:
-            break
-
-        if frame_idx % frame_stride != 0:
-            frame_idx += 1
-            continue
-
-        cuda_img = _cuda_from_bgr(frame)
-        # --- CORRECCIÓN DEPTHNET ---
-        # 1. Crear buffer de salida visual si no existe (Guardado en la función)
-        if not hasattr(_run_depthnet_on_video, 'overlay'):
-            _run_depthnet_on_video.overlay = jetson.utils.cudaAllocMapped(width=cuda_img.width, height=cuda_img.height, format=cuda_img.format)
-        
-        # 2. Procesar (Calcular profundidad)
-        net.Process(cuda_img)
-        
-        # 3. Visualizar (Pintar el mapa de profundidad en el buffer)
-        net.Visualize(_run_depthnet_on_video.overlay)
-        
-        depth_img = _run_depthnet_on_video.overlay
-        # ---------------------------
-        depth_np = jetson.utils.cudaToNumpy(depth_img, width, height, 1).squeeze()
-
-        summaries.append({
-            "frame": frame_idx,
-            "mean_depth": float(np.mean(depth_np)),
-            "min_depth": float(np.min(depth_np)),
-            "max_depth": float(np.max(depth_np)),
-        })
-
-        if len(previews) < preview_frames:
-            normalized = cv2.normalize(depth_np, None, 0, 255, cv2.NORM_MINMAX)
-            normalized = np.clip(normalized, 0, 255).astype(np.uint8)
-            normalized = np.ascontiguousarray(normalized)
-            heatmap = cv2.applyColorMap(normalized, cv2.COLORMAP_PLASMA)
-
-            # Codificar a JPG para la preview
-            _, buffer = cv2.imencode('.jpg', heatmap, [cv2.IMWRITE_JPEG_QUALITY, 85])
-            
-            previews.append({
-                "frame": frame_idx,
-                "preview_base64": "data:image/jpeg;base64," + base64.b64encode(buffer).decode()
-            })
-
-        processed += 1
-        frame_idx += 1
-
-    cap.release()
-
-    return {
-        "frames_analyzed": processed,
-        "summaries": summaries,
-        "previews": previews
     }
 
 
@@ -583,6 +501,40 @@ def _run_hit_detection_on_video(
     }
 
 
+def _detect_faces_with_embeddings(image: np.ndarray, score_threshold: float = 0.6) -> List[Dict[str, Any]]:
+    detector = _load_face_detector()
+    recognizer = _load_face_recognizer()
+    h, w = image.shape[:2]
+    detector.setInputSize((w, h))
+    _, faces = detector.detect(image)
+    results = []
+    if faces is None:
+        return results
+
+    for face in faces:
+        x, y, box_w, box_h = face[:4]
+        score = float(face[4]) if len(face) > 4 else 0.0
+        if score < score_threshold:
+            continue
+        feature = recognizer.feature(image, face)
+        results.append({
+            "face_id": str(uuid4()),
+            "bbox": [int(x), int(y), int(x + box_w), int(y + box_h)],
+            "score": score,
+            "embedding": feature.flatten().tolist()
+        })
+    return results
+
+
+def _get_primary_face_embedding(image: np.ndarray, min_score: float = 0.6) -> Optional[Dict[str, Any]]:
+    faces = _detect_faces_with_embeddings(image, min_score)
+    if not faces:
+        return None
+    return max(faces, key=lambda f: f["score"])
+
+
+
+
 @app.post("/detect")
 def detect(req: DetectionRequest):
     img = _decode_base64_image(req.image_base64)
@@ -658,6 +610,45 @@ async def detect_video(
             os.remove(tmp_path)
 
 
+@app.post("/face/detect")
+def face_detect(req: FaceDetectionRequest):
+    img = _decode_base64_image(req.image_base64)
+    faces = _detect_faces_with_embeddings(img, req.score_threshold)
+    return {
+        "success": True,
+        "count": len(faces),
+        "faces": faces
+    }
+
+
+@app.post("/face/compare")
+def face_compare(req: FaceCompareRequest):
+    img_a = _decode_base64_image(req.image_a_base64)
+    img_b = _decode_base64_image(req.image_b_base64)
+
+    face_a = _get_primary_face_embedding(img_a, req.score_threshold)
+    if not face_a:
+        raise HTTPException(422, "No face detected in image A above the threshold")
+    face_b = _get_primary_face_embedding(img_b, req.score_threshold)
+    if not face_b:
+        raise HTTPException(422, "No face detected in image B above the threshold")
+
+    recognizer = _load_face_recognizer()
+    vec_a = np.array(face_a["embedding"], dtype=np.float32).reshape(1, -1)
+    vec_b = np.array(face_b["embedding"], dtype=np.float32).reshape(1, -1)
+    similarity = float(recognizer.match(vec_a, vec_b, cv2.FaceRecognizerSF_FR_COSINE))
+    is_same = similarity >= req.score_threshold
+
+    return {
+        "success": True,
+        "similarity": similarity,
+        "match": is_same,
+        "threshold": req.score_threshold,
+        "face_a": {"face_id": face_a["face_id"], "score": face_a["score"]},
+        "face_b": {"face_id": face_b["face_id"], "score": face_b["score"]}
+    }
+
+
 @app.post("/detect/hit/video")
 async def detect_hit_video(
     file: UploadFile = File(...),
@@ -700,6 +691,45 @@ async def detect_hit_video(
             raise HTTPException(400, "hit_threshold must be between 0 and 1")
 
         results = _run_hit_detection_on_video(tmp_path, frame_stride, max_frames, hit_threshold)
+        return {
+            "success": True,
+            "video_duration_s": duration,
+            **results
+        }
+    finally:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+
+
+@app.post("/analyze/depth_pose/video")
+async def analyze_depth_pose_video(
+    file: UploadFile = File(...),
+    frame_stride: int = Form(4),
+    max_frames: int = Form(150),
+    detection_confidence: float = Form(0.45),
+    contact_distance_px: int = Form(45)
+):
+    if frame_stride <= 0:
+        raise HTTPException(400, "frame_stride must be > 0")
+    if max_frames <= 0:
+        raise HTTPException(400, "max_frames must be > 0")
+    if contact_distance_px <= 0:
+        raise HTTPException(400, "contact_distance_px must be > 0")
+
+    tmp_path = _save_upload_to_temp(file)
+    try:
+        duration = _ensure_video_duration(tmp_path)
+        results = depth_pose_service_analyze(
+            tmp_path,
+            frame_stride=frame_stride,
+            max_frames=max_frames,
+            detection_confidence=detection_confidence,
+            contact_distance_px=contact_distance_px,
+            detection_fn=_run_inference,
+            depth_model_name=DEPTHNET_MODEL,
+            pose_model_name=POSENET_MODEL,
+            cuda_from_bgr=bgr_to_cuda
+        )
         return {
             "success": True,
             "video_duration_s": duration,
@@ -768,7 +798,14 @@ async def depthnet_video(
     tmp_path = _save_upload_to_temp(file)
     try:
         duration = _ensure_video_duration(tmp_path)
-        results = _run_depthnet_on_video(tmp_path, frame_stride, max_frames)
+        results = run_depthnet_video(
+            tmp_path,
+            frame_stride=frame_stride,
+            max_frames=max_frames,
+            preview_frames=3,
+            depth_model_name=DEPTHNET_MODEL,
+            cuda_from_bgr=bgr_to_cuda
+        )
         return {
             "success": True,
             "video_duration_s": duration,
