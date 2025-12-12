@@ -18,9 +18,14 @@ from fastapi import FastAPI, HTTPException, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
-from services.jetson_env import JETSON_MODELS_MANIFEST
-from services.video_utils import bgr_to_cuda
-from services.depth_pose import run_depthnet_video, analyze_depth_pose_video as depth_pose_service_analyze
+try:
+    from cv2.dnn_superres import DnnSuperResImpl_create
+except ImportError:
+    DnnSuperResImpl_create = None
+
+from .services.jetson_env import JETSON_MODELS_MANIFEST
+from .services.video_utils import bgr_to_cuda
+from .services.depth_pose import run_depthnet_video, analyze_depth_pose_video as depth_pose_service_analyze
 
 try:
     import jetson.inference
@@ -43,6 +48,8 @@ DEPTHNET_MODEL = os.environ.get('DEPTHNET_MODEL', 'resnet18')
 POSENET_MODEL = os.environ.get('POSENET_MODEL', 'resnet18-body')
 FACE_DETECT_MODEL_PATH = os.environ.get('FACE_DETECT_MODEL_PATH', os.path.join(MODELS_DIR, 'face_detection_yunet_2023mar.onnx'))
 FACE_RECOGNITION_MODEL_PATH = os.environ.get('FACE_RECOGNITION_MODEL_PATH', os.path.join(MODELS_DIR, 'face_recognition_sface_2021dec.onnx'))
+SUPERRES_MODEL_PATH = os.environ.get('SUPERRES_MODEL_PATH')
+SUPERRES_MODEL_DIR = os.environ.get('SUPERRES_MODEL_DIR', '/usr/local/bin/networks/Super-Resolution-BSD500')
 
 # Models directory
 MODELS_DIR = os.path.join(os.path.dirname(__file__), "../models")
@@ -57,6 +64,9 @@ actionnet = None
 hit_detection_net = None
 face_detector = None
 face_recognizer = None
+superres_engine = None
+superres_scale = 2
+superres_model_path = None
 
 HIT_DETECT_MODEL_OVERRIDE = os.environ.get('HIT_DETECT_MODEL_PATH')
 
@@ -79,6 +89,31 @@ def _resolve_hit_model_path():
 
 
 HIT_DETECTION_MODEL_PATH = _resolve_hit_model_path()
+
+
+def _resolve_superres_model_path():
+    candidates = [
+        SUPERRES_MODEL_PATH,
+        os.path.join(SUPERRES_MODEL_DIR, 'super_resolution.onnx'),
+        os.path.join(SUPERRES_MODEL_DIR, 'model.onnx'),
+        os.path.join(SUPERRES_MODEL_DIR, 'superres.onnx'),
+        os.path.join(SUPERRES_MODEL_DIR, 'superres.pb'),
+        os.path.join(MODELS_DIR, 'super_resolution.onnx'),
+        os.path.join(MODELS_DIR, 'superres.onnx'),
+        os.path.join(MODELS_DIR, 'superres.pb'),
+    ]
+
+    # If directory exists, also scan for first .onnx/.pb file
+    if SUPERRES_MODEL_DIR and os.path.isdir(SUPERRES_MODEL_DIR):
+        for filename in sorted(os.listdir(SUPERRES_MODEL_DIR)):
+            if filename.lower().endswith(('.onnx', '.pb')):
+                candidates.insert(1, os.path.join(SUPERRES_MODEL_DIR, filename))
+                break
+
+    for candidate in candidates:
+        if candidate and os.path.exists(candidate):
+            return candidate
+    return None
 
 # --- Reliable Model URLs (AlexeyAB Darknet) ---
 MODEL_URLS = {
@@ -238,6 +273,45 @@ def _load_face_recognizer():
         except Exception as exc:
             raise HTTPException(503, f"cv2.FaceRecognizerSF no pudo cargar '{model_path}': {exc}")
     return face_recognizer
+
+
+def _infer_superres_config(model_path: str):
+    fname = os.path.basename(model_path).lower()
+    algo = 'edsr'
+    for candidate in ('edsr', 'espcn', 'fsrcnn', 'lapsrn'):
+        if candidate in fname:
+            algo = candidate
+            break
+    scale = 4
+    for candidate in (8, 4, 3, 2):
+        token = f"x{candidate}"
+        if token in fname or f"{candidate}x" in fname or f"_x{candidate}" in fname:
+            scale = candidate
+            break
+    return algo, scale
+
+
+def _load_superres_engine():
+    global superres_engine, superres_scale, superres_model_path
+    if superres_engine is not None:
+        return superres_engine, superres_scale
+    if DnnSuperResImpl_create is None:
+        raise HTTPException(503, "cv2.dnn_superres no está disponible en este entorno (compila OpenCV con contrib).")
+    model_path = _resolve_superres_model_path()
+    if not model_path or not os.path.exists(model_path):
+        raise HTTPException(503, "No se encontró el modelo de super resolución. Configura SUPERRES_MODEL_PATH o verifica data/networks/Super-Resolution-BSD500.")
+    try:
+        sr = DnnSuperResImpl_create()
+        sr.readModel(model_path)
+        algo, scale = _infer_superres_config(model_path)
+        sr.setModel(algo, scale)
+        superres_engine = sr
+        superres_scale = scale
+        superres_model_path = model_path
+        print(f"✅ Super Resolution model loaded ({algo}, x{scale}): {model_path}")
+        return superres_engine, superres_scale
+    except Exception as exc:
+        raise HTTPException(503, f"No se pudo cargar el modelo de super resolución en {model_path}: {exc}")
 
 
 def _decode_base64_image(image_base64: str) -> np.ndarray:
@@ -814,6 +888,100 @@ async def depthnet_video(
     finally:
         if os.path.exists(tmp_path):
             os.remove(tmp_path)
+
+
+@app.post("/superres/image")
+async def superres_image(file: UploadFile = File(...)):
+    content = await file.read()
+    data = np.frombuffer(content, dtype=np.uint8)
+    img = cv2.imdecode(data, cv2.IMREAD_COLOR)
+    if img is None:
+        raise HTTPException(400, "No se pudo decodificar la imagen subida")
+
+    sr, scale = _load_superres_engine()
+    try:
+        upscaled = sr.upsample(img)
+    except Exception as exc:
+        raise HTTPException(500, f"Error aplicando super resolución: {exc}")
+
+    _, buffer = cv2.imencode('.jpg', upscaled, [cv2.IMWRITE_JPEG_QUALITY, 90])
+    base64_img = base64.b64encode(buffer).decode()
+    return {
+        "success": True,
+        "scale": scale,
+        "original_size": {"width": int(img.shape[1]), "height": int(img.shape[0])},
+        "upscaled_size": {"width": int(upscaled.shape[1]), "height": int(upscaled.shape[0])},
+        "image_base64": "data:image/jpeg;base64," + base64_img
+    }
+
+
+@app.post("/superres/video")
+async def superres_video(
+    file: UploadFile = File(...),
+    frame_stride: int = Form(1)
+):
+    if frame_stride <= 0:
+        raise HTTPException(400, "frame_stride debe ser > 0")
+
+    tmp_path = _save_upload_to_temp(file)
+    output_tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
+    output_tmp.close()
+
+    sr, scale = _load_superres_engine()
+    cap = cv2.VideoCapture(tmp_path)
+    if not cap.isOpened():
+        os.remove(tmp_path)
+        raise HTTPException(400, "No se pudo abrir el video subido")
+
+    fps = cap.get(cv2.CAP_PROP_FPS) or 30
+    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
+    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
+    if width <= 0 or height <= 0:
+        cap.release()
+        os.remove(tmp_path)
+        raise HTTPException(400, "Dimensiones de video inválidas")
+
+    out_size = (int(width * scale), int(height * scale))
+    writer = cv2.VideoWriter(
+        output_tmp.name,
+        cv2.VideoWriter_fourcc(*'mp4v'),
+        fps / frame_stride if frame_stride > 1 else fps,
+        out_size
+    )
+
+    frame_idx = 0
+    processed = 0
+    try:
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                break
+
+            if frame_idx % frame_stride != 0:
+                frame_idx += 1
+                continue
+
+            upscaled = sr.upsample(frame)
+            writer.write(upscaled)
+            processed += 1
+            frame_idx += 1
+    finally:
+        cap.release()
+        writer.release()
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+
+    with open(output_tmp.name, "rb") as f:
+        video_b64 = base64.b64encode(f.read()).decode()
+    os.remove(output_tmp.name)
+
+    return {
+        "success": True,
+        "scale": scale,
+        "frames_written": processed,
+        "upscaled_resolution": {"width": out_size[0], "height": out_size[1]},
+        "video_base64": "data:video/mp4;base64," + video_b64
+    }
 
 if __name__ == "__main__":
     import uvicorn
