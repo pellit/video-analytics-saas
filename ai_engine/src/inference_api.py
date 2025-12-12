@@ -10,7 +10,41 @@ import tempfile
 import numpy as np
 import cv2
 import requests
+from collections import defaultdict
 from typing import Optional, List
+
+
+# --- Jetson data directory configuration ------------------------------------
+DEFAULT_JETSON_DATA_DIR = '/home/jetson/video-analytics-saas/data'
+CUSTOM_JETSON_DATA_DIR = os.environ.get('JETSON_DATA_DIR_OVERRIDE')
+
+
+def _configure_jetson_data_dir():
+    candidate = None
+    if CUSTOM_JETSON_DATA_DIR:
+        candidate = CUSTOM_JETSON_DATA_DIR
+    elif os.path.isdir(DEFAULT_JETSON_DATA_DIR):
+        candidate = DEFAULT_JETSON_DATA_DIR
+
+    if candidate and os.path.isdir(candidate):
+        if not os.environ.get('JETSON_DATA_DIR'):
+            os.environ['JETSON_DATA_DIR'] = candidate
+        root_guess = os.path.dirname(candidate)
+        os.environ.setdefault('JETSON_INFERENCE_ROOT', root_guess)
+        print(f"📁 Jetson data dir: {os.environ['JETSON_DATA_DIR']}")
+
+
+_configure_jetson_data_dir()
+
+JETSON_DATA_DIR_ACTIVE = os.environ.get('JETSON_DATA_DIR')
+JETSON_NETWORKS_DIR = (
+    os.path.join(JETSON_DATA_DIR_ACTIVE, 'networks')
+    if JETSON_DATA_DIR_ACTIVE else None
+)
+JETSON_MODELS_MANIFEST = (
+    os.path.join(JETSON_NETWORKS_DIR, 'models.json')
+    if JETSON_NETWORKS_DIR else None
+)
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
@@ -45,6 +79,12 @@ classes = []
 model_name = None
 actionnet = None
 depthnet = None
+hit_detection_net = None
+
+HIT_DETECTION_MODEL_PATH = os.path.join(
+    os.path.dirname(__file__),
+    "../models/hit_detect.onnx"
+)
 
 # --- Reliable Model URLs (AlexeyAB Darknet) ---
 MODEL_URLS = {
@@ -154,10 +194,18 @@ def _load_actionnet():
     if actionnet is None:
         if not JETSON_INFERENCE_AVAILABLE:
             raise HTTPException(503, "jetson-inference is not available on this device")
-        if ACTIONNET_LABELS:
-            actionnet = jetson.inference.actionNet(ACTIONNET_MODEL, ACTIONNET_LABELS)
-        else:
-            actionnet = jetson.inference.actionNet(ACTIONNET_MODEL)
+        try:
+            if ACTIONNET_LABELS:
+                actionnet = jetson.inference.actionNet(ACTIONNET_MODEL, ACTIONNET_LABELS)
+            else:
+                actionnet = jetson.inference.actionNet(ACTIONNET_MODEL)
+        except Exception as exc:
+            manifest_hint = JETSON_MODELS_MANIFEST or "networks/models.json"
+            raise HTTPException(
+                503,
+                f"jetson-inference actionNet failed to load '{ACTIONNET_MODEL}'. "
+                f"Verifica que exista {manifest_hint} y los pesos requeridos. Detalle: {exc}"
+            )
     return actionnet
 
 
@@ -166,7 +214,15 @@ def _load_depthnet():
     if depthnet is None:
         if not JETSON_INFERENCE_AVAILABLE:
             raise HTTPException(503, "jetson-inference is not available on this device")
-        depthnet = jetson.inference.depthNet(DEPTHNET_MODEL)
+        try:
+            depthnet = jetson.inference.depthNet(DEPTHNET_MODEL)
+        except Exception as exc:
+            manifest_hint = JETSON_MODELS_MANIFEST or "networks/models.json"
+            raise HTTPException(
+                503,
+                f"jetson-inference depthNet failed to load '{DEPTHNET_MODEL}'. "
+                f"Verifica que exista {manifest_hint} y los pesos requeridos. Detalle: {exc}"
+            )
     return depthnet
 
 def _decode_base64_image(image_base64: str) -> np.ndarray:
@@ -326,9 +382,18 @@ def _run_actionnet_on_video(video_path: str, frame_stride: int, top_k: int):
             "confidence": float(confidence)
         })
         processed += 1
-        frame_idx +=  1bel, {"count": 0, "max_confidence": 0.0})
+        frame_idx += 1
+
+    cap.release()
+
+    aggregates = defaultdict(lambda: {"count": 0, "max_confidence": 0.0})
+    for pred in predictions:
+        label = pred["label"]
         aggregates[label]["count"] += 1
-        aggregates[label]["max_confidence"] = max(aggregates[label]["max_confidence"], pred["confidence"])
+        aggregates[label]["max_confidence"] = max(
+            aggregates[label]["max_confidence"],
+            pred["confidence"]
+        )
 
     top_labels = sorted(
         [{"label": label, **stats} for label, stats in aggregates.items()],
@@ -402,6 +467,82 @@ def _run_depthnet_on_video(video_path: str, frame_stride: int, max_frames: int, 
     }
 
 
+def _load_hit_detection_model():
+    global hit_detection_net
+    if hit_detection_net is None:
+        if not os.path.exists(HIT_DETECTION_MODEL_PATH):
+            raise HTTPException(503, "hit_detect.onnx no está disponible en el dispositivo")
+        try:
+            hit_detection_net = cv2.dnn.readNetFromONNX(HIT_DETECTION_MODEL_PATH)
+            hit_detection_net.setPreferableBackend(cv2.dnn.DNN_BACKEND_CUDA)
+            hit_detection_net.setPreferableTarget(cv2.dnn.DNN_TARGET_CUDA)
+        except Exception:
+            # Fallback a CPU silencioso
+            hit_detection_net = cv2.dnn.readNetFromONNX(HIT_DETECTION_MODEL_PATH)
+            hit_detection_net.setPreferableBackend(cv2.dnn.DNN_BACKEND_DEFAULT)
+            hit_detection_net.setPreferableTarget(cv2.dnn.DNN_TARGET_CPU)
+    return hit_detection_net
+
+
+def _run_hit_detection_on_video(
+    video_path: str,
+    frame_stride: int,
+    max_frames: int,
+    hit_threshold: float
+):
+    net = _load_hit_detection_model()
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        raise HTTPException(400, "Unable to open uploaded video")
+
+    frame_idx = 0
+    processed = 0
+    detections = []
+
+    while processed < max_frames:
+        ret, frame = cap.read()
+        if not ret:
+            break
+
+        if frame_idx % frame_stride != 0:
+            frame_idx += 1
+            continue
+
+        resized = cv2.resize(frame, (224, 224))
+        blob = cv2.dnn.blobFromImage(resized, scalefactor=1 / 255.0, size=(224, 224), swapRB=True, crop=False)
+        net.setInput(blob)
+        output = net.forward()
+        flat = output.flatten().tolist()
+        if not flat:
+            probability = 0.0
+        elif len(flat) == 1:
+            probability = float(flat[0])
+        else:
+            # Suponemos que la segunda salida corresponde a "hit"
+            probability = float(flat[-1])
+
+        detections.append({
+            "frame": frame_idx,
+            "hit_probability": round(probability, 4),
+            "raw_output": flat
+        })
+
+        processed += 1
+        frame_idx += 1
+
+    cap.release()
+
+    hits = [det for det in detections if det["hit_probability"] >= hit_threshold]
+
+    return {
+        "frames_analyzed": processed,
+        "detections": detections,
+        "hits_detected": len(hits),
+        "hit_threshold": hit_threshold,
+        "hit_frames": [det["frame"] for det in hits]
+    }
+
+
 @app.post("/detect")
 def detect(req: DetectionRequest):
     img = _decode_base64_image(req.image_base64)
@@ -471,6 +612,34 @@ async def detect_video(
             "frames_analyzed": processed,
             "frame_stride": frame_stride,
             "results": results,
+        }
+    finally:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+
+
+@app.post("/detect/hit/video")
+async def detect_hit_video(
+    file: UploadFile = File(...),
+    frame_stride: int = Form(4),
+    max_frames: int = Form(120),
+    hit_threshold: float = Form(0.6)
+):
+    if frame_stride <= 0:
+        raise HTTPException(400, "frame_stride must be > 0")
+    if max_frames <= 0:
+        raise HTTPException(400, "max_frames must be > 0")
+    if hit_threshold < 0 or hit_threshold > 1:
+        raise HTTPException(400, "hit_threshold must be between 0 and 1")
+
+    tmp_path = _save_upload_to_temp(file)
+    try:
+        duration = _ensure_video_duration(tmp_path)
+        results = _run_hit_detection_on_video(tmp_path, frame_stride, max_frames, hit_threshold)
+        return {
+            "success": True,
+            "video_duration_s": duration,
+            **results
         }
     finally:
         if os.path.exists(tmp_path):
