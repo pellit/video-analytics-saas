@@ -86,6 +86,14 @@ FACE_RECOGNITION_MODEL_PATH = _resolve_model_path(
 
 JETSON_FACE_NETWORK = os.environ.get('JETSON_FACE_NETWORK', 'facenet-120')
 JETSON_FACE_THRESHOLD = float(os.environ.get('JETSON_FACE_THRESHOLD', '0.45'))
+SFACE_INPUT_SIZE = (112, 112)
+SFACE_TEMPLATE = np.array([
+    [38.2946, 51.6963],
+    [73.5318, 51.5014],
+    [56.0252, 71.7366],
+    [41.5493, 92.3655],
+    [70.7299, 92.2041]
+], dtype=np.float32)
 SUPERRES_MODEL_PATH = os.environ.get('SUPERRES_MODEL_PATH')
 SUPERRES_MODEL_DIR = os.environ.get('SUPERRES_MODEL_DIR', '/usr/local/bin/networks/Super-Resolution-BSD500')
 
@@ -98,6 +106,7 @@ actionnet = None
 hit_detection_net = None
 face_detector = None
 face_recognizer = None
+face_recognizer_backend = None
 superres_engine = None
 superres_scale = 2
 superres_model_path = None
@@ -340,16 +349,24 @@ def _load_face_detector():
 
 
 def _load_face_recognizer():
-    global face_recognizer
+    global face_recognizer, face_recognizer_backend
     if face_recognizer is None:
         model_path = FACE_RECOGNITION_MODEL_PATH
         if not os.path.exists(model_path):
             raise HTTPException(503, f"No se encontró el modelo de reconocimiento facial en {model_path}")
-        try:
-            face_recognizer = cv2.FaceRecognizerSF.create(model_path, "")
-        except Exception as exc:
-            raise HTTPException(503, f"cv2.FaceRecognizerSF no pudo cargar '{model_path}': {exc}")
-    return face_recognizer
+        if hasattr(cv2, "FaceRecognizerSF") and hasattr(cv2.FaceRecognizerSF, "create"):
+            try:
+                face_recognizer = cv2.FaceRecognizerSF.create(model_path, "")
+                face_recognizer_backend = "opencv_sface"
+            except Exception:
+                face_recognizer = None
+        if face_recognizer is None:
+            try:
+                face_recognizer = _OnnxSFaceRecognizer(model_path)
+                face_recognizer_backend = "onnx_sface"
+            except Exception as exc:
+                raise HTTPException(503, f"No se pudo inicializar el modelo de reconocimiento facial: {exc}")
+    return face_recognizer, face_recognizer_backend
 
 
 def _infer_superres_config(model_path: str):
@@ -410,6 +427,50 @@ def _decode_base64_image(image_base64: str) -> np.ndarray:
     if img is None:
         raise HTTPException(400, "Unable to decode image")
     return img
+
+
+def _align_face_crop(image: np.ndarray, bbox: List[int], landmarks: Optional[List[float]]) -> np.ndarray:
+    x1, y1, x2, y2 = bbox
+    x1 = max(0, int(x1))
+    y1 = max(0, int(y1))
+    x2 = min(image.shape[1], int(x2))
+    y2 = min(image.shape[0], int(y2))
+    if x2 <= x1 or y2 <= y1:
+        return cv2.resize(image, SFACE_INPUT_SIZE)
+    if landmarks and len(landmarks) >= 10:
+        src = np.array(landmarks[:10], dtype=np.float32).reshape(5, 2)
+        try:
+            M, _ = cv2.estimateAffinePartial2D(src, SFACE_TEMPLATE, method=cv2.LMEDS)
+        except Exception:
+            M = None
+        if M is not None:
+            return cv2.warpAffine(image, M, SFACE_INPUT_SIZE)
+    face = image[y1:y2, x1:x2]
+    if face.size == 0:
+        return cv2.resize(image, SFACE_INPUT_SIZE)
+    return cv2.resize(face, SFACE_INPUT_SIZE)
+
+
+class _OnnxSFaceRecognizer:
+    def __init__(self, model_path: str):
+        self.net = cv2.dnn.readNetFromONNX(model_path)
+
+    def extract(self, image: np.ndarray, bbox: List[int], landmarks: Optional[List[float]]) -> List[float]:
+        aligned = _align_face_crop(image, bbox, landmarks)
+        blob = cv2.dnn.blobFromImage(
+            aligned,
+            scalefactor=1 / 255.0,
+            size=SFACE_INPUT_SIZE,
+            mean=(0, 0, 0),
+            swapRB=True,
+            crop=False
+        )
+        self.net.setInput(blob)
+        embedding = self.net.forward().flatten()
+        norm = np.linalg.norm(embedding)
+        if norm > 0:
+            embedding = embedding / norm
+        return embedding.astype(np.float32).tolist()
 
 
 def _save_upload_to_temp(file: UploadFile) -> str:
@@ -709,10 +770,13 @@ def _read_frame_at(path: str, frame_index: int) -> Optional[np.ndarray]:
 
 
 def _match_face_embeddings(embedding_a: List[float], embedding_b: List[float]) -> float:
-    recognizer = _load_face_recognizer()
+    recognizer, backend = _load_face_recognizer()
     vec_a = np.array(embedding_a, dtype=np.float32).reshape(1, -1)
     vec_b = np.array(embedding_b, dtype=np.float32).reshape(1, -1)
-    return float(recognizer.match(vec_a, vec_b, cv2.FaceRecognizerSF_FR_COSINE))
+    if backend == "opencv_sface":
+        return float(recognizer.match(vec_a, vec_b, cv2.FaceRecognizerSF_FR_COSINE))
+    similarity = float(np.dot(vec_a.flatten(), vec_b.flatten()))
+    return similarity
 
 
 def _evaluate_face_consistency(
@@ -1006,56 +1070,88 @@ def _run_hit_detection_on_video(
 
 def _detect_faces_with_embeddings(image: np.ndarray, score_threshold: float = 0.6) -> List[Dict[str, Any]]:
     detector, backend = _load_face_detector()
-    recognizer = _load_face_recognizer()
+    recognizer, recognizer_backend = _load_face_recognizer()
     h, w = image.shape[:2]
-    faces = []
+    detections: List[Dict[str, Any]] = []
+
     if backend == "jetson_detectnet":
         cuda_img = bgr_to_cuda(image)
-        detections = detector.Detect(cuda_img, overlay="none")
-        for det in detections:
-            x1 = int(det.Left)
-            y1 = int(det.Top)
-            x2 = int(det.Right)
-            y2 = int(det.Bottom)
-            faces.append([x1, y1, x2 - x1, y2 - y1, float(det.Confidence)])
+        raw = detector.Detect(cuda_img, overlay="none")
+        for det in raw:
+            x1 = max(0, int(det.Left))
+            y1 = max(0, int(det.Top))
+            x2 = min(w, int(det.Right))
+            y2 = min(h, int(det.Bottom))
+            detections.append({
+                "bbox": [x1, y1, x2, y2],
+                "score": float(det.Confidence),
+                "landmarks": None,
+                "raw": None
+            })
     elif backend == "yunet":
         detector.setInputSize((w, h))
-        _, detections = detector.detect(image)
-        if detections is not None:
-            faces = detections
+        _, raw = detector.detect(image)
+        if raw is not None:
+            for face in raw:
+                x, y, box_w, box_h = face[:4]
+                bbox = [
+                    max(0, int(x)),
+                    max(0, int(y)),
+                    min(w, int(x + box_w)),
+                    min(h, int(y + box_h))
+                ]
+                landmarks = face[4:14].tolist() if len(face) >= 14 else None
+                detections.append({
+                    "bbox": bbox,
+                    "score": float(face[4]) if len(face) > 4 else 0.0,
+                    "landmarks": landmarks,
+                    "raw": face
+                })
     else:
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-        detections = detector.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(64, 64))
-        for (x, y, box_w, box_h) in detections:
-            faces.append([x, y, box_w, box_h, 1.0])
+        raw = detector.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(64, 64))
+        for (x, y, box_w, box_h) in raw:
+            bbox = [
+                max(0, int(x)),
+                max(0, int(y)),
+                min(w, int(x + box_w)),
+                min(h, int(y + box_h))
+            ]
+            detections.append({
+                "bbox": bbox,
+                "score": 1.0,
+                "landmarks": None,
+                "raw": None
+            })
 
     results = []
-    if not faces:
-        return results
+    for det in detections:
+        if det["score"] < score_threshold:
+            continue
 
-    for face in faces:
-        x, y, box_w, box_h = face[:4]
-        x = max(0, int(x))
-        y = max(0, int(y))
-        box_w = int(box_w)
-        box_h = int(box_h)
-        if box_w <= 0 or box_h <= 0:
+        bbox = det["bbox"]
+        landmarks = det.get("landmarks")
+        embedding: Optional[List[float]] = None
+
+        if recognizer_backend == "opencv_sface" and det["raw"] is not None:
+            try:
+                embedding = recognizer.feature(image, det["raw"]).flatten().tolist()
+            except Exception:
+                embedding = None
+        else:
+            try:
+                embedding = recognizer.extract(image, bbox, landmarks)
+            except Exception:
+                embedding = None
+
+        if not embedding:
             continue
-        if x + box_w > w or y + box_h > h:
-            box_w = min(box_w, w - x)
-            box_h = min(box_h, h - y)
-        if box_w <= 0 or box_h <= 0:
-            continue
-        score = float(face[4]) if len(face) > 4 else 0.0
-        if score < score_threshold:
-            continue
-        bbox = np.array([x, y, box_w, box_h, score], dtype=np.float32)
-        feature = recognizer.feature(image, bbox)
+
         results.append({
             "face_id": str(uuid4()),
-            "bbox": [int(x), int(y), int(x + box_w), int(y + box_h)],
-            "score": score,
-            "embedding": feature.flatten().tolist()
+            "bbox": bbox,
+            "score": det["score"],
+            "embedding": embedding
         })
     return results
 
@@ -1167,10 +1263,13 @@ def face_compare(req: FaceCompareRequest):
     if not face_b:
         raise HTTPException(422, "No face detected in image B above the threshold")
 
-    recognizer = _load_face_recognizer()
+    recognizer, backend = _load_face_recognizer()
     vec_a = np.array(face_a["embedding"], dtype=np.float32).reshape(1, -1)
     vec_b = np.array(face_b["embedding"], dtype=np.float32).reshape(1, -1)
-    similarity = float(recognizer.match(vec_a, vec_b, cv2.FaceRecognizerSF_FR_COSINE))
+    if backend == "opencv_sface":
+        similarity = float(recognizer.match(vec_a, vec_b, cv2.FaceRecognizerSF_FR_COSINE))
+    else:
+        similarity = float(np.dot(vec_a.flatten(), vec_b.flatten()))
     is_same = similarity >= req.score_threshold
 
     return {
