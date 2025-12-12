@@ -22,11 +22,18 @@ DETECTNET_TRACKING_ENABLED = os.environ.get('DETECTNET_TRACKING', '1') not in ('
 DETECTNET_TRACKER_MIN_FRAMES = int(os.environ.get('DETECTNET_TRACKER_MIN_FRAMES', '3'))
 DETECTNET_TRACKER_DROP_FRAMES = int(os.environ.get('DETECTNET_TRACKER_DROP_FRAMES', '15'))
 DETECTNET_TRACKER_OVERLAP = float(os.environ.get('DETECTNET_TRACKER_OVERLAP', '0.5'))
-IMAGENET_MODEL = os.environ.get('IMAGENET_MODEL', 'googlenet')
+IMAGENET_CANDIDATES = [
+    model.strip() for model in os.environ.get(
+        'IMAGENET_MODELS',
+        os.environ.get('IMAGENET_MODEL', 'googlenet,resnet-50,inception-v4')
+    ).split(',')
+    if model.strip()
+]
 DEPTHNET_MODEL = os.environ.get('DEPTHNET_MODEL', 'resnet18')
 
 _detectnet = None
 _imagenet = None
+_imagenet_model_used = None
 _depthnet_runtime = None
 _depthnet_numpy = None
 _depthnet_dims = (0, 0)
@@ -63,15 +70,22 @@ def _ensure_detectnet():
 
 
 def _ensure_imagenet():
-    global _imagenet
+    global _imagenet, _imagenet_model_used
     if _imagenet is None:
         if not JETSON_AVAILABLE:
             raise HTTPException(503, "jetson-inference no está disponible para imageNet")
-        try:
-            _imagenet = jetson.inference.imageNet(IMAGENET_MODEL)
-        except Exception as exc:
-            raise HTTPException(503, f"imageNet no pudo cargar '{IMAGENET_MODEL}': {exc}")
-    return _imagenet
+        last_exc = None
+        for candidate in IMAGENET_CANDIDATES:
+            try:
+                _imagenet = jetson.inference.imageNet(candidate)
+                _imagenet_model_used = candidate
+                break
+            except Exception as exc:
+                last_exc = exc
+                _imagenet = None
+        if _imagenet is None:
+            raise HTTPException(503, f"imageNet no pudo cargar ninguno de los modelos {IMAGENET_CANDIDATES}: {last_exc}")
+    return _imagenet, _imagenet_model_used
 
 
 def _ensure_depthnet():
@@ -119,7 +133,7 @@ def classify_frame_with_imagenet(image: np.ndarray) -> Optional[Dict[str, Any]]:
     if not JETSON_AVAILABLE:
         return None
     try:
-        net = _ensure_imagenet()
+        net, model_name = _ensure_imagenet()
     except HTTPException:
         return None
     cuda_img = bgr_to_cuda(image)
@@ -127,7 +141,8 @@ def classify_frame_with_imagenet(image: np.ndarray) -> Optional[Dict[str, Any]]:
     return {
         "class_id": int(class_id),
         "label": net.GetClassDesc(int(class_id)),
-        "confidence": float(confidence)
+        "confidence": float(confidence),
+        "model": model_name
     }
 
 
