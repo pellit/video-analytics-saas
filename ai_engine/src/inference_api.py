@@ -93,6 +93,10 @@ def _resolve_hit_model_path():
 HIT_DETECTION_MODEL_PATH = _resolve_hit_model_path()
 
 SOCCER_BALL_LABELS = {"sports_ball", "ball", "frisbee"}
+GYM_EQUIPMENT_LABELS = {
+    "barbell", "dumbbell", "bench", "kettlebell", "backpack", "suitcase",
+    "handbag", "bottle", "chair", "cup"
+}
 
 
 def _resolve_superres_model_path():
@@ -544,6 +548,103 @@ def _analyze_soccer_detections(
     }
 
 
+def _analyze_gym_detections(
+    video_path: str,
+    frame_stride: int,
+    max_frames: int,
+    confidence: float,
+    interaction_distance_px: int,
+    nms_threshold: float = 0.4
+) -> Dict[str, Any]:
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        raise HTTPException(400, "Unable to open uploaded video")
+
+    frame_idx = 0
+    processed = 0
+    timeline = []
+    player_frames = 0
+    equipment_frames = 0
+    interaction_frames = 0
+    prev_player_bbox = None
+    vertical_variation_acc = 0.0
+    vertical_variation_count = 0
+    equipment_counts = defaultdict(int)
+
+    while processed < max_frames:
+        ret, frame = cap.read()
+        if not ret:
+            break
+        if frame_idx % frame_stride != 0:
+            frame_idx += 1
+            continue
+
+        inference = _run_inference(frame, confidence, nms_threshold)
+        detections = inference.get("detections", [])
+        player_det = _select_best_detection(detections, {"person"})
+        equipment_det = _select_best_detection(detections, GYM_EQUIPMENT_LABELS)
+
+        entry: Dict[str, Any] = {"frame": frame_idx}
+        if player_det:
+            entry["athlete"] = player_det
+            player_frames += 1
+            if prev_player_bbox:
+                prev_height = prev_player_bbox[3] - prev_player_bbox[1]
+                curr_height = player_det["bbox"][3] - player_det["bbox"][1]
+                delta = abs(curr_height - prev_height)
+                vertical_variation_acc += delta
+                vertical_variation_count += 1
+            prev_player_bbox = player_det["bbox"]
+        else:
+            prev_player_bbox = None
+
+        if equipment_det:
+            entry["equipment"] = equipment_det
+            equipment_frames += 1
+            label = equipment_det.get("class_name")
+            if label:
+                equipment_counts[label] += 1
+
+        if player_det and equipment_det:
+            distance = _center_distance(player_det["bbox"], equipment_det["bbox"])
+            entry["athlete_equipment_distance"] = round(distance, 2)
+            if distance <= interaction_distance_px:
+                entry["interaction"] = True
+                interaction_frames += 1
+            else:
+                entry["interaction"] = False
+
+        timeline.append(entry)
+        processed += 1
+        frame_idx += 1
+
+    cap.release()
+    total = len(timeline)
+
+    def _ratio(count: int) -> float:
+        return round((count / total) if total else 0.0, 4)
+
+    avg_variation = (
+        round(vertical_variation_acc / vertical_variation_count, 2)
+        if vertical_variation_count > 0 else 0.0
+    )
+
+    equipment_summary = [
+        {"label": label, "ratio": _ratio(count)}
+        for label, count in sorted(equipment_counts.items(), key=lambda x: x[1], reverse=True)
+    ]
+
+    return {
+        "frames_analyzed": processed,
+        "timeline": timeline,
+        "player_presence_ratio": _ratio(player_frames),
+        "equipment_presence_ratio": _ratio(equipment_frames),
+        "interaction_ratio": _ratio(interaction_frames),
+        "avg_vertical_variation": avg_variation,
+        "equipment_summary": equipment_summary
+    }
+
+
 def _read_frame_at(path: str, frame_index: int) -> Optional[np.ndarray]:
     cap = cv2.VideoCapture(path)
     if not cap.isOpened():
@@ -624,6 +725,67 @@ def _evaluate_face_consistency(
         "pairwise": pairwise,
         "consistent": consistent,
         "successful_samples": sum(1 for sample in samples if sample["success"])
+    }
+
+
+def _derive_action_sequences(
+    predictions: List[Dict[str, Any]],
+    frame_stride: int,
+    fps: float
+) -> Dict[str, Any]:
+    if not predictions or fps <= 0:
+        return {
+            "segments": [],
+            "label_totals": []
+        }
+
+    time_per_sample = frame_stride / fps
+    segments = []
+    label_totals = defaultdict(int)
+    current_label = None
+    current_start = None
+    current_count = 0
+
+    for pred in predictions:
+        label = pred.get("label")
+        frame = pred.get("frame", 0)
+        if label is None:
+            continue
+        label_totals[label] += 1
+        if label != current_label:
+            if current_label is not None:
+                segments.append({
+                    "label": current_label,
+                    "start_frame": current_start,
+                    "end_frame": frame,
+                    "estimated_seconds": round(current_count * time_per_sample, 2)
+                })
+            current_label = label
+            current_start = frame
+            current_count = 0
+        current_count += 1
+
+    if current_label is not None:
+        end_frame = predictions[-1].get("frame", current_start)
+        segments.append({
+            "label": current_label,
+            "start_frame": current_start,
+            "end_frame": end_frame,
+            "estimated_seconds": round(current_count * time_per_sample, 2)
+        })
+
+    totals_payload = [
+        {
+            "label": label,
+            "samples": count,
+            "estimated_seconds": round(count * time_per_sample, 2)
+        }
+        for label, count in sorted(label_totals.items(), key=lambda x: x[1], reverse=True)
+    ]
+
+    return {
+        "segments": segments,
+        "label_totals": totals_payload
     }
 
 
@@ -1120,6 +1282,121 @@ async def analyze_football_video(
                 "contact_events": depth_pose["contact_events"],
             },
             "action_analysis": action_analysis,
+        }
+
+        return {
+            "success": True,
+            "video_duration_s": duration,
+            "frames_total": frame_count,
+            "analysis": analysis
+        }
+    finally:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+
+
+@app.post("/analyze/gym/video")
+async def analyze_gym_video(
+    file: UploadFile = File(...),
+    frame_stride: int = Form(4),
+    max_frames: int = Form(180),
+    detection_confidence: float = Form(0.45),
+    interaction_distance_px: int = Form(110),
+    contact_distance_px: int = Form(40),
+    action_frame_stride: int = Form(6),
+    action_top_k: int = Form(4),
+    face_score_threshold: float = Form(0.6),
+    face_match_threshold: float = Form(0.6)
+):
+    if frame_stride <= 0 or max_frames <= 0:
+        raise HTTPException(400, "frame_stride and max_frames must be > 0")
+    if not (0.0 < detection_confidence <= 1.0):
+        raise HTTPException(400, "detection_confidence must be between 0 and 1")
+    if interaction_distance_px <= 0 or contact_distance_px <= 0:
+        raise HTTPException(400, "interaction_distance_px and contact_distance_px must be > 0")
+    if action_frame_stride <= 0 or action_top_k <= 0:
+        raise HTTPException(400, "action_frame_stride and action_top_k must be > 0")
+    if not (0.0 < face_score_threshold <= 1.0):
+        raise HTTPException(400, "face_score_threshold must be between 0 and 1")
+    if not (0.0 < face_match_threshold <= 1.0):
+        raise HTTPException(400, "face_match_threshold must be between 0 and 1")
+
+    tmp_path = _save_upload_to_temp(file)
+    try:
+        duration = _ensure_video_duration(tmp_path)
+        metadata = _get_video_metadata(tmp_path)
+        frame_count = int(metadata["frame_count"])
+        fps = max(metadata["fps"], 1e-3)
+
+        detection_summary = _analyze_gym_detections(
+            tmp_path,
+            frame_stride=frame_stride,
+            max_frames=max_frames,
+            confidence=detection_confidence,
+            interaction_distance_px=interaction_distance_px
+        )
+
+        depth_pose = depth_pose_service_analyze(
+            tmp_path,
+            frame_stride=frame_stride,
+            max_frames=max_frames,
+            detection_confidence=detection_confidence,
+            contact_distance_px=contact_distance_px,
+            detection_fn=_run_inference,
+            depth_model_name=DEPTHNET_MODEL,
+            pose_model_name=POSENET_MODEL,
+            cuda_from_bgr=bgr_to_cuda
+        )
+
+        if JETSON_INFERENCE_AVAILABLE:
+            action_analysis = _run_actionnet_on_video(tmp_path, action_frame_stride, action_top_k)
+        else:
+            action_analysis = {
+                "frames_analyzed": 0,
+                "predictions": [],
+                "top_labels": [],
+                "warning": "jetson-inference no está disponible en este dispositivo"
+            }
+
+        action_sequences = _derive_action_sequences(
+            action_analysis.get("predictions", []),
+            action_frame_stride,
+            fps
+        )
+
+        face_checks = _evaluate_face_consistency(
+            tmp_path,
+            frame_count,
+            score_threshold=face_score_threshold,
+            match_threshold=face_match_threshold
+        )
+
+        summary = {
+            "player_presence_ratio": detection_summary["player_presence_ratio"],
+            "equipment_presence_ratio": detection_summary["equipment_presence_ratio"],
+            "interaction_ratio": detection_summary["interaction_ratio"],
+            "avg_vertical_variation": detection_summary["avg_vertical_variation"],
+            "person_depth_trend": depth_pose["person_depth_trend"],
+            "face_consistent": face_checks["consistent"],
+            "dominant_actions": action_sequences["label_totals"][:action_top_k]
+        }
+
+        analysis = {
+            "summary": summary,
+            "face_checks": face_checks,
+            "detection": {
+                "frames_analyzed": detection_summary["frames_analyzed"],
+                "timeline": detection_summary["timeline"],
+                "equipment_summary": detection_summary["equipment_summary"]
+            },
+            "depth": {
+                "frames_analyzed": depth_pose["frames_analyzed"],
+                "person_series": depth_pose["person_depth_series"],
+                "ball_series": depth_pose["ball_depth_series"],
+                "contact_events": depth_pose["contact_events"],
+            },
+            "action_analysis": action_analysis,
+            "action_sequences": action_sequences
         }
 
         return {
