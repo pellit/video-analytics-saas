@@ -453,14 +453,17 @@ def _run_depthnet_on_video(video_path: str, frame_stride: int, max_frames: int, 
 
         cuda_img = _cuda_from_bgr(frame)
         # --- CORRECCIÓN DEPTHNET ---
-        # 1. Crear buffer de salida visual si no existe
-        if not hasattr(net, 'overlay'):
-            net.overlay = jetson.utils.cudaAllocMapped(width=cuda_img.width, height=cuda_img.height, format=cuda_img.format)
+        # 1. Crear buffer de salida visual si no existe (Guardado en la función)
+        if not hasattr(_run_depthnet_on_video, 'overlay'):
+            _run_depthnet_on_video.overlay = jetson.utils.cudaAllocMapped(width=cuda_img.width, height=cuda_img.height, format=cuda_img.format)
+        
         # 2. Procesar (Calcular profundidad)
         net.Process(cuda_img)
+        
         # 3. Visualizar (Pintar el mapa de profundidad en el buffer)
-        net.Visualize(net.overlay)
-        depth_img = net.overlay
+        net.Visualize(_run_depthnet_on_video.overlay)
+        
+        depth_img = _run_depthnet_on_video.overlay
         # ---------------------------
         depth_np = jetson.utils.cudaToNumpy(depth_img, width, height, 1).squeeze()
 
