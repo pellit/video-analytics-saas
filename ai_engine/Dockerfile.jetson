@@ -9,7 +9,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 ENV SHELL /bin/bash
 ENV LC_ALL=C.UTF-8
 ENV LANG=C.UTF-8
-ENV PYTHONPATH=/usr/local/python
+ENV PYTHONPATH=/usr/local/python:/app/ai_engine/src
 
 # 1. Dependencias de sistema básicas (pip ya viene instalado)
 RUN apt-get update && \
