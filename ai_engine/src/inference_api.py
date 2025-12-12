@@ -475,11 +475,21 @@ def _run_depthnet_on_video(video_path: str, frame_stride: int, max_frames: int, 
         })
 
         if len(previews) < preview_frames:
-            normalized = cv2.normalize(depth_np, None, 0, 255, cv2.NORM_MINMAX)
-            normalized = np.clip(normalized, 0, 255).astype(np.uint8)
-            normalized = np.ascontiguousarray(normalized)
+            # 1. Aplanar dimensiones extra: (1, 1, H, W) -> (H, W)
+            # Esto es lo que estaba causando el fallo en applyColorMap
+            depth_2d = depth_np.squeeze()
+
+            # 2. Normalizar de 0 a 255
+            # Usamos cv2.CV_8U directamente para asegurar el tipo de dato
+            normalized = cv2.normalize(depth_2d, None, 0, 255, cv2.NORM_MINMAX, dtype=cv2.CV_8U)
+            
+            # 3. Aplicar el mapa de color
+            # Ahora normalized es (H, W) y de tipo uint8, OpenCV lo aceptará felizmente
             heatmap = cv2.applyColorMap(normalized, cv2.COLORMAP_PLASMA)
+            
+            # Codificar a JPG para la preview
             _, buffer = cv2.imencode('.jpg', heatmap, [cv2.IMWRITE_JPEG_QUALITY, 85])
+            
             previews.append({
                 "frame": frame_idx,
                 "preview_base64": "data:image/jpeg;base64," + base64.b64encode(buffer).decode()
