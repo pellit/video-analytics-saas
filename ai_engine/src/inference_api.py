@@ -83,6 +83,9 @@ FACE_RECOGNITION_MODEL_PATH = _resolve_model_path(
     os.environ.get('FACE_RECOGNITION_MODEL_PATH', os.path.join(MODELS_DIR, 'face_recognition_sface_2021dec.onnx')),
     'face_recognition_sface_2021dec.onnx'
 )
+
+JETSON_FACE_NETWORK = os.environ.get('JETSON_FACE_NETWORK', 'facenet-120')
+JETSON_FACE_THRESHOLD = float(os.environ.get('JETSON_FACE_THRESHOLD', '0.45'))
 SUPERRES_MODEL_PATH = os.environ.get('SUPERRES_MODEL_PATH')
 SUPERRES_MODEL_DIR = os.environ.get('SUPERRES_MODEL_DIR', '/usr/local/bin/networks/Super-Resolution-BSD500')
 
@@ -98,6 +101,7 @@ face_recognizer = None
 superres_engine = None
 superres_scale = 2
 superres_model_path = None
+face_detector_backend = None
 
 HIT_DETECT_MODEL_OVERRIDE = os.environ.get('HIT_DETECT_MODEL_PATH')
 
@@ -304,16 +308,35 @@ def _load_actionnet():
 
 
 def _load_face_detector():
-    global face_detector
+    global face_detector, face_detector_backend
     if face_detector is None:
-        model_path = FACE_DETECT_MODEL_PATH
-        if not os.path.exists(model_path):
-            raise HTTPException(503, f"No se encontró el modelo de detección facial en {model_path}")
-        try:
-            face_detector = cv2.FaceDetectorYN.create(model_path, "", (320, 320))
-        except Exception as exc:
-            raise HTTPException(503, f"cv2.FaceDetectorYN no pudo cargar '{model_path}': {exc}")
-    return face_detector
+        if JETSON_INFERENCE_AVAILABLE:
+            try:
+                face_detector = jetson.inference.detectNet(JETSON_FACE_NETWORK, threshold=JETSON_FACE_THRESHOLD)
+                face_detector_backend = "jetson_detectnet"
+                return face_detector, face_detector_backend
+            except Exception:
+                face_detector = None
+
+        if hasattr(cv2, "FaceDetectorYN") and hasattr(cv2.FaceDetectorYN, "create"):
+            model_path = FACE_DETECT_MODEL_PATH
+            if not os.path.exists(model_path):
+                raise HTTPException(503, f"No se encontró el modelo de detección facial en {model_path}")
+            try:
+                face_detector = cv2.FaceDetectorYN.create(model_path, "", (320, 320))
+                face_detector_backend = "yunet"
+            except Exception as exc:
+                raise HTTPException(503, f"cv2.FaceDetectorYN no pudo cargar '{model_path}': {exc}")
+        else:
+            cascade_path = getattr(cv2.data, "haarcascades", "") + "haarcascade_frontalface_default.xml"
+            if not cascade_path or not os.path.exists(cascade_path):
+                raise HTTPException(503, "OpenCV no tiene FaceDetectorYN y no se encontró haarcascade_frontalface_default.xml para el fallback.")
+            detector = cv2.CascadeClassifier(cascade_path)
+            if detector.empty():
+                raise HTTPException(503, "No se pudo inicializar el clasificador Haar para detección facial.")
+            face_detector = detector
+            face_detector_backend = "cascade"
+    return face_detector, face_detector_backend
 
 
 def _load_face_recognizer():
@@ -982,21 +1005,52 @@ def _run_hit_detection_on_video(
 
 
 def _detect_faces_with_embeddings(image: np.ndarray, score_threshold: float = 0.6) -> List[Dict[str, Any]]:
-    detector = _load_face_detector()
+    detector, backend = _load_face_detector()
     recognizer = _load_face_recognizer()
     h, w = image.shape[:2]
-    detector.setInputSize((w, h))
-    _, faces = detector.detect(image)
+    faces = []
+    if backend == "jetson_detectnet":
+        cuda_img = bgr_to_cuda(image)
+        detections = detector.Detect(cuda_img, overlay="none")
+        for det in detections:
+            x1 = int(det.Left)
+            y1 = int(det.Top)
+            x2 = int(det.Right)
+            y2 = int(det.Bottom)
+            faces.append([x1, y1, x2 - x1, y2 - y1, float(det.Confidence)])
+    elif backend == "yunet":
+        detector.setInputSize((w, h))
+        _, detections = detector.detect(image)
+        if detections is not None:
+            faces = detections
+    else:
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        detections = detector.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(64, 64))
+        for (x, y, box_w, box_h) in detections:
+            faces.append([x, y, box_w, box_h, 1.0])
+
     results = []
-    if faces is None:
+    if not faces:
         return results
 
     for face in faces:
         x, y, box_w, box_h = face[:4]
+        x = max(0, int(x))
+        y = max(0, int(y))
+        box_w = int(box_w)
+        box_h = int(box_h)
+        if box_w <= 0 or box_h <= 0:
+            continue
+        if x + box_w > w or y + box_h > h:
+            box_w = min(box_w, w - x)
+            box_h = min(box_h, h - y)
+        if box_w <= 0 or box_h <= 0:
+            continue
         score = float(face[4]) if len(face) > 4 else 0.0
         if score < score_threshold:
             continue
-        feature = recognizer.feature(image, face)
+        bbox = np.array([x, y, box_w, box_h, score], dtype=np.float32)
+        feature = recognizer.feature(image, bbox)
         results.append({
             "face_id": str(uuid4()),
             "bbox": [int(x), int(y), int(x + box_w), int(y + box_h)],
