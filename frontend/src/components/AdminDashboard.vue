@@ -15,12 +15,22 @@ const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000/api'
 
 // Worker URL for AI Engine endpoints
 const getWorkerUrl = () => {
-    // Use /worker prefix for nginx proxy
+    if (import.meta.env.VITE_WORKER_URL) return import.meta.env.VITE_WORKER_URL
     if (import.meta.env.VITE_STREAM_URL === '/video_feed') {
-        return '/worker'  // nginx will proxy to ai_worker:5000
+        return '/worker'  // nginx proxy
     }
     if (import.meta.env.VITE_STREAM_URL) {
         return import.meta.env.VITE_STREAM_URL.replace('/video_feed', '')
+    }
+    if (import.meta.env.VITE_API_URL) {
+        try {
+            const url = new URL(import.meta.env.VITE_API_URL)
+            url.port = url.port || '5000'
+            url.pathname = ''
+            return url.toString().replace(/\/$/, '')
+        } catch (e) {
+            console.error('Error parsing API URL for worker', e)
+        }
     }
     return 'http://localhost:5000'
 }

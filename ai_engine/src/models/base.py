@@ -119,6 +119,24 @@ class BaseDetector(ABC):
         import cv2
         
         x1, y1, x2, y2 = det.bbox
+        
+        # Validate coordinates - skip if invalid (nan, inf, or out of bounds)
+        import math
+        if any(math.isnan(v) or math.isinf(v) for v in [x1, y1, x2, y2]):
+            return  # Skip this detection
+        
+        # Convert to int and clamp to frame bounds
+        h_frame, w_frame = frame.shape[:2]
+        x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)
+        x1 = max(0, min(x1, w_frame - 1))
+        y1 = max(0, min(y1, h_frame - 1))
+        x2 = max(0, min(x2, w_frame - 1))
+        y2 = max(0, min(y2, h_frame - 1))
+        
+        # Skip if box is too small or invalid
+        if x2 <= x1 or y2 <= y1:
+            return
+        
         w = x2 - x1
         h = y2 - y1
         

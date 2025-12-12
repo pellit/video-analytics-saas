@@ -29,25 +29,36 @@ class SseController extends Controller
 
         $response = new StreamedResponse(function () use ($user) {
             \Illuminate\Support\Facades\Log::info("SSE: Starting stream for user " . $user->id);
+            
+            // Disable time limit for long-running SSE
+            set_time_limit(0);
+            
             try {
                 // Set headers for SSE
                 echo "retry: 2000\n\n";
                 if (ob_get_level() > 0) ob_flush();
                 flush();
 
-                // Use psubscribe with callback pattern for phpredis compatibility
+                // Get raw phpredis client
                 $redis = Redis::connection()->client();
                 
-                // Subscribe to channels
+                // Subscribe to channels using phpredis native format
+                // phpredis subscribe() takes channels first, then callback
                 $channels = ['alerts', 'detections', 'bev_events'];
+                
+                // Use setOption to keep connection alive
+                $redis->setOption(\Redis::OPT_READ_TIMEOUT, -1);
                 
                 $redis->subscribe($channels, function ($redis, $channel, $message) use ($user) {
                     try {
                         $payload = json_decode($message, true);
-                        // Filter by user_id: only send messages that belong to this user
+                        
+                        // Filter by user_id if present: only send messages that belong to this user
+                        // If no user_id in payload, send to all (global events)
                         if (isset($payload['user_id']) && intval($payload['user_id']) !== intval($user->id)) {
                             return;
                         }
+                        
                         // SSE event name is the Redis channel (map bev_events to 'bev' for frontend)
                         $eventName = $channel === 'bev_events' ? 'bev' : $channel;
                         echo "event: {$eventName}\n";
@@ -64,7 +75,7 @@ class SseController extends Controller
                     'exception' => $e
                 ]);
                 echo "event: error\n";
-                echo 'data: {"message": "Server Error"}' . "\n\n";
+                echo 'data: {"message": "' . addslashes($e->getMessage()) . '"}' . "\n\n";
                 if (ob_get_level() > 0) ob_flush();
                 flush();
             }

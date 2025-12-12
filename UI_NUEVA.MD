@@ -1,4 +1,10 @@
-¡Esa metáfora del **"Pulpo"** es brillante\! 🐙
+🛰️ Imágenes Sentinel
+✕
+Monitoreo 1
+🛰️
+Sin imagen disponible
+
+Obtener imagen¡Esa metáfora del **"Pulpo"** es brillante\! 🐙
 
 En diseño de interfaces (UX/UI), esto se alinea con el concepto de **"Conciencia Situacional Unificada"**. Quieres un cerebro central (el operador) que recibe estímulos de múltiples extremidades (video, audio, satélite, métricas) y reacciona de forma fluida.
 

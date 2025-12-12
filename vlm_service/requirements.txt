@@ -5,7 +5,7 @@
 
 # --- Core ---
 redis
-numpy
+numpy<2.0.0
 requests
 fastapi
 uvicorn[standard]
@@ -20,6 +20,7 @@ Pillow>=9.0.0
 # PyTorch CPU-only (sin CUDA para builds más rápidos)
 --extra-index-url https://download.pytorch.org/whl/cpu
 torch==2.2.0+cpu
+torchvision==0.17.0+cpu
 transformers==4.38.0
 einops>=0.7.0
 accelerate>=0.25.0

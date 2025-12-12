@@ -24,6 +24,7 @@ COPY . .
 RUN npm run build
 
 # Production stage - servidor estático con nginx
+# Build cache buster: 2025-12-08-v3-storage-proxy
 FROM nginx:alpine
 
 # Copiar build de producción

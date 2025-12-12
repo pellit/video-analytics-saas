@@ -31,6 +31,13 @@ services:
       - saas_net
     links:
       - redis
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.api.rule=Host(`dev.pellit.com.ar`) && PathPrefix(`/api`)"
+      - "traefik.http.routers.api.entrypoints=websecure"
+      - "traefik.http.routers.api.tls=true"
+      - "traefik.http.routers.api.tls.certresolver=letsencrypt"
+      - "traefik.http.services.api.loadbalancer.server.port=8000"
 
   # --- FRONTEND (Vue.js) ---
   frontend:
@@ -47,7 +54,8 @@ services:
     networks:
       - saas_net
 
-  # --- AI WORKER (Python - Ligero) ---
+  # --- AI WORKER (Python - Full Featured) ---
+  # Use this for: VLM, CAD processing, satellite analysis
   ai_worker:
     build:
       context: ./ai_engine
@@ -70,6 +78,9 @@ services:
       # VLM Service URL (microservicio separado)
       - VLM_SERVICE_URL=http://vlm_service:5100
       - ENABLE_VLM=${ENABLE_VLM:-true}
+      # Sentinel satellite credentials
+      - SENTINEL_CLIENT_ID=${SENTINEL_CLIENT_ID:-}
+      - SENTINEL_CLIENT_SECRET=${SENTINEL_CLIENT_SECRET:-}
     volumes:
       - ./ai_engine/models:/app/models
       - app_storage:/app/storage  # Volumen compartido con Laravel
@@ -79,6 +90,48 @@ services:
       - vlm_service
     networks:
       - saas_net
+      - dokploy-network
+    labels:
+      - "traefik.enable=true"
+      # Route /worker/* to AI worker
+      - "traefik.http.routers.ai-worker.rule=Host(`dev.pellit.com.ar`) && PathPrefix(`/worker`)"
+      - "traefik.http.routers.ai-worker.entrypoints=websecure"
+      - "traefik.http.routers.ai-worker.tls=true"
+      - "traefik.http.routers.ai-worker.tls.certresolver=letsencrypt"
+      # Strip /worker prefix before sending to backend
+      - "traefik.http.middlewares.strip-worker.stripprefix.prefixes=/worker"
+      - "traefik.http.routers.ai-worker.middlewares=strip-worker"
+      # Service config
+      - "traefik.http.services.ai-worker.loadbalancer.server.port=5000"
+
+  # --- RUST AI WORKER (High Performance) ---
+  # Use this for: High FPS detection, low latency video processing
+  # Enable with: docker compose --profile rust up
+  rust_worker:
+    build:
+      context: ./rust_ai_worker
+      dockerfile: Dockerfile
+    environment:
+      - REDIS_URL=redis://redis:6379
+      - RUST_LOG=${RUST_LOG:-info}
+      - MODEL_PATH=/app/models/yolov8n.onnx
+      - CONFIDENCE_THRESHOLD=${CONFIDENCE_THRESHOLD:-0.5}
+      - TARGET_FPS=${TARGET_FPS:-15}
+      - NUM_THREADS=${RUST_NUM_THREADS:-4}
+      - SKIP_FRAMES=${SKIP_FRAMES:-2}
+    volumes:
+      - ./rust_ai_worker/models:/app/models:ro
+    depends_on:
+      - redis
+    networks:
+      - saas_net
+    profiles:
+      - rust
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 1G
 
   # --- VLM SERVICE (Moondream2 Microservice) ---
   vlm_service:
@@ -90,7 +143,7 @@ services:
       - REDIS_HOST=redis
       - PYTHONUNBUFFERED=1
       - VLM_MODEL=${VLM_MODEL:-vikhyatk/moondream2}
-      - VLM_REVISION=${VLM_REVISION:-2025-01-09}
+      - VLM_REVISION=${VLM_REVISION:-2024-08-26}
       - VLM_LAZY_LOAD=${VLM_LAZY_LOAD:-true}
       - VLM_PRELOAD=${VLM_PRELOAD:-false}
     volumes:
@@ -103,7 +156,7 @@ services:
   # --- MEDIA SERVER (MediaMTX - Go) ---
   media_server:
     image: bluenviron/mediamtx:latest
-    container_name: saas_media
+    # container_name eliminado para evitar conflictos
     ports:
       - "8554:8554"   # RTSP entrada (Worker → MediaMTX)
       - "8889:8889"   # WebRTC salida (Navegadores desktop)
@@ -216,6 +269,8 @@ services:
 networks:
   saas_net:
     driver: bridge
+  dokploy-network:
+    external: true
 
 volumes:
   db_data:

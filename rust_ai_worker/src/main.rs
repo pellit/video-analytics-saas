@@ -332,7 +332,7 @@ impl InferenceEngine {
 }
 
 // ============================================================================
-// FFMPEG VIDEO SOURCE (RTSP)
+// FFMPEG VIDEO SOURCE (RTSP + YouTube)
 // ============================================================================
 
 struct FFmpegVideoSource {
@@ -344,30 +344,59 @@ struct FFmpegVideoSource {
 }
 
 impl FFmpegVideoSource {
-    fn new(rtsp_url: &str, target_fps: u32) -> Result<Self> {
-        info!("Opening RTSP stream via FFmpeg: {}", rtsp_url);
+    fn new(url: &str, target_fps: u32) -> Result<Self> {
+        info!("Opening video stream: {}", url);
         
         // Target dimensions
         let width = 640u32;
         let height = 640u32;
         
-        // FFmpeg command to decode RTSP and output raw RGB frames
-        let process = Command::new("ffmpeg")
-            .args([
-                "-rtsp_transport", "tcp",
-                "-i", rtsp_url,
-                "-vf", &format!("scale={}:{},fps={}", width, height, target_fps),
-                "-f", "rawvideo",
-                "-pix_fmt", "rgb24",
-                "-an",  // No audio
-                "-"     // Output to stdout
-            ])
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-            .context("Failed to start FFmpeg - is it installed?")?;
+        // Detect YouTube URLs and get direct stream URL via yt-dlp
+        let stream_url = if url.contains("youtube.com") || url.contains("youtu.be") {
+            info!("🎬 Detected YouTube URL, extracting stream with yt-dlp...");
+            Self::get_youtube_stream_url(url)?
+        } else {
+            url.to_string()
+        };
         
-        info!("✅ FFmpeg started for RTSP capture");
+        // Build FFmpeg command based on URL type
+        let process = if url.contains("rtsp://") {
+            // RTSP stream
+            Command::new("ffmpeg")
+                .args([
+                    "-rtsp_transport", "tcp",
+                    "-i", &stream_url,
+                    "-vf", &format!("scale={}:{},fps={}", width, height, target_fps),
+                    "-f", "rawvideo",
+                    "-pix_fmt", "rgb24",
+                    "-an",
+                    "-"
+                ])
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null())
+                .spawn()
+                .context("Failed to start FFmpeg for RTSP")?
+        } else {
+            // HTTP/YouTube stream
+            Command::new("ffmpeg")
+                .args([
+                    "-reconnect", "1",
+                    "-reconnect_streamed", "1",
+                    "-reconnect_delay_max", "5",
+                    "-i", &stream_url,
+                    "-vf", &format!("scale={}:{},fps={}", width, height, target_fps),
+                    "-f", "rawvideo",
+                    "-pix_fmt", "rgb24",
+                    "-an",
+                    "-"
+                ])
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null())
+                .spawn()
+                .context("Failed to start FFmpeg for HTTP/YouTube")?
+        };
+        
+        info!("✅ FFmpeg started for video capture");
         
         // Pre-allocate frame buffer (RGB24: 3 bytes per pixel)
         let frame_buffer = vec![0u8; (width * height * 3) as usize];
@@ -379,6 +408,42 @@ impl FFmpegVideoSource {
             frame_count: 0,
             frame_buffer,
         })
+    }
+    
+    /// Extract direct stream URL from YouTube using yt-dlp
+    fn get_youtube_stream_url(youtube_url: &str) -> Result<String> {
+        let output = Command::new("yt-dlp")
+            .args([
+                "-f", "best[ext=mp4][height<=720]/best[ext=mp4]/best[height<=720]/best",
+                "-g",  // Get URL only
+                "--no-warnings",
+                "-q",  // Quiet
+                youtube_url
+            ])
+            .output()
+            .context("Failed to run yt-dlp - is it installed?")?;
+        
+        if output.status.success() {
+            let url = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if !url.is_empty() {
+                info!("✅ YouTube stream URL extracted successfully");
+                return Ok(url);
+            }
+        }
+        
+        // Fallback: try with different format
+        let output = Command::new("yt-dlp")
+            .args(["-g", "--no-warnings", youtube_url])
+            .output()?;
+        
+        if output.status.success() {
+            let url = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if !url.is_empty() {
+                return Ok(url);
+            }
+        }
+        
+        Err(anyhow::anyhow!("Failed to extract YouTube stream URL"))
     }
     
     fn next_frame(&mut self) -> Option<Array4<f32>> {

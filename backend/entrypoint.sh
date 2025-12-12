@@ -87,6 +87,16 @@ php artisan config:clear
 php artisan route:clear
 php artisan view:clear
 
-# 4. Ejecutar el comando principal del contenedor
+# 4. Create storage symlink (for public access to uploaded files)
+echo "🔗 Creando storage link..."
+php artisan storage:link --force 2>/dev/null || true
+
+# 5. Create required directories
+echo "📁 Creando directorios de storage..."
+mkdir -p storage/app/public/satellite/thumbs
+mkdir -p storage/app/public/cad_renders
+chmod -R 775 storage
+
+# 6. Ejecutar el comando principal del contenedor
 echo "✅ Todo listo. Arrancando servidor..."
 exec "$@"

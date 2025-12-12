@@ -1,0 +1,79 @@
+============================================================
+BENCHMARK GO - Video Analytics
+Iterations: 100, Warmup: 10
+Image size: [1920, 1080] -> [640, 640]
+============================================================
+
+[1/7] JPEG Encode/Decode...
+[2/7] Resize...
+[3/7] Color Conversion...
+[4/7] Full Preprocessing Pipeline...
+[5/7] NMS Simulation...
+[6/7] Matrix Operations...
+[7/7] JSON Serialization...
+
+✅ Benchmark completado!
+{
+  "language": "Go",
+  "iterations": 100,
+  "image_size": [
+    1920,
+    1080
+  ],
+  "target_size": [
+    640,
+    640
+  ],
+  "benchmarks": {
+    "color_conversion": {
+      "mean": 102.70191000000001,
+      "std": 12.26925989870212,
+      "min": 81.997,
+      "max": 140.1
+    },
+    "jpeg_codec": {
+      "encode_ms": {
+        "mean": 169.74573999999996,
+        "std": 17.339929826051776,
+        "min": 149.834,
+        "max": 224.093
+      },
+      "decode_ms": {
+        "mean": 125.94626999999993,
+        "std": 14.618378309412437,
+        "min": 104.884,
+        "max": 178.581
+      }
+    },
+    "json_serialization": {
+      "mean": 0.02842,
+      "std": 0.0008506468127254683,
+      "min": 0.028,
+      "max": 0.034
+    },
+    "matrix_ops": {
+      "mean": 61.87161000000001,
+      "std": 8.425266221188505,
+      "min": 54.33,
+      "max": 93.085
+    },
+    "nms": {
+      "mean": 24.64063,
+      "std": 3.3155172647868985,
+      "min": 21.432,
+      "max": 36.726
+    },
+    "preprocessing": {
+      "mean": 31.08171,
+      "std": 6.293561936288541,
+      "min": 21.952,
+      "max": 63.196
+    },
+    "resize": {
+      "mean": 30.650330000000007,
+      "std": 5.4748588238510765,
+      "min": 23.05,
+      "max": 53.498
+    }
+  }
+}

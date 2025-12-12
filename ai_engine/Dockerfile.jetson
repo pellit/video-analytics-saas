@@ -1,0 +1,37 @@
+# ==============================================================================
+# Dockerfile Jetson Nano - FINAL DEFINITIVO
+# Base: l4t-ml (OpenCV CUDA + PyTorch preinstalados)
+# ==============================================================================
+ARG BASE_IMAGE=dustynv/jetson-inference:r32.7.1
+FROM ${BASE_IMAGE}
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV SHELL /bin/bash
+ENV LC_ALL=C.UTF-8
+ENV LANG=C.UTF-8
+ENV PYTHONPATH=/usr/local/python
+
+# 1. Dependencias de sistema básicas (pip ya viene instalado)
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        nano \
+        wget \
+        curl \
+        python3-pip \
+    && rm -rf /var/lib/apt/lists/*
+
+# 2. Dependencias Python del proyecto
+WORKDIR /app
+COPY requirements.jetson.txt /app/requirements.txt
+RUN pip3 install --no-cache-dir --upgrade pip setuptools wheel && \
+    pip3 install --no-cache-dir --ignore-installed PyYAML && \
+    pip3 install --no-cache-dir -r requirements.txt && \
+    if [ -d /opt/jetson-inference/python/training/classification ]; then \
+        cd /opt/jetson-inference/python/training/classification && ./download-models.sh; \
+    fi
+
+# 3. Copiar código
+COPY . /app
+
+# 4. Comando por defecto
+CMD ["uvicorn", "src.inference_api:app", "--host", "0.0.0.0", "--port", "5050", "--workers", "1"]
