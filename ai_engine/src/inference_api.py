@@ -480,6 +480,8 @@ def _run_depthnet_on_video(video_path: str, frame_stride: int, max_frames: int, 
             # FIX: Convertir a uint8 obligatoriamente para OpenCV
             normalized = normalized.astype(np.uint8)
             # -----------------------------------------------
+            # FIX FINAL: Forzar conversión a enteros de 8 bits
+            normalized = normalized.astype(np.uint8)
             heatmap = cv2.applyColorMap(normalized, cv2.COLORMAP_PLASMA)
             _, buffer = cv2.imencode('.jpg', heatmap, [cv2.IMWRITE_JPEG_QUALITY, 85])
             previews.append({
