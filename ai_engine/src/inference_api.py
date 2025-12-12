@@ -35,6 +35,8 @@ from .services.object_analysis import (
     infer_player_orientation,
     infer_contact_side,
     describe_depth_relation,
+    extract_pose_for_bbox,
+    compute_pose_ball_contacts,
 )
 
 try:
@@ -578,6 +580,12 @@ def _analyze_soccer_detections(
     player_frames = 0
     ball_frames = 0
     possession_frames = 0
+    juggling_hits = 0
+    juggling_events: List[Dict[str, Any]] = []
+    last_foot_contact_frame = None
+    hand_contact_frames: List[int] = []
+    hand_contact_events: List[Dict[str, Any]] = []
+    juggling_gap = max(5, frame_stride * 2)
 
     while processed < max_frames:
         ret, frame = cap.read()
@@ -609,6 +617,12 @@ def _analyze_soccer_detections(
                 entry["ball_depth"] = ball_det.get("depth_mean")
             ball_frames += 1
 
+        pose_data = None
+        if player_det:
+            pose_data = extract_pose_for_bbox(frame, player_det.get("bbox"))
+            if pose_data:
+                entry["pose_keypoints"] = pose_data["keypoints"]
+
         if player_det and ball_det:
             distance = _center_distance(player_det["bbox"], ball_det["bbox"])
             entry["player_ball_distance"] = round(distance, 2)
@@ -619,6 +633,37 @@ def _analyze_soccer_detections(
             )
             if distance <= possession_distance_px:
                 possession_frames += 1
+
+            contacts = compute_pose_ball_contacts(pose_data, ball_det["bbox"])
+            if contacts:
+                limb_contacts = []
+                orientation = entry.get("player_orientation", "unknown")
+                for contact in contacts:
+                    viewer_side = _map_viewer_side(contact.get("side"), orientation)
+                    contact_entry = {
+                        **contact,
+                        "viewer_side": viewer_side
+                    }
+                    limb_contacts.append(contact_entry)
+                    if contact["limb_type"] in ("foot", "knee"):
+                        if last_foot_contact_frame is None or frame_idx - last_foot_contact_frame <= juggling_gap:
+                            juggling_hits += 1
+                            juggling_events.append({
+                                "frame": frame_idx,
+                                "limb": contact["limb_name"],
+                                "viewer_side": viewer_side,
+                                "distance_px": contact["distance_px"]
+                            })
+                        last_foot_contact_frame = frame_idx
+                    if contact["limb_type"] == "hand":
+                        hand_contact_frames.append(frame_idx)
+                        hand_contact_events.append({
+                            "frame": frame_idx,
+                            "limb": contact["limb_name"],
+                            "viewer_side": viewer_side,
+                            "distance_px": contact["distance_px"]
+                        })
+                entry["limb_contacts"] = limb_contacts
 
         timeline.append(entry)
         processed += 1
@@ -635,7 +680,11 @@ def _analyze_soccer_detections(
         "timeline": timeline,
         "player_presence_ratio": _ratio(player_frames),
         "ball_presence_ratio": _ratio(ball_frames),
-        "possession_ratio": _ratio(possession_frames)
+        "possession_ratio": _ratio(possession_frames),
+        "juggling_hits": juggling_hits,
+        "hand_contact_frames": hand_contact_frames,
+        "juggling_events": juggling_events,
+        "hand_contact_events": hand_contact_events
     }
 
 
@@ -1493,7 +1542,9 @@ async def analyze_football_video(
             "person_depth_trend": depth_pose["person_depth_trend"],
             "ball_depth_trend": depth_pose["ball_depth_trend"],
             "face_consistent": face_checks["consistent"],
-            "dominant_actions": action_analysis.get("top_labels", [])
+            "dominant_actions": action_analysis.get("top_labels", []),
+            "juggling_hits": detection_summary.get("juggling_hits", 0),
+            "hand_contact_count": len(detection_summary.get("hand_contact_frames", []))
         }
 
         analysis = {
@@ -1501,6 +1552,9 @@ async def analyze_football_video(
             "face_checks": face_checks,
             "detection_frames_analyzed": detection_summary["frames_analyzed"],
             "detection_timeline": detection_summary["timeline"],
+            "juggling_events": detection_summary.get("juggling_events", []),
+            "hand_contact_events": detection_summary.get("hand_contact_events", []),
+            "hand_contact_frames": detection_summary.get("hand_contact_frames", []),
             "depth": {
                 "frames_analyzed": depth_pose["frames_analyzed"],
                 "person_series": depth_pose["person_depth_series"],

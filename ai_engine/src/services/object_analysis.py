@@ -30,6 +30,9 @@ IMAGENET_CANDIDATES = [
     if model.strip()
 ]
 DEPTHNET_MODEL = os.environ.get('DEPTHNET_MODEL', 'resnet18')
+POSENET_MODEL = os.environ.get('POSENET_MODEL', 'resnet18-body')
+POSE_KEYPOINT_SCORE_THRESHOLD = float(os.environ.get('POSE_KEYPOINT_SCORE_THRESHOLD', '0.25'))
+POSE_CONTACT_THRESHOLD_PX = float(os.environ.get('POSE_CONTACT_THRESHOLD_PX', '65'))
 
 _detectnet = None
 _imagenet = None
@@ -38,6 +41,7 @@ _depthnet_runtime = None
 _depthnet_numpy = None
 _depthnet_dims = (0, 0)
 _detectnet_tracker_configured = False
+_posenet = None
 
 
 def _ensure_detectnet():
@@ -101,6 +105,18 @@ def _ensure_depthnet():
         except Exception as exc:
             raise HTTPException(503, f"depthNet no pudo cargar '{DEPTHNET_MODEL}': {exc}")
     return _depthnet_runtime, _depthnet_numpy, _depthnet_dims
+
+
+def _ensure_posenet():
+    global _posenet
+    if _posenet is None:
+        if not JETSON_AVAILABLE:
+            raise HTTPException(503, "jetson-inference no está disponible para poseNet")
+        try:
+            _posenet = jetson.inference.poseNet(POSENET_MODEL)
+        except Exception as exc:
+            raise HTTPException(503, f"poseNet no pudo cargar '{POSENET_MODEL}': {exc}")
+    return _posenet
 
 
 def run_detectnet_inference(img: np.ndarray, confidence: float, nms_threshold: float = 0.4) -> Dict[str, Any]:
@@ -231,3 +247,93 @@ def describe_depth_relation(player_depth: Optional[float], ball_depth: Optional[
     if delta < 0:
         return "ball_closer_to_camera"
     return "ball_farther_from_camera"
+
+
+def extract_pose_for_bbox(frame: np.ndarray, target_bbox: Optional[List[int]]) -> Optional[Dict[str, Any]]:
+    if not JETSON_AVAILABLE:
+        return None
+    try:
+        pose_net = _ensure_posenet()
+    except HTTPException:
+        return None
+    cuda_img = bgr_to_cuda(frame)
+    poses = pose_net.Process(cuda_img, overlay="none")
+    if not poses:
+        return None
+
+    def bbox_center(bbox):
+        return ((bbox[0] + bbox[2]) / 2.0, (bbox[1] + bbox[3]) / 2.0)
+
+    def pose_score(pose):
+        if target_bbox:
+            px = (target_bbox[0] + target_bbox[2]) / 2.0
+            py = (target_bbox[1] + target_bbox[3]) / 2.0
+            cx = (pose.Left + pose.Right) / 2.0
+            cy = (pose.Top + pose.Bottom) / 2.0
+            return -((px - cx) ** 2 + (py - cy) ** 2)
+        return pose.ID
+
+    selected_pose = max(poses, key=pose_score)
+    keypoints = []
+    for kp in selected_pose.Keypoints:
+        confidence = float(getattr(kp, "confidence", getattr(kp, "Confidence", 0.0)))
+        keypoints.append({
+            "id": int(kp.ID),
+            "name": pose_net.GetKeypointName(int(kp.ID)),
+            "x": float(kp.x),
+            "y": float(kp.y),
+            "confidence": confidence
+        })
+    return {
+        "id": int(selected_pose.ID),
+        "bbox": [int(selected_pose.Left), int(selected_pose.Top), int(selected_pose.Right), int(selected_pose.Bottom)],
+        "keypoints": keypoints
+    }
+
+
+LIMB_TYPES = {
+    "left_foot": ("foot", "left"),
+    "right_foot": ("foot", "right"),
+    "left_knee": ("knee", "left"),
+    "right_knee": ("knee", "right"),
+    "left_leg": ("foot", "left"),
+    "right_leg": ("foot", "right"),
+    "left_hand": ("hand", "left"),
+    "right_hand": ("hand", "right"),
+    "left_wrist": ("hand", "left"),
+    "right_wrist": ("hand", "right"),
+    "left_elbow": ("hand", "left"),
+    "right_elbow": ("hand", "right"),
+    "nose": ("head", "center"),
+    "head": ("head", "center"),
+    "left_eye": ("head", "left"),
+    "right_eye": ("head", "right"),
+    "left_ankle": ("foot", "left"),
+    "right_ankle": ("foot", "right")
+}
+
+
+def compute_pose_ball_contacts(pose: Optional[Dict[str, Any]], ball_bbox: Optional[List[int]], threshold_px: float = None) -> List[Dict[str, Any]]:
+    if not pose or not ball_bbox:
+        return []
+    threshold = threshold_px or POSE_CONTACT_THRESHOLD_PX
+    bx = (ball_bbox[0] + ball_bbox[2]) / 2.0
+    by = (ball_bbox[1] + ball_bbox[3]) / 2.0
+    contacts = []
+    for kp in pose.get("keypoints", []):
+        if kp["confidence"] < POSE_KEYPOINT_SCORE_THRESHOLD:
+            continue
+        limb_type = LIMB_TYPES.get(kp["name"])
+        if not limb_type:
+            continue
+        dist = float(np.hypot(bx - kp["x"], by - kp["y"]))
+        if dist > threshold:
+            continue
+        contacts.append({
+            "limb_name": kp["name"],
+            "limb_type": limb_type[0],
+            "side": limb_type[1],
+            "distance_px": round(dist, 2),
+            "keypoint_confidence": kp["confidence"]
+        })
+    return contacts
