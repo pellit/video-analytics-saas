@@ -476,6 +476,7 @@ def _run_depthnet_on_video(video_path: str, frame_stride: int, max_frames: int, 
 
         if len(previews) < preview_frames:
             normalized = cv2.normalize(depth_np, None, 0, 255, cv2.NORM_MINMAX)
+        normalized = normalized.astype(np.uint8)
             normalized = normalized.astype(np.uint8)
             heatmap = cv2.applyColorMap(normalized, cv2.COLORMAP_PLASMA)
             _, buffer = cv2.imencode('.jpg', heatmap, [cv2.IMWRITE_JPEG_QUALITY, 85])
@@ -751,8 +752,8 @@ def actionnet_image(req: ActionImageRequest):
 @app.post("/depthnet/video")
 async def depthnet_video(
     file: UploadFile = File(...),
-    frame_stride: int = Form(5),
-    max_frames: int = Form(120),
+    frame_stride: int = Form(2),
+    max_frames: int = Form(1800),
 ):
     if frame_stride <= 0:
         raise HTTPException(400, "frame_stride must be > 0")
