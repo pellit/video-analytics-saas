@@ -8,6 +8,7 @@ import time
 import math
 import base64
 import tempfile
+import traceback
 import numpy as np
 import cv2
 import requests
@@ -47,6 +48,9 @@ ACTIONNET_MODEL = os.environ.get('ACTIONNET_MODEL', 'resnet18')
 ACTIONNET_LABELS = os.environ.get('ACTIONNET_LABELS')
 DEPTHNET_MODEL = os.environ.get('DEPTHNET_MODEL', 'resnet18')
 POSENET_MODEL = os.environ.get('POSENET_MODEL', 'resnet18-body')
+DETECTNET_MODEL = os.environ.get('DETECTNET_MODEL', 'ssd-mobilenet-v2')
+DETECTNET_THRESHOLD = float(os.environ.get('DETECTNET_THRESHOLD', '0.35'))
+IMAGENET_MODEL = os.environ.get('IMAGENET_MODEL', 'googlenet')
 
 # Models directory
 MODELS_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "../models"))
@@ -111,6 +115,8 @@ superres_engine = None
 superres_scale = 2
 superres_model_path = None
 face_detector_backend = None
+detectnet = None
+imagenet = None
 
 HIT_DETECT_MODEL_OVERRIDE = os.environ.get('HIT_DETECT_MODEL_PATH')
 
@@ -346,6 +352,31 @@ def _load_face_detector():
             face_detector = detector
             face_detector_backend = "cascade"
     return face_detector, face_detector_backend
+
+
+def _load_detectnet():
+    global detectnet
+    if detectnet is None:
+        if not JETSON_INFERENCE_AVAILABLE:
+            raise HTTPException(503, "jetson-inference no está disponible para detectNet")
+        try:
+            detectnet = jetson.inference.detectNet(DETECTNET_MODEL, threshold=DETECTNET_THRESHOLD)
+        except Exception as exc:
+            manifest_hint = JETSON_MODELS_MANIFEST or "networks/models.json"
+            raise HTTPException(503, f"detectNet no pudo cargar '{DETECTNET_MODEL}'. Verifica {manifest_hint}. Detalle: {exc}")
+    return detectnet
+
+
+def _load_imagenet():
+    global imagenet
+    if imagenet is None:
+        if not JETSON_INFERENCE_AVAILABLE:
+            raise HTTPException(503, "jetson-inference no está disponible para imageNet")
+        try:
+            imagenet = jetson.inference.imageNet(IMAGENET_MODEL)
+        except Exception as exc:
+            raise HTTPException(503, f"imageNet no pudo cargar '{IMAGENET_MODEL}': {exc}")
+    return imagenet
 
 
 def _load_face_recognizer():
@@ -997,15 +1028,21 @@ def _load_hit_detection_model():
                 "hit_detect.onnx no está disponible en el dispositivo. "
                 "Configura HIT_DETECT_MODEL_PATH o copia el archivo a ai_engine/models/."
             )
+        print(f"[HitDetect] Loading ONNX model from {model_path}")
         try:
             hit_detection_net = cv2.dnn.readNetFromONNX(model_path)
             hit_detection_net.setPreferableBackend(cv2.dnn.DNN_BACKEND_CUDA)
             hit_detection_net.setPreferableTarget(cv2.dnn.DNN_TARGET_CUDA)
-        except Exception:
-            # Fallback a CPU silencioso
-            hit_detection_net = cv2.dnn.readNetFromONNX(model_path)
-            hit_detection_net.setPreferableBackend(cv2.dnn.DNN_BACKEND_DEFAULT)
-            hit_detection_net.setPreferableTarget(cv2.dnn.DNN_TARGET_CPU)
+        except Exception as exc_gpu:
+            print(f"[HitDetect] CUDA backend failed: {exc_gpu}. Falling back to CPU.")
+            traceback.print_exc()
+            try:
+                hit_detection_net = cv2.dnn.readNetFromONNX(model_path)
+                hit_detection_net.setPreferableBackend(cv2.dnn.DNN_BACKEND_DEFAULT)
+                hit_detection_net.setPreferableTarget(cv2.dnn.DNN_TARGET_CPU)
+            except Exception as exc_cpu:
+                traceback.print_exc()
+                raise HTTPException(503, f"No se pudo inicializar hit_detect.onnx: {exc_cpu}")
     return hit_detection_net
 
 
@@ -1023,6 +1060,7 @@ def _run_hit_detection_on_video(
     frame_idx = 0
     processed = 0
     detections = []
+    debug_logs = []
 
     while processed < max_frames:
         ret, frame = cap.read()
@@ -1036,7 +1074,15 @@ def _run_hit_detection_on_video(
         resized = cv2.resize(frame, (224, 224))
         blob = cv2.dnn.blobFromImage(resized, scalefactor=1 / 255.0, size=(224, 224), swapRB=True, crop=False)
         net.setInput(blob)
-        output = net.forward()
+        try:
+            output = net.forward()
+        except Exception as exc:
+            error_msg = f"Hit detection forward failed on frame {frame_idx}: {exc}"
+            print(f"[HitDetect] {error_msg}")
+            traceback.print_exc()
+            cap.release()
+            raise HTTPException(500, error_msg)
+
         flat = output.flatten().tolist()
         if not flat:
             probability = 0.0
@@ -1051,6 +1097,13 @@ def _run_hit_detection_on_video(
             "hit_probability": round(probability, 4),
             "raw_output": flat
         })
+        if len(debug_logs) < 10:
+            debug_logs.append({
+                "frame": frame_idx,
+                "blob_shape": list(blob.shape),
+                "output_shape": list(output.shape) if hasattr(output, "shape") else None,
+                "hit_probability": round(probability, 4)
+            })
 
         processed += 1
         frame_idx += 1
@@ -1064,7 +1117,8 @@ def _run_hit_detection_on_video(
         "detections": detections,
         "hits_detected": len(hits),
         "hit_threshold": hit_threshold,
-        "hit_frames": [det["frame"] for det in hits]
+        "hit_frames": [det["frame"] for det in hits],
+        "debug_logs": debug_logs
     }
 
 
