@@ -68,13 +68,23 @@ def _compute_contact_labels(
     pose_model,
     max_distance_px: int = 40
 ) -> List[Dict[str, Any]]:
+    def _kp_conf(keypoint) -> float:
+        return float(
+            getattr(
+                keypoint,
+                "confidence",
+                getattr(keypoint, "Confidence", 0.0)
+            )
+        )
+
     contacts = []
     if ball_center is None or poses is None or pose_model is None:
         return contacts
     bx, by = ball_center
     for pose in poses:
         for keypoint in pose.Keypoints:
-            if keypoint.confidence < 0.2:
+            confidence = _kp_conf(keypoint)
+            if confidence < 0.2:
                 continue
             dist = math.hypot(bx - keypoint.x, by - keypoint.y)
             if dist <= max_distance_px:
@@ -82,7 +92,7 @@ def _compute_contact_labels(
                 contacts.append({
                     "label": label,
                     "distance_px": round(dist, 2),
-                    "confidence": float(keypoint.confidence)
+                    "confidence": confidence
                 })
     return contacts
 

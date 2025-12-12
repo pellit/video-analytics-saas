@@ -93,23 +93,40 @@ HIT_DETECTION_MODEL_PATH = _resolve_hit_model_path()
 
 
 def _resolve_superres_model_path():
-    candidates = [
-        SUPERRES_MODEL_PATH,
+    """Locate super-resolution weights, preferring TensorFlow (.pb) exports."""
+
+    def _append_unique(seq: List[str], path: Optional[str]):
+        if path and path not in seq:
+            seq.append(path)
+
+    candidates: List[str] = []
+    _append_unique(candidates, SUPERRES_MODEL_PATH)
+
+    preferred = [
+        os.path.join(SUPERRES_MODEL_DIR, 'superres.pb'),
+        os.path.join(SUPERRES_MODEL_DIR, 'super_resolution_bsd500.pb'),
+        os.path.join(SUPERRES_MODEL_DIR, 'super_resolution.pb'),
+        os.path.join(MODELS_DIR, 'superres.pb'),
+        os.path.join(MODELS_DIR, 'super_resolution_bsd500.pb'),
+        os.path.join(MODELS_DIR, 'super_resolution.pb'),
+    ]
+    fallbacks = [
         os.path.join(SUPERRES_MODEL_DIR, 'super_resolution.onnx'),
         os.path.join(SUPERRES_MODEL_DIR, 'model.onnx'),
         os.path.join(SUPERRES_MODEL_DIR, 'superres.onnx'),
-        os.path.join(SUPERRES_MODEL_DIR, 'superres.pb'),
         os.path.join(MODELS_DIR, 'super_resolution.onnx'),
         os.path.join(MODELS_DIR, 'superres.onnx'),
-        os.path.join(MODELS_DIR, 'superres.pb'),
     ]
 
-    # If directory exists, also scan for first .onnx/.pb file
+    for path in preferred + fallbacks:
+        _append_unique(candidates, path)
+
     if SUPERRES_MODEL_DIR and os.path.isdir(SUPERRES_MODEL_DIR):
-        for filename in sorted(os.listdir(SUPERRES_MODEL_DIR)):
-            if filename.lower().endswith(('.onnx', '.pb')):
-                candidates.insert(1, os.path.join(SUPERRES_MODEL_DIR, filename))
-                break
+        dir_files = sorted(os.listdir(SUPERRES_MODEL_DIR))
+        for ext in ('.pb', '.onnx'):
+            for filename in dir_files:
+                if filename.lower().endswith(ext):
+                    _append_unique(candidates, os.path.join(SUPERRES_MODEL_DIR, filename))
 
     for candidate in candidates:
         if candidate and os.path.exists(candidate):
@@ -301,6 +318,13 @@ def _load_superres_engine():
     model_path = _resolve_superres_model_path()
     if not model_path or not os.path.exists(model_path):
         raise HTTPException(503, "No se encontró el modelo de super resolución. Configura SUPERRES_MODEL_PATH o verifica data/networks/Super-Resolution-BSD500.")
+    _, ext = os.path.splitext(model_path)
+    if ext.lower() == '.onnx':
+        raise HTTPException(
+            503,
+            f"El modelo seleccionado ({model_path}) es ONNX y cv2.dnn_superres solo soporta pesos TensorFlow (.pb). "
+            "Descarga/convierte la versión .pb o apunta SUPERRES_MODEL_PATH a un archivo .pb válido."
+        )
     try:
         sr = DnnSuperResImpl_create()
         sr.readModel(model_path)
