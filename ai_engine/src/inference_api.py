@@ -46,14 +46,15 @@ ACTIONNET_MODEL = os.environ.get('ACTIONNET_MODEL', 'resnet18')
 ACTIONNET_LABELS = os.environ.get('ACTIONNET_LABELS')
 DEPTHNET_MODEL = os.environ.get('DEPTHNET_MODEL', 'resnet18')
 POSENET_MODEL = os.environ.get('POSENET_MODEL', 'resnet18-body')
-FACE_DETECT_MODEL_PATH = os.environ.get('FACE_DETECT_MODEL_PATH', os.path.join(MODELS_DIR, 'face_detection_yunet_2023mar.onnx'))
-FACE_RECOGNITION_MODEL_PATH = os.environ.get('FACE_RECOGNITION_MODEL_PATH', os.path.join(MODELS_DIR, 'face_recognition_sface_2021dec.onnx'))
-SUPERRES_MODEL_PATH = os.environ.get('SUPERRES_MODEL_PATH')
-SUPERRES_MODEL_DIR = os.environ.get('SUPERRES_MODEL_DIR', '/usr/local/bin/networks/Super-Resolution-BSD500')
 
 # Models directory
 MODELS_DIR = os.path.join(os.path.dirname(__file__), "../models")
 os.makedirs(MODELS_DIR, exist_ok=True)
+
+FACE_DETECT_MODEL_PATH = os.environ.get('FACE_DETECT_MODEL_PATH', os.path.join(MODELS_DIR, 'face_detection_yunet_2023mar.onnx'))
+FACE_RECOGNITION_MODEL_PATH = os.environ.get('FACE_RECOGNITION_MODEL_PATH', os.path.join(MODELS_DIR, 'face_recognition_sface_2021dec.onnx'))
+SUPERRES_MODEL_PATH = os.environ.get('SUPERRES_MODEL_PATH')
+SUPERRES_MODEL_DIR = os.environ.get('SUPERRES_MODEL_DIR', '/usr/local/bin/networks/Super-Resolution-BSD500')
 
 # Global model instance
 net = None
