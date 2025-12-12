@@ -452,7 +452,16 @@ def _run_depthnet_on_video(video_path: str, frame_stride: int, max_frames: int, 
             continue
 
         cuda_img = _cuda_from_bgr(frame)
-        depth_img = net.Process(cuda_img, disparity=False)
+        # --- CORRECCIÓN DEPTHNET ---
+        # 1. Crear buffer de salida visual si no existe
+        if not hasattr(net, 'overlay'):
+            net.overlay = jetson.utils.cudaAllocMapped(width=cuda_img.width, height=cuda_img.height, format=cuda_img.format)
+        # 2. Procesar (Calcular profundidad)
+        net.Process(cuda_img)
+        # 3. Visualizar (Pintar el mapa de profundidad en el buffer)
+        net.Visualize(net.overlay)
+        depth_img = net.overlay
+        # ---------------------------
         depth_np = jetson.utils.cudaToNumpy(depth_img, width, height, 1).squeeze()
 
         summaries.append({
@@ -645,20 +654,44 @@ async def detect_video(
 @app.post("/detect/hit/video")
 async def detect_hit_video(
     file: UploadFile = File(...),
-    frame_stride: int = Form(4),
-    max_frames: int = Form(120),
-    hit_threshold: float = Form(0.6)
+    frame_stride: int = Form(None),
+    max_frames: int = Form(None),
+    hit_threshold: float = Form(None)
 ):
-    if frame_stride <= 0:
-        raise HTTPException(400, "frame_stride must be > 0")
-    if max_frames <= 0:
-        raise HTTPException(400, "max_frames must be > 0")
-    if hit_threshold < 0 or hit_threshold > 1:
-        raise HTTPException(400, "hit_threshold must be between 0 and 1")
-
     tmp_path = _save_upload_to_temp(file)
     try:
-        duration = _ensure_video_duration(tmp_path)
+        # Obtener duración y FPS del video
+        cap = cv2.VideoCapture(tmp_path)
+        if not cap.isOpened():
+            raise HTTPException(400, "Unable to open uploaded video")
+        fps = cap.get(cv2.CAP_PROP_FPS)
+        if not fps or fps <= 0:
+            fps = 30  # Valor por defecto si no se puede leer
+        duration = cap.get(cv2.CAP_PROP_FRAME_COUNT) / fps if fps > 0 else 0
+        cap.release()
+
+        # Detectar si CUDA está habilitada
+        cuda_enabled = False
+        try:
+            cuda_enabled = cv2.cuda.getCudaEnabledDeviceCount() > 0
+        except Exception:
+            cuda_enabled = False
+
+        # Asignar valores por defecto si no se especifican
+        if frame_stride is None:
+            frame_stride = 1 if cuda_enabled else 3
+        if hit_threshold is None:
+            hit_threshold = 0.4
+        if max_frames is None:
+            max_frames = int(fps * 60)  # 1 minuto
+
+        if frame_stride <= 0:
+            raise HTTPException(400, "frame_stride must be > 0")
+        if max_frames <= 0:
+            raise HTTPException(400, "max_frames must be > 0")
+        if hit_threshold < 0 or hit_threshold > 1:
+            raise HTTPException(400, "hit_threshold must be between 0 and 1")
+
         results = _run_hit_detection_on_video(tmp_path, frame_stride, max_frames, hit_threshold)
         return {
             "success": True,
