@@ -326,14 +326,7 @@ def _run_actionnet_on_video(video_path: str, frame_stride: int, top_k: int):
             "confidence": float(confidence)
         })
         processed += 1
-        frame_idx += 1
-
-    cap.release()
-
-    aggregates = {}
-    for pred in predictions:
-        label = pred["label"]
-        aggregates.setdefault(label, {"count": 0, "max_confidence": 0.0})
+        frame_idx +=  1bel, {"count": 0, "max_confidence": 0.0})
         aggregates[label]["count"] += 1
         aggregates[label]["max_confidence"] = max(aggregates[label]["max_confidence"], pred["confidence"])
 
