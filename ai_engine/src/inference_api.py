@@ -28,6 +28,14 @@ except ImportError:
 from .services.jetson_env import JETSON_MODELS_MANIFEST
 from .services.video_utils import bgr_to_cuda
 from .services.depth_pose import run_depthnet_video, analyze_depth_pose_video as depth_pose_service_analyze
+from .services.object_analysis import (
+    run_detectnet_inference,
+    classify_frame_with_imagenet,
+    annotate_depth_for_detections,
+    infer_player_orientation,
+    infer_contact_side,
+    describe_depth_relation,
+)
 
 try:
     import jetson.inference
@@ -48,9 +56,6 @@ ACTIONNET_MODEL = os.environ.get('ACTIONNET_MODEL', 'resnet18')
 ACTIONNET_LABELS = os.environ.get('ACTIONNET_LABELS')
 DEPTHNET_MODEL = os.environ.get('DEPTHNET_MODEL', 'resnet18')
 POSENET_MODEL = os.environ.get('POSENET_MODEL', 'resnet18-body')
-DETECTNET_MODEL = os.environ.get('DETECTNET_MODEL', 'ssd-mobilenet-v2')
-DETECTNET_THRESHOLD = float(os.environ.get('DETECTNET_THRESHOLD', '0.35'))
-IMAGENET_MODEL = os.environ.get('IMAGENET_MODEL', 'googlenet')
 
 # Models directory
 MODELS_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "../models"))
@@ -115,8 +120,6 @@ superres_engine = None
 superres_scale = 2
 superres_model_path = None
 face_detector_backend = None
-detectnet = None
-imagenet = None
 
 HIT_DETECT_MODEL_OVERRIDE = os.environ.get('HIT_DETECT_MODEL_PATH')
 
@@ -354,29 +357,6 @@ def _load_face_detector():
     return face_detector, face_detector_backend
 
 
-def _load_detectnet():
-    global detectnet
-    if detectnet is None:
-        if not JETSON_INFERENCE_AVAILABLE:
-            raise HTTPException(503, "jetson-inference no está disponible para detectNet")
-        try:
-            detectnet = jetson.inference.detectNet(DETECTNET_MODEL, threshold=DETECTNET_THRESHOLD)
-        except Exception as exc:
-            manifest_hint = JETSON_MODELS_MANIFEST or "networks/models.json"
-            raise HTTPException(503, f"detectNet no pudo cargar '{DETECTNET_MODEL}'. Verifica {manifest_hint}. Detalle: {exc}")
-    return detectnet
-
-
-def _load_imagenet():
-    global imagenet
-    if imagenet is None:
-        if not JETSON_INFERENCE_AVAILABLE:
-            raise HTTPException(503, "jetson-inference no está disponible para imageNet")
-        try:
-            imagenet = jetson.inference.imageNet(IMAGENET_MODEL)
-        except Exception as exc:
-            raise HTTPException(503, f"imageNet no pudo cargar '{IMAGENET_MODEL}': {exc}")
-    return imagenet
 
 
 def _load_face_recognizer():
@@ -556,55 +536,8 @@ def _get_video_metadata(path: str) -> Dict[str, float]:
 
 
 def _run_inference(img: np.ndarray, confidence: float, nms_threshold: float) -> dict:
-    """Run YOLO inference on a decoded frame."""
-    global net
-    if net is None:
-        raise HTTPException(503, "Model not loaded")
-
-    height, width = img.shape[:2]
-    start = time.perf_counter()
-    blob = cv2.dnn.blobFromImage(img, 1 / 255.0, (416, 416), (0, 0, 0), swapRB=True, crop=False)
-    net.setInput(blob)
-    outs = net.forward(output_layers)
-
-    class_ids = []
-    confidences = []
-    boxes = []
-
-    for out in outs:
-        for detection in out:
-            scores = detection[5:]
-            class_id = np.argmax(scores)
-            conf = scores[class_id]
-            if conf > confidence:
-                cx = int(detection[0] * width)
-                cy = int(detection[1] * height)
-                w = int(detection[2] * width)
-                h = int(detection[3] * height)
-                x = int(cx - w / 2)
-                y = int(cy - h / 2)
-                boxes.append([x, y, w, h])
-                confidences.append(float(conf))
-                class_ids.append(class_id)
-
-    indices = cv2.dnn.NMSBoxes(boxes, confidences, confidence, nms_threshold)
-    detections = []
-    if len(indices) > 0:
-        for i in indices.flatten():
-            x, y, w, h = boxes[i]
-            detections.append(
-                {
-                    "class_name": str(classes[class_ids[i]]),
-                    "confidence": round(confidences[i], 2),
-                    "bbox": [x, y, x + w, y + h],
-                }
-            )
-
-    return {
-        "success": True,
-        "detections": detections,
-        "time_ms": round((time.perf_counter() - start) * 1000, 2),
-    }
+    """Wrapper around detectNet inference service (nms parameter unused but kept for signature compatibility)."""
+    return run_detectnet_inference(img, confidence, nms_threshold)
 
 
 def _select_best_detection(detections: List[Dict[str, Any]], label_set: set) -> Optional[Dict[str, Any]]:
@@ -656,20 +589,34 @@ def _analyze_soccer_detections(
 
         inference = _run_inference(frame, confidence, nms_threshold)
         detections = inference.get("detections", [])
+        depth_context = annotate_depth_for_detections(frame, detections)
         player_det = _select_best_detection(detections, {"person"})
         ball_det = _select_best_detection(detections, SOCCER_BALL_LABELS)
 
         entry: Dict[str, Any] = {"frame": frame_idx}
+        classification = classify_frame_with_imagenet(frame)
+        if classification:
+            entry["scene_classification"] = classification
         if player_det:
             entry["player"] = player_det
+            if depth_context:
+                entry["player_depth"] = player_det.get("depth_mean")
+                entry["player_orientation"] = infer_player_orientation(depth_context, player_det["bbox"])
             player_frames += 1
         if ball_det:
             entry["ball"] = ball_det
+            if depth_context:
+                entry["ball_depth"] = ball_det.get("depth_mean")
             ball_frames += 1
 
         if player_det and ball_det:
             distance = _center_distance(player_det["bbox"], ball_det["bbox"])
             entry["player_ball_distance"] = round(distance, 2)
+            entry["contact_side"] = infer_contact_side(player_det["bbox"], ball_det["bbox"])
+            entry["depth_relation"] = describe_depth_relation(
+                player_det.get("depth_mean"),
+                ball_det.get("depth_mean")
+            )
             if distance <= possession_distance_px:
                 possession_frames += 1
 
