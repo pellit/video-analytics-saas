@@ -275,11 +275,13 @@ def analyze_depth_pose_video(
     cap.release()
 
     def _analyze_trend(series):
-        if len(series) < 2:
+        if not series:
             return "unknown"
         values = [item["depth"] for item in series if item["depth"] is not None]
-        if len(values) < 2:
+        if not values:
             return "unknown"
+        if len(values) == 1:
+            return "stable"
         if values[-1] < values[0] - 0.1:
             return "approaching"
         if values[-1] > values[0] + 0.1:

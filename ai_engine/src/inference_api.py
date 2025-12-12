@@ -1073,56 +1073,98 @@ def _detect_faces_with_embeddings(image: np.ndarray, score_threshold: float = 0.
     recognizer, recognizer_backend = _load_face_recognizer()
     h, w = image.shape[:2]
     detections: List[Dict[str, Any]] = []
+    multiscale_factors = [1.0, 0.85, 0.7, 0.55]
+
+    def _scale_image(src: np.ndarray, scale: float) -> np.ndarray:
+        if scale == 1.0:
+            return src
+        new_w = max(1, int(src.shape[1] * scale))
+        new_h = max(1, int(src.shape[0] * scale))
+        return cv2.resize(src, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
 
     if backend == "jetson_detectnet":
-        cuda_img = bgr_to_cuda(image)
-        raw = detector.Detect(cuda_img, overlay="none")
-        for det in raw:
-            x1 = max(0, int(det.Left))
-            y1 = max(0, int(det.Top))
-            x2 = min(w, int(det.Right))
-            y2 = min(h, int(det.Bottom))
-            detections.append({
-                "bbox": [x1, y1, x2, y2],
-                "score": float(det.Confidence),
-                "landmarks": None,
-                "raw": None
-            })
+        for scale in multiscale_factors:
+            scaled_img = _scale_image(image, scale)
+            cuda_img = bgr_to_cuda(scaled_img)
+            raw = detector.Detect(cuda_img, overlay="none")
+            if raw:
+                inv_scale = 1.0 / scale
+                for det in raw:
+                    x1 = max(0, int(det.Left * inv_scale))
+                    y1 = max(0, int(det.Top * inv_scale))
+                    x2 = min(w, int(det.Right * inv_scale))
+                    y2 = min(h, int(det.Bottom * inv_scale))
+                    detections.append({
+                        "bbox": [x1, y1, x2, y2],
+                        "score": float(det.Confidence),
+                        "landmarks": None,
+                        "raw": None
+                    })
+                if detections:
+                    break
     elif backend == "yunet":
-        detector.setInputSize((w, h))
-        _, raw = detector.detect(image)
-        if raw is not None:
+        for scale in multiscale_factors:
+            scaled_img = _scale_image(image, scale)
+            scaled_h, scaled_w = scaled_img.shape[:2]
+            detector.setInputSize((scaled_w, scaled_h))
+            _, raw = detector.detect(scaled_img)
+            if raw is None or len(raw) == 0:
+                continue
+            inv_scale = 1.0 / scale
             for face in raw:
                 x, y, box_w, box_h = face[:4]
-                bbox = [
-                    max(0, int(x)),
-                    max(0, int(y)),
-                    min(w, int(x + box_w)),
-                    min(h, int(y + box_h))
-                ]
-                landmarks = face[4:14].tolist() if len(face) >= 14 else None
+                x1 = max(0, int(x * inv_scale))
+                y1 = max(0, int(y * inv_scale))
+                x2 = min(w, int((x + box_w) * inv_scale))
+                y2 = min(h, int((y + box_h) * inv_scale))
+                landmarks = None
+                raw_face = None
+                if len(face) >= 14:
+                    lm = (face[4:14] * inv_scale).tolist()
+                    landmarks = lm
+                    raw_face = face.copy()
+                    raw_face = raw_face.astype(np.float32)
+                    raw_face[0] = x1
+                    raw_face[1] = y1
+                    raw_face[2] = max(0, x2 - x1)
+                    raw_face[3] = max(0, y2 - y1)
+                    raw_face[4:14] = face[4:14] * inv_scale
+                else:
+                    raw_face = None
                 detections.append({
-                    "bbox": bbox,
+                    "bbox": [x1, y1, x2, y2],
                     "score": float(face[4]) if len(face) > 4 else 0.0,
                     "landmarks": landmarks,
-                    "raw": face
+                    "raw": raw_face
                 })
+            if detections:
+                break
     else:
-        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-        raw = detector.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(64, 64))
-        for (x, y, box_w, box_h) in raw:
-            bbox = [
-                max(0, int(x)),
-                max(0, int(y)),
-                min(w, int(x + box_w)),
-                min(h, int(y + box_h))
-            ]
-            detections.append({
-                "bbox": bbox,
-                "score": 1.0,
-                "landmarks": None,
-                "raw": None
-            })
+        gray_original = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        for scale in multiscale_factors:
+            scaled_gray = _scale_image(gray_original, scale)
+            raw = detector.detectMultiScale(
+                scaled_gray,
+                scaleFactor=1.1,
+                minNeighbors=5,
+                minSize=(48, 48)
+            )
+            if len(raw) == 0:
+                continue
+            inv_scale = 1.0 / scale
+            for (x, y, box_w, box_h) in raw:
+                x1 = max(0, int(x * inv_scale))
+                y1 = max(0, int(y * inv_scale))
+                x2 = min(w, int((x + box_w) * inv_scale))
+                y2 = min(h, int((y + box_h) * inv_scale))
+                detections.append({
+                    "bbox": [x1, y1, x2, y2],
+                    "score": 1.0,
+                    "landmarks": None,
+                    "raw": None
+                })
+            if detections:
+                break
 
     results = []
     for det in detections:
@@ -1147,9 +1189,10 @@ def _detect_faces_with_embeddings(image: np.ndarray, score_threshold: float = 0.
         if not embedding:
             continue
 
+        bbox_int = [int(max(0, min(w, bbox[0]))), int(max(0, min(h, bbox[1]))), int(max(0, min(w, bbox[2]))), int(max(0, min(h, bbox[3])))]
         results.append({
             "face_id": str(uuid4()),
-            "bbox": bbox,
+            "bbox": bbox_int,
             "score": det["score"],
             "embedding": embedding
         })
