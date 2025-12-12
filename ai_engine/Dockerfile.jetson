@@ -1,7 +1,6 @@
 # ==============================================================================
-# Dockerfile Jetson Nano - CON OPENCV 4.10 + CUDA
-# Base: l4t-ml (Tiene drivers de GPU necesarios)
-# Requirements.txt: Asegúrate de ELIMINAR opencv-python o opencv-python-headless de tu archivo requirements.jetson.txt
+# Dockerfile Jetson Nano - FINAL (OpenCV 4.5.5 + CUDA)
+# Base: l4t-ml (OpenCV CUDA pre-instalado, pero lo recompilamos para full features)
 # ==============================================================================
 ARG BASE_IMAGE=dustynv/jetson-inference:r32.7.1
 FROM ${BASE_IMAGE}
@@ -10,7 +9,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 ENV SHELL /bin/bash
 ENV LC_ALL=C.UTF-8
 ENV LANG=C.UTF-8
-# Aseguramos que Python encuentre nuestras librerías compiladas
+# Aseguramos que Python encuentre nuestras librerías compiladas en /usr/local
 ENV PYTHONPATH=/usr/local/lib/python3.6/site-packages:/usr/local/lib/python3.6/dist-packages:/usr/local/python:/app/ai_engine/src
 
 # ------------------------------------------------------------------------------
@@ -30,20 +29,20 @@ RUN apt-get update && \
     rm -rf /var/lib/apt/lists/*
 
 # ------------------------------------------------------------------------------
-# 2. Compilar OpenCV 4.10 con soporte CUDA (Arquitectura 5.3 para Nano)
+# 2. Compilar OpenCV 4.5.5 (La versión compatible con Jetson Nano / CUDA 10.2)
 # ------------------------------------------------------------------------------
 WORKDIR /tmp
 
-# Eliminar versiones viejas para evitar conflictos
+# Eliminar versiones viejas para evitar conflictos de importación
 RUN apt-get remove -y python3-opencv || true && \
     rm -rf /usr/lib/python3.6/dist-packages/cv2 && \
     rm -rf /usr/local/lib/python3.6/dist-packages/cv2
 
-# Descargar Fuentes
-RUN git clone --branch 4.10.0 --depth 1 https://github.com/opencv/opencv.git && \
-    git clone --branch 4.10.0 --depth 1 https://github.com/opencv/opencv_contrib.git
+# Descargar Fuentes (Versión 4.5.5 para evitar error de 'cuda/std/tuple')
+RUN git clone --branch 4.5.5 --depth 1 https://github.com/opencv/opencv.git && \
+    git clone --branch 4.5.5 --depth 1 https://github.com/opencv/opencv_contrib.git
 
-# Configurar CMake
+# Configurar CMake con optimizaciones para Nano (Arch 5.3)
 RUN mkdir -p /tmp/opencv/build && cd /tmp/opencv/build && \
     cmake -D CMAKE_BUILD_TYPE=Release \
           -D CMAKE_INSTALL_PREFIX=/usr/local \
@@ -70,8 +69,7 @@ RUN mkdir -p /tmp/opencv/build && cd /tmp/opencv/build && \
           ..
 
 # Compilar e Instalar
-# IMPORTANTE: Usamos -j2 para evitar que la Jetson se quede sin RAM y colapse.
-# Si tienes mucha SWAP (6GB+), puedes arriesgarte con -j4.
+# IMPORTANTE: Usamos -j2 para evitar que la Jetson se quede sin RAM.
 RUN cd /tmp/opencv/build && \
     make -j2 && \
     make install && \
@@ -85,32 +83,30 @@ RUN cd /tmp/opencv/build && \
 WORKDIR /app
 COPY requirements.jetson.txt /app/requirements.txt
 
-# Instalamos requirements PERO ignoramos opencv-python si está en la lista
-# para no romper la versión compilada con CUDA.
+# Instalamos requirements filtrando opencv-python para no romper la compilación manual
 RUN pip3 install --no-cache-dir --upgrade pip setuptools wheel && \
     pip3 install --no-cache-dir --ignore-installed PyYAML && \
-    # Filtramos opencv de requirements.txt al vuelo
     cat requirements.txt | grep -v "opencv-python" > requirements_filtered.txt && \
     pip3 install --no-cache-dir -r requirements_filtered.txt && \
-    # Descargar modelos de jetson-inference si corresponde
+    # Descargar modelos base de jetson-inference si es necesario
     if [ -d /opt/jetson-inference/python/training/classification ]; then \
         cd /opt/jetson-inference/python/training/classification && ./download-models.sh; \
     fi
 
 # ------------------------------------------------------------------------------
-# 4. Descarga de Modelos (Face + Super Resolution .pb)
+# 4. Descarga de Modelos Específicos (Face + Super Resolution)
 # ------------------------------------------------------------------------------
-# Creamos estructura y descargamos TODO lo necesario
 RUN mkdir -p /app/models && \
-    # A. Modelos Faciales
+    # A. Modelos Faciales (YuNet y SFace)
     curl -L -o /app/models/face_detection_yunet_2023mar.onnx https://github.com/opencv/opencv_zoo/raw/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx && \
     curl -L -o /app/models/face_recognition_sface_2021dec.onnx https://github.com/opencv/opencv_zoo/raw/main/models/face_recognition_sface/face_recognition_sface_2021dec.onnx && \
     # B. Modelos Super Resolución (.pb para OpenCV dnn_superres)
+    # Descargamos ESPCN y FSRCNN que son rápidos para la Jetson
     curl -L -o /app/models/ESPCN_x4.pb https://github.com/Saafke/EDSR_Tensorflow/raw/master/models/ESPCN_x4.pb && \
     curl -L -o /app/models/FSRCNN_x4.pb https://github.com/Saafke/FSRCNN_Tensorflow/raw/master/models/FSRCNN_x4.pb
 
 # ------------------------------------------------------------------------------
-# 5. Copiar código fuente
+# 5. Copiar código fuente y configuración final
 # ------------------------------------------------------------------------------
 COPY . /app
 
