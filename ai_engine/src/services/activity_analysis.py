@@ -3,6 +3,7 @@ from collections import defaultdict, Counter
 from typing import Dict, Any, List, Optional, Iterable, Set
 
 import cv2
+import numpy as np
 from fastapi import HTTPException
 
 from .object_analysis import (
