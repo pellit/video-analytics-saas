@@ -24,6 +24,7 @@ services:
       - REDIS_HOST=redis
       - DB_WAIT_MAX_ATTEMPTS=120
       - DB_WAIT_SLEEP=3
+      - ENTRYPOINT_RUN_MIGRATIONS=false
     volumes:
       - app_storage:/var/www/html/storage  # Volumen compartido con AI Worker
     depends_on:
