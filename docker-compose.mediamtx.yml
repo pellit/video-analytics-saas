@@ -37,11 +37,12 @@ services:
       - redis
     labels:
       - "traefik.enable=true"
-      - "traefik.http.routers.api.rule=Host(`dev.pellit.com.ar`) && PathPrefix(`/api`)"
-      - "traefik.http.routers.api.entrypoints=websecure"
-      - "traefik.http.routers.api.tls=true"
-      - "traefik.http.routers.api.tls.certresolver=letsencrypt"
-      - "traefik.http.services.api.loadbalancer.server.port=8000"
+      - "traefik.docker.network=video-analytics-saas_saas_net"
+      - "traefik.http.routers.saas_api.rule=Host(`dev.pellit.com.ar`) && PathPrefix(`/api`)"
+      - "traefik.http.routers.saas_api.entrypoints=websecure"
+      - "traefik.http.routers.saas_api.tls=true"
+      - "traefik.http.routers.saas_api.tls.certresolver=letsencrypt"
+      - "traefik.http.services.saas_api.loadbalancer.server.port=8000"
 
   # --- FRONTEND (Vue.js) ---
   frontend:
