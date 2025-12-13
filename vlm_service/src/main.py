@@ -66,6 +66,16 @@ app.add_middleware(
 )
 
 # ============================================================================
+# --- NUEVO: MONTAJE DE GRADIO UI ---
+# ============================================================================
+# Creamos la UI pasando la función que obtiene tu analyzer singleton
+vlm_ui = create_ui(get_vlm_analyzer)
+
+# Montamos Gradio en la ruta /ui
+# Ahora podrás acceder a http://localhost:5100/ui
+app = gr.mount_gradio_app(app, vlm_ui, path="/ui")
+
+# ============================================================================
 # Global State
 # ============================================================================
 

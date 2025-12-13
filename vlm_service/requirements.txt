@@ -24,3 +24,4 @@ torchvision==0.17.0+cpu
 transformers==4.38.0
 einops>=0.7.0
 accelerate>=0.25.0
+gradio
