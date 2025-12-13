@@ -29,6 +29,7 @@ from .services.activity_analysis import ActivityAnalyzer, SOCCER_BALL_LABELS, GY
 from .services.actionnet_service import ActionNetService, JETSON_INFERENCE_AVAILABLE as ACTIONNET_AVAILABLE
 from .services.hit_detection_service import HitDetectionService
 from .services.superres_service import SuperResolutionService
+from .services.jetson_env import ensure_jetson_models
 
 JETSON_INFERENCE_AVAILABLE = ACTIONNET_AVAILABLE
 
@@ -162,6 +163,7 @@ async def startup_event():
     except HTTPException as exc:
         print(f"⚠️ YOLO fallback no disponible: {exc.detail}")
     _log_environment_status()
+    ensure_jetson_models()
 
 # --- Request/Response ---
 class DetectionRequest(BaseModel):

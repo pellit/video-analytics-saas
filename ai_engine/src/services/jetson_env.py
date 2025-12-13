@@ -37,3 +37,39 @@ JETSON_MODELS_MANIFEST = (
     os.path.join(JETSON_NETWORKS_DIR, 'models.json')
     if JETSON_NETWORKS_DIR else None
 )
+
+
+def ensure_jetson_models():
+    """Descarga modelos faltantes usando jetson-inference si están disponibles."""
+    jets_root = os.environ.get('JETSON_INFERENCE_ROOT')
+    data_dir = os.environ.get('JETSON_DATA_DIR')
+    if not jets_root or not data_dir:
+        return
+    required = [
+        "Action-ResNet18/resnet-18-kinetics-moments.onnx",
+        "Action-ResNet18/labels.txt",
+        "Pose-ResNet18-Body/human_pose.json",
+        "Pose-ResNet18-Body/pose_resnet18_body.onnx",
+        "MonoDepth-FCN-ResNet18/monodepth_fcn_resnet18.onnx",
+    ]
+    missing = []
+    for rel in required:
+        if not os.path.exists(os.path.join(data_dir, rel)):
+            missing.append(rel)
+    if not missing:
+        return
+    downloader = os.path.join(jets_root, "tools", "download-models.sh")
+    if not os.path.exists(downloader):
+        print("⚠️ download-models.sh no encontrado; no se pueden descargar modelos automáticamente.")
+        return
+    print("⬇️ Descargando modelos Jetson faltantes...")
+    os.system(f"cd {os.path.dirname(downloader)} && ./download-models.sh")
+    still_missing = [
+        rel for rel in missing if not os.path.exists(os.path.join(data_dir, rel))
+    ]
+    if still_missing:
+        print("⚠️ Estos modelos aún faltan tras la descarga automática:")
+        for rel in still_missing:
+            print(f"    - {os.path.join(data_dir, rel)}")
+    else:
+        print("✅ Modelos Jetson descargados correctamente.")
