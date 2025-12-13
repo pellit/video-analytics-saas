@@ -136,7 +136,9 @@ def run_detectnet_inference(img: np.ndarray, confidence: float, nms_threshold: f
             "bbox": [int(det.Left), int(det.Top), int(det.Right), int(det.Bottom)],
             "track_id": int(det.TrackID) if det.TrackID >= 0 else None,
             "area": int(det.Area),
-            "status": int(det.TrackStatus) if hasattr(det, "TrackStatus") else None
+            "status": int(det.TrackStatus) if hasattr(det, "TrackStatus") else None,
+            "source": "detectnet",
+            "engine": DETECTNET_MODEL
         })
     return {
         "success": True,

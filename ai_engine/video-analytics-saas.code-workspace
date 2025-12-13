@@ -1,0 +1,12 @@
+{
+	"folders": [
+		{
+			"path": ".."
+		},
+		{
+			"name": "SSH FS - Jetson Nano",
+			"uri": "ssh://jetson/"
+		}
+	],
+	"settings": {}
+}

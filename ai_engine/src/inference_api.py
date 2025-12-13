@@ -12,7 +12,7 @@ import traceback
 import numpy as np
 import cv2
 import requests
-from collections import defaultdict
+from collections import defaultdict, Counter
 from typing import Optional, List, Dict, Any
 from uuid import uuid4
 
@@ -150,6 +150,16 @@ GYM_EQUIPMENT_LABELS = {
     "barbell", "dumbbell", "bench", "kettlebell", "backpack", "suitcase",
     "handbag", "bottle", "chair", "cup"
 }
+BALL_YOLO_FALLBACK = os.environ.get("BALL_YOLO_FALLBACK", "1").lower() not in ("0", "false", "off")
+BALL_YOLO_CONFIDENCE = float(os.environ.get("BALL_YOLO_CONFIDENCE", "0.45"))
+BALL_YOLO_NMS = float(os.environ.get("BALL_YOLO_NMS", "0.35"))
+ORIENTATION_TRANSLATIONS = {
+    "facing_camera": "de frente a la cámara",
+    "facing_away": "de espaldas a la cámara",
+    "sideways": "de perfil",
+    "unknown": "orientación desconocida",
+    None: "orientación desconocida"
+}
 
 
 def _resolve_superres_model_path():
@@ -261,6 +271,90 @@ def load_yolo_model():
         except Exception as e2:
              print(f"❌ CPU Fallback failed: {e2}")
              return False
+
+
+def _ensure_yolo_ready():
+    if net is None or output_layers is None:
+        load_yolo_model()
+    if net is None or output_layers is None:
+        raise HTTPException(503, "YOLOv4-Tiny no está disponible para el fallback de pelota")
+
+
+def _run_yolo_detection(
+    image: np.ndarray,
+    confidence: float,
+    nms_threshold: float,
+    labels_filter: Optional[set] = None
+) -> List[Dict[str, Any]]:
+    try:
+        _ensure_yolo_ready()
+    except HTTPException:
+        return []
+
+    h, w = image.shape[:2]
+    blob = cv2.dnn.blobFromImage(image, scalefactor=1 / 255.0, size=(416, 416), swapRB=True, crop=False)
+    net.setInput(blob)
+    try:
+        layer_outputs = net.forward(output_layers)
+    except Exception as exc:
+        print(f"[YOLO fallback] forward failed: {exc}")
+        return []
+
+    boxes = []
+    confidences = []
+    class_ids = []
+    for output in layer_outputs:
+        for detection in output:
+            scores = detection[5:]
+            class_id = int(np.argmax(scores))
+            conf = float(scores[class_id])
+            if conf < confidence:
+                continue
+            center_x = int(detection[0] * w)
+            center_y = int(detection[1] * h)
+            width = int(detection[2] * w)
+            height = int(detection[3] * h)
+            x = max(0, int(center_x - width / 2))
+            y = max(0, int(center_y - height / 2))
+            boxes.append([x, y, width, height])
+            confidences.append(conf)
+            class_ids.append(class_id)
+
+    if not boxes:
+        return []
+
+    try:
+        idxs = cv2.dnn.NMSBoxes(boxes, confidences, confidence, nms_threshold)
+    except Exception:
+        idxs = list(range(len(boxes)))
+
+    results: List[Dict[str, Any]] = []
+    label_filter_set = {lbl.lower() for lbl in labels_filter} if labels_filter else None
+    if len(idxs) == 0 and boxes:
+        idx_iter = range(len(boxes))
+    elif isinstance(idxs, (list, tuple)):
+        idx_iter = [int(i) for i in idxs]
+    else:
+        idx_iter = [int(i[0]) for i in idxs]
+
+    for i in idx_iter:
+        class_name = classes[class_ids[i]] if classes else f"class_{class_ids[i]}"
+        if label_filter_set and class_name.lower() not in label_filter_set:
+            continue
+        x, y, width, height = boxes[i]
+        bbox = [x, y, x + width, y + height]
+        results.append({
+            "class_name": class_name.lower(),
+            "class_id": int(class_ids[i]),
+            "confidence": round(float(confidences[i]), 2),
+            "bbox": bbox,
+            "track_id": None,
+            "area": int(width * height),
+            "status": None,
+            "source": "yolo",
+            "engine": model_name or "yolov4-tiny"
+        })
+    return results
 
 # --- FastAPI App ---
 app = FastAPI(title="Jetson Inference API")
@@ -538,8 +632,37 @@ def _get_video_metadata(path: str) -> Dict[str, float]:
 
 
 def _run_inference(img: np.ndarray, confidence: float, nms_threshold: float) -> dict:
-    """Wrapper around detectNet inference service (nms parameter unused but kept for signature compatibility)."""
-    return run_detectnet_inference(img, confidence, nms_threshold)
+    """Wrapper around detectNet inference service with optional YOLO fallback for the ball."""
+    result = run_detectnet_inference(img, confidence, nms_threshold)
+    detections = list(result.get("detections", []))
+    has_ball = any(det.get("class_name", "").lower() in SOCCER_BALL_LABELS for det in detections)
+    fallback_info = {
+        "used": False,
+        "reason": None,
+        "new_detections": 0
+    }
+
+    if BALL_YOLO_FALLBACK and not has_ball:
+        fallback_conf = max(confidence, BALL_YOLO_CONFIDENCE)
+        fallback_nms = BALL_YOLO_NMS if BALL_YOLO_NMS > 0 else nms_threshold
+        fallback_dets = _run_yolo_detection(
+            img,
+            fallback_conf,
+            fallback_nms,
+            labels_filter=SOCCER_BALL_LABELS
+        )
+        if fallback_dets:
+            fallback_info.update({
+                "used": True,
+                "reason": "ball_missing",
+                "new_detections": len(fallback_dets),
+                "confidence": fallback_conf
+            })
+            detections.extend(fallback_dets)
+    result["detections"] = detections
+    if fallback_info["used"]:
+        result["ball_fallback"] = fallback_info
+    return result
 
 
 def _select_best_detection(detections: List[Dict[str, Any]], label_set: set) -> Optional[Dict[str, Any]]:
@@ -562,12 +685,258 @@ def _center_distance(bbox_a: List[int], bbox_b: List[int]) -> float:
     return math.hypot(ax - bx, ay - by)
 
 
+def _map_viewer_side(player_side: Optional[str], orientation: Optional[str]) -> str:
+    side = (player_side or "center").lower()
+    orientation = (orientation or "unknown").lower()
+    if side == "center":
+        return "center"
+    if orientation == "facing_away":
+        return "right" if side == "left" else "left"
+    if orientation == "sideways":
+        return side
+    if orientation == "facing_camera":
+        return side
+    return side
+
+
+def _compute_player_motion_metrics(timeline: List[Dict[str, Any]], fps: float) -> Dict[str, Any]:
+    if not timeline or fps <= 0:
+        return {
+            "avg_speed_px_s": 0.0,
+            "max_speed_px_s": 0.0,
+            "total_distance_px": 0.0,
+            "samples": 0,
+            "movement_rating": "desconocido"
+        }
+
+    prev_center = None
+    prev_frame = None
+    total_distance = 0.0
+    speeds = []
+
+    for entry in timeline:
+        player = entry.get("player")
+        if not player or not player.get("bbox"):
+            prev_center = None
+            prev_frame = None
+            continue
+        center = _bbox_center(player["bbox"])
+        frame_number = int(entry.get("frame", 0))
+        if prev_center is not None and prev_frame is not None:
+            frame_delta = max(1, frame_number - prev_frame)
+            delta_seconds = frame_delta / fps
+            if delta_seconds > 0:
+                dist = math.hypot(center[0] - prev_center[0], center[1] - prev_center[1])
+                total_distance += dist
+                speeds.append(dist / delta_seconds)
+        prev_center = center
+        prev_frame = frame_number
+
+    avg_speed = sum(speeds) / len(speeds) if speeds else 0.0
+    max_speed = max(speeds) if speeds else 0.0
+    if avg_speed < 40:
+        movement_rating = "baja"
+    elif avg_speed < 120:
+        movement_rating = "media"
+    else:
+        movement_rating = "alta"
+
+    return {
+        "avg_speed_px_s": round(avg_speed, 2),
+        "max_speed_px_s": round(max_speed, 2),
+        "total_distance_px": round(total_distance, 2),
+        "samples": len(speeds),
+        "movement_rating": movement_rating
+    }
+
+
+def _summarize_orientation(timeline: List[Dict[str, Any]]) -> Dict[str, Any]:
+    counts = Counter()
+    for entry in timeline:
+        orientation = entry.get("player_orientation")
+        if orientation:
+            counts[orientation] += 1
+    total = sum(counts.values())
+    if not total:
+        return {
+            "dominant_orientation": "unknown",
+            "dominant_ratio": 0.0,
+            "counts": []
+        }
+    dominant, dom_count = counts.most_common(1)[0]
+    return {
+        "dominant_orientation": dominant,
+        "dominant_ratio": round(dom_count / total, 4),
+        "counts": [
+            {"orientation": key, "frames": value, "ratio": round(value / total, 4)}
+            for key, value in counts.items()
+        ]
+    }
+
+
+def _build_activity_report(
+    metadata: Dict[str, Any],
+    detection_summary: Dict[str, Any],
+    action_analysis: Dict[str, Any],
+    action_sequences: Dict[str, Any],
+    motion_metrics: Dict[str, Any],
+    orientation_summary: Dict[str, Any],
+    face_checks: Dict[str, Any]
+) -> Dict[str, Any]:
+    fps = float(metadata.get("fps") or 0.0)
+    frame_count = int(metadata.get("frame_count") or 0)
+    duration = frame_count / fps if fps > 0 else 0.0
+
+    player_pct = round(detection_summary.get("player_presence_ratio", 0.0) * 100, 1)
+    ball_pct = round(detection_summary.get("ball_presence_ratio", 0.0) * 100, 1)
+    possession_pct = round(detection_summary.get("possession_ratio", 0.0) * 100, 1)
+    juggling_hits = int(detection_summary.get("juggling_hits", 0))
+    hand_contacts = len(detection_summary.get("hand_contact_frames", []))
+    ball_sources = detection_summary.get("ball_detection_sources", []) or []
+    fallback_frames = 0
+    for source in ball_sources:
+        if source.get("source") == "yolo":
+            fallback_frames += int(source.get("frames", 0))
+
+    if ball_pct >= 25 and fallback_frames == 0:
+        ball_tracking_quality = "sólida"
+    elif ball_pct >= 8:
+        ball_tracking_quality = "mixta"
+    else:
+        ball_tracking_quality = "débil"
+
+    def _depth_stats(values: List[float]) -> Optional[Dict[str, float]]:
+        if not values:
+            return None
+        return {
+            "min": round(min(values), 3),
+            "max": round(max(values), 3),
+            "spread": round(max(values) - min(values), 3),
+            "mean": round(sum(values) / len(values), 3)
+        }
+
+    player_depth_values = [
+        entry.get("player_depth")
+        for entry in detection_summary.get("timeline", [])
+        if entry.get("player_depth") is not None
+    ]
+    ball_depth_values = [
+        entry.get("ball_depth")
+        for entry in detection_summary.get("timeline", [])
+        if entry.get("ball_depth") is not None
+    ]
+
+    motion_rating = motion_metrics.get("movement_rating", "desconocido")
+    orientation_label = ORIENTATION_TRANSLATIONS.get(
+        orientation_summary.get("dominant_orientation"),
+        ORIENTATION_TRANSLATIONS["unknown"]
+    )
+
+    top_actions = (action_analysis or {}).get("top_labels", [])[:3]
+    primary_action = top_actions[0] if top_actions else None
+
+    action_segment = None
+    if action_sequences and action_sequences.get("segments"):
+        action_segment = action_sequences["segments"][0]
+
+    ball_control_rating = "muy baja"
+    if juggling_hits >= 6 or possession_pct >= 35:
+        ball_control_rating = "alta"
+    elif juggling_hits >= 3 or possession_pct >= 18:
+        ball_control_rating = "media"
+    elif ball_pct > 5:
+        ball_control_rating = "baja"
+
+    report_parts = [
+        f"Analizamos {frame_count} frames (~{duration:.1f}s).",
+        f"El jugador estuvo visible el {player_pct:.1f}% del tiempo."
+    ]
+    if ball_pct > 0:
+        report_parts.append(
+            f"El balón apareció el {ball_pct:.1f}% del tiempo y la posesión estimada fue del {possession_pct:.1f}%."
+        )
+    else:
+        report_parts.append("El balón casi no fue detectado en el video.")
+
+    report_parts.append(f"La movilidad general fue {motion_rating} y predominó una orientación {orientation_label}.")
+
+    if primary_action:
+        report_parts.append(
+            f"ActionNet identificó '{primary_action['label']}' como acción dominante (confianza máx. {primary_action['max_confidence']:.2f})."
+        )
+    if juggling_hits > 0:
+        report_parts.append(f"Se registraron {juggling_hits} toques/controles con miembros inferiores.")
+    else:
+        report_parts.append("No se observaron toques claros de control con los pies.")
+    if hand_contacts > 0:
+        report_parts.append(f"Se detectaron {hand_contacts} contactos con las manos.")
+    if face_checks.get("consistent"):
+        report_parts.append("Los chequeos faciales apuntan a que la misma persona aparece durante todo el clip.")
+    else:
+        report_parts.append("No pudimos confirmar que la misma persona aparezca en todo el video.")
+
+    report_text = " ".join(report_parts)
+
+    insights = [
+        f"Movimiento {motion_rating} con velocidad promedio {motion_metrics.get('avg_speed_px_s', 0.0):.1f}px/s.",
+        f"Control del balón catalogado como {ball_control_rating}.",
+        f"Orientación predominante: {orientation_label}."
+    ]
+    if primary_action:
+        insights.append(f"Acción dominante: {primary_action['label']} ({primary_action['count']} muestras).")
+    if fallback_frames > 0:
+        insights.append(f"Se usó fallback YOLO en {fallback_frames} frames para captar la pelota.")
+    if hand_contacts > 0:
+        insights.append(f"Advertencia: {hand_contacts} frames con posibles contactos de mano.")
+    if face_checks.get("consistent"):
+        insights.append("Chequeo facial consistente.")
+    else:
+        insights.append("El reconocimiento facial necesita mejor iluminación o primeros planos.")
+
+    tips = []
+    if ball_pct < 10:
+        tips.append("Incrementa el contraste del balón o acércalo a cámara para mejorar la detección.")
+    if motion_rating == "baja":
+        tips.append("Agrega desplazamientos en diferentes direcciones para enriquecer el entrenamiento.")
+    if hand_contacts > 0:
+        tips.append("Evita el uso de las manos si buscas métricas estrictas de fútbol freestyle.")
+    if not face_checks.get("consistent"):
+        tips.append("Asegura buena iluminación frontal para que el sistema valide la identidad.")
+    if not tips:
+        tips.append("Mantén esta configuración: los sensores respondieron de forma estable.")
+
+    metrics = {
+        "player_presence_pct": player_pct,
+        "ball_presence_pct": ball_pct,
+        "possession_pct": possession_pct,
+        "juggling_hits": juggling_hits,
+        "hand_contacts": hand_contacts,
+        "ball_detection_sources": ball_sources,
+        "ball_tracking_quality": ball_tracking_quality,
+        "ball_control_rating": ball_control_rating,
+        "motion": motion_metrics,
+        "orientation": orientation_summary,
+        "dominant_actions": top_actions,
+        "action_primary_segment": action_segment,
+        "player_depth_stats": _depth_stats(player_depth_values),
+        "ball_depth_stats": _depth_stats(ball_depth_values),
+        "face_consistent": face_checks.get("consistent"),
+        "face_successful_samples": face_checks.get("successful_samples", 0)
+    }
+
+    return {
+        "report_text": report_text,
+        "metrics": metrics,
+        "insights": insights,
+        "tips": tips
+    }
 def _analyze_soccer_detections(
     video_path: str,
     frame_stride: int,
     max_frames: int,
     confidence: float,
     possession_distance_px: int,
+    contact_threshold_px: Optional[int] = None,
     nms_threshold: float = 0.4
 ) -> Dict[str, Any]:
     cap = cv2.VideoCapture(video_path)
@@ -586,6 +955,7 @@ def _analyze_soccer_detections(
     hand_contact_frames: List[int] = []
     hand_contact_events: List[Dict[str, Any]] = []
     juggling_gap = max(5, frame_stride * 2)
+    ball_source_counts = defaultdict(int)
 
     while processed < max_frames:
         ret, frame = cap.read()
@@ -616,6 +986,8 @@ def _analyze_soccer_detections(
             if depth_context:
                 entry["ball_depth"] = ball_det.get("depth_mean")
             ball_frames += 1
+            source = (ball_det.get("source") or "unknown").lower()
+            ball_source_counts[source] += 1
 
         pose_data = None
         if player_det:
@@ -634,7 +1006,11 @@ def _analyze_soccer_detections(
             if distance <= possession_distance_px:
                 possession_frames += 1
 
-            contacts = compute_pose_ball_contacts(pose_data, ball_det["bbox"])
+            contacts = compute_pose_ball_contacts(
+                pose_data,
+                ball_det["bbox"],
+                threshold_px=contact_threshold_px
+            )
             if contacts:
                 limb_contacts = []
                 orientation = entry.get("player_orientation", "unknown")
@@ -675,6 +1051,11 @@ def _analyze_soccer_detections(
     def _ratio(count: int) -> float:
         return round((count / total) if total else 0.0, 4)
 
+    ball_source_summary = [
+        {"source": source, "frames": count, "ratio": _ratio(count)}
+        for source, count in sorted(ball_source_counts.items(), key=lambda x: x[1], reverse=True)
+    ]
+
     return {
         "frames_analyzed": processed,
         "timeline": timeline,
@@ -684,7 +1065,9 @@ def _analyze_soccer_detections(
         "juggling_hits": juggling_hits,
         "hand_contact_frames": hand_contact_frames,
         "juggling_events": juggling_events,
-        "hand_contact_events": hand_contact_events
+        "hand_contact_events": hand_contact_events,
+        "ball_detection_sources": ball_source_summary,
+        "ball_detection_counts": dict(ball_source_counts)
     }
 
 
@@ -1503,7 +1886,8 @@ async def analyze_football_video(
             frame_stride=frame_stride,
             max_frames=max_frames,
             confidence=detection_confidence,
-            possession_distance_px=possession_distance_px
+            possession_distance_px=possession_distance_px,
+            contact_threshold_px=contact_distance_px
         )
 
         depth_pose = depth_pose_service_analyze(
@@ -1569,6 +1953,115 @@ async def analyze_football_video(
             "video_duration_s": duration,
             "frames_total": frame_count,
             "analysis": analysis
+        }
+    finally:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+
+
+@app.post("/analyze/football/activity/video")
+async def analyze_football_activity_video(
+    file: UploadFile = File(...),
+    frame_stride: int = Form(4),
+    max_frames: int = Form(180),
+    detection_confidence: float = Form(0.45),
+    contact_distance_px: int = Form(45),
+    possession_distance_px: int = Form(90),
+    action_frame_stride: int = Form(8),
+    action_top_k: int = Form(3),
+    face_score_threshold: float = Form(0.6),
+    face_match_threshold: float = Form(0.6)
+):
+    if frame_stride <= 0 or max_frames <= 0:
+        raise HTTPException(400, "frame_stride y max_frames deben ser > 0")
+    if not (0.0 < detection_confidence <= 1.0):
+        raise HTTPException(400, "detection_confidence debe estar entre 0 y 1")
+    if contact_distance_px <= 0 or possession_distance_px <= 0:
+        raise HTTPException(400, "contact_distance_px y possession_distance_px deben ser > 0")
+    if action_frame_stride <= 0 or action_top_k <= 0:
+        raise HTTPException(400, "action_frame_stride y action_top_k deben ser > 0")
+    if not (0.0 < face_score_threshold <= 1.0):
+        raise HTTPException(400, "face_score_threshold debe estar entre 0 y 1")
+    if not (0.0 < face_match_threshold <= 1.0):
+        raise HTTPException(400, "face_match_threshold debe estar entre 0 y 1")
+
+    tmp_path = _save_upload_to_temp(file)
+    try:
+        duration = _ensure_video_duration(tmp_path)
+        metadata = _get_video_metadata(tmp_path)
+        frame_count = int(metadata["frame_count"])
+        fps = max(float(metadata["fps"]), 1e-3)
+
+        detection_summary = _analyze_soccer_detections(
+            tmp_path,
+            frame_stride=frame_stride,
+            max_frames=max_frames,
+            confidence=detection_confidence,
+            possession_distance_px=possession_distance_px,
+            contact_threshold_px=contact_distance_px
+        )
+
+        if JETSON_INFERENCE_AVAILABLE:
+            action_analysis = _run_actionnet_on_video(tmp_path, action_frame_stride, action_top_k)
+        else:
+            action_analysis = {
+                "frames_analyzed": 0,
+                "predictions": [],
+                "top_labels": [],
+                "warning": "jetson-inference no está disponible en este dispositivo"
+            }
+
+        action_sequences = _derive_action_sequences(
+            action_analysis.get("predictions", []),
+            action_frame_stride,
+            fps
+        )
+
+        face_checks = _evaluate_face_consistency(
+            tmp_path,
+            frame_count,
+            score_threshold=face_score_threshold,
+            match_threshold=face_match_threshold
+        )
+
+        motion_metrics = _compute_player_motion_metrics(detection_summary["timeline"], fps)
+        orientation_summary = _summarize_orientation(detection_summary["timeline"])
+
+        activity_report = _build_activity_report(
+            metadata,
+            detection_summary,
+            action_analysis,
+            action_sequences,
+            motion_metrics,
+            orientation_summary,
+            face_checks
+        )
+
+        detection_payload = {
+            "frames_analyzed": detection_summary["frames_analyzed"],
+            "player_presence_ratio": detection_summary["player_presence_ratio"],
+            "ball_presence_ratio": detection_summary["ball_presence_ratio"],
+            "possession_ratio": detection_summary["possession_ratio"],
+            "juggling_hits": detection_summary["juggling_hits"],
+            "ball_detection_sources": detection_summary.get("ball_detection_sources"),
+            "ball_detection_counts": detection_summary.get("ball_detection_counts"),
+            "timeline": detection_summary["timeline"],
+            "juggling_events": detection_summary.get("juggling_events", []),
+            "hand_contact_events": detection_summary.get("hand_contact_events", []),
+            "hand_contact_frames": detection_summary.get("hand_contact_frames", [])
+        }
+
+        return {
+            "success": True,
+            "video_duration_s": duration,
+            "frames_total": frame_count,
+            "activity_report": activity_report,
+            "detection_summary": detection_payload,
+            "action_analysis": action_analysis,
+            "action_sequences": action_sequences,
+            "motion_metrics": motion_metrics,
+            "orientation_summary": orientation_summary,
+            "face_checks": face_checks
         }
     finally:
         if os.path.exists(tmp_path):

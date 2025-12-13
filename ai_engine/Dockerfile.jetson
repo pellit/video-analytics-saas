@@ -30,52 +30,50 @@ RUN apt-get update && \
 
 # ------------------------------------------------------------------------------
 # 2. Compilar OpenCV 4.5.5 (La versión compatible con Jetson Nano / CUDA 10.2)
+#    Se puede omitir con --build-arg BUILD_OPENCV=0 para reutilizar una imagen precompilada.
 # ------------------------------------------------------------------------------
+ARG BUILD_OPENCV=1
 WORKDIR /tmp
-
-# Eliminar versiones viejas para evitar conflictos de importación
-RUN apt-get remove -y python3-opencv || true && \
-    rm -rf /usr/lib/python3.6/dist-packages/cv2 && \
-    rm -rf /usr/local/lib/python3.6/dist-packages/cv2
-
-# Descargar Fuentes (Versión 4.5.5 para evitar error de 'cuda/std/tuple')
-RUN git clone --branch 4.5.5 --depth 1 https://github.com/opencv/opencv.git && \
-    git clone --branch 4.5.5 --depth 1 https://github.com/opencv/opencv_contrib.git
-
-# Configurar CMake con optimizaciones para Nano (Arch 5.3)
-RUN mkdir -p /tmp/opencv/build && cd /tmp/opencv/build && \
-    cmake -D CMAKE_BUILD_TYPE=Release \
-          -D CMAKE_INSTALL_PREFIX=/usr/local \
-          -D OPENCV_EXTRA_MODULES_PATH=/tmp/opencv_contrib/modules \
-          -D EIGEN_INCLUDE_PATH=/usr/include/eigen3 \
-          -D WITH_OPENCL=OFF \
-          -D WITH_CUDA=ON \
-          -D CUDA_ARCH_BIN="5.3" \
-          -D CUDA_ARCH_PTX="" \
-          -D WITH_CUDNN=ON \
-          -D WITH_CUBLAS=ON \
-          -D ENABLE_FAST_MATH=1 \
-          -D CUDA_FAST_MATH=1 \
-          -D OPENCV_DNN_CUDA=ON \
-          -D OPENCV_ENABLE_NONFREE=ON \
-          -D WITH_GSTREAMER=ON \
-          -D BUILD_opencv_python2=OFF \
-          -D BUILD_opencv_python3=ON \
-          -D BUILD_EXAMPLES=OFF \
-          -D BUILD_TESTS=OFF \
-          -D BUILD_PERF_TESTS=OFF \
-          -D BUILD_DOCS=OFF \
-          -D BUILD_JAVA=OFF \
-          ..
-
-# Compilar e Instalar
-# IMPORTANTE: Usamos -j2 para evitar que la Jetson se quede sin RAM.
-RUN cd /tmp/opencv/build && \
-    make -j2 && \
-    make install && \
-    ldconfig && \
-    # Limpieza para reducir tamaño de imagen
-    rm -rf /tmp/opencv /tmp/opencv_contrib
+RUN if [ "$BUILD_OPENCV" = "1" ]; then \
+        echo "🛠️  Compilando OpenCV (esto puede tardar varios minutos)..."; \
+        apt-get remove -y python3-opencv || true && \
+        rm -rf /usr/lib/python3.6/dist-packages/cv2 && \
+        rm -rf /usr/local/lib/python3.6/dist-packages/cv2 && \
+        git clone --branch 4.5.5 --depth 1 https://github.com/opencv/opencv.git && \
+        git clone --branch 4.5.5 --depth 1 https://github.com/opencv/opencv_contrib.git && \
+        mkdir -p /tmp/opencv/build && cd /tmp/opencv/build && \
+        cmake -D CMAKE_BUILD_TYPE=Release \
+              -D CMAKE_INSTALL_PREFIX=/usr/local \
+              -D OPENCV_EXTRA_MODULES_PATH=/tmp/opencv_contrib/modules \
+              -D EIGEN_INCLUDE_PATH=/usr/include/eigen3 \
+              -D WITH_OPENCL=OFF \
+              -D WITH_CUDA=ON \
+              -D CUDA_ARCH_BIN="5.3" \
+              -D CUDA_ARCH_PTX="" \
+              -D WITH_CUDNN=ON \
+              -D WITH_CUBLAS=ON \
+              -D ENABLE_FAST_MATH=1 \
+              -D CUDA_FAST_MATH=1 \
+              -D OPENCV_DNN_CUDA=ON \
+              -D OPENCV_ENABLE_NONFREE=ON \
+              -D WITH_GSTREAMER=ON \
+              -D BUILD_opencv_python2=OFF \
+              -D BUILD_opencv_python3=ON \
+              -D BUILD_EXAMPLES=OFF \
+              -D BUILD_TESTS=OFF \
+              -D BUILD_PERF_TESTS=OFF \
+              -D BUILD_DOCS=OFF \
+              -D BUILD_JAVA=OFF \
+              .. && \
+        cd /tmp/opencv/build && \
+        make -j2 && \
+        make install && \
+        ldconfig && \
+        rm -rf /tmp/opencv /tmp/opencv_contrib && \
+        echo "✅ OpenCV 4.5.5 instalado en la imagen"; \
+    else \
+        echo "⏭️  Saltando compilación de OpenCV (BUILD_OPENCV=$BUILD_OPENCV)"; \
+    fi
 
 # ------------------------------------------------------------------------------
 # 3. Dependencias Python del proyecto
