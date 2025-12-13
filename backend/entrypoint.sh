@@ -6,16 +6,18 @@ echo "🚀 Iniciando despliegue de Laravel..."
 # Wait for MySQL to be ready
 wait_for_mysql() {
     echo "⏳ Esperando a que MySQL esté listo..."
-    max_attempts=30
+    # Aumentamos reintentos y tiempo de espera para entornos donde MySQL tarda en inicializar
+    max_attempts=${DB_WAIT_MAX_ATTEMPTS:-60}
     attempt=1
     
     while [ $attempt -le $max_attempts ]; do
-        if php -r "try { new PDO('mysql:host=${DB_HOST:-db};port=${DB_PORT:-3306}', '${DB_USERNAME:-root}', '${DB_PASSWORD:-secret}'); echo 'ok'; } catch(Exception \$e) { exit(1); }" 2>/dev/null; then
+        # Ejecutamos un chequeo más verboso para poder depurar en caso de error
+        if php -r "try { new PDO('mysql:host=' . getenv('DB_HOST') . ';port=' . getenv('DB_PORT'), getenv('DB_USERNAME'), getenv('DB_PASSWORD')); echo 'ok'; } catch(Exception \$e) { echo 'ERR: ' . $e->getMessage(); exit(1); }" 2>&1 | tee /tmp/mysql_ping.log | grep -q '^ok' ; then
             echo "✅ MySQL está listo!"
             return 0
         fi
         echo "   Intento $attempt/$max_attempts - MySQL no disponible aún..."
-        sleep 2
+        sleep ${DB_WAIT_SLEEP:-3}
         attempt=$((attempt + 1))
     done
     
