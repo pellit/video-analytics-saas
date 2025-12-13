@@ -22,15 +22,14 @@ services:
       - DB_HOST=db
       - APP_KEY=${APP_KEY:-}
       - REDIS_HOST=redis
+      - DB_WAIT_MAX_ATTEMPTS=120
+      - DB_WAIT_SLEEP=3
     volumes:
       - app_storage:/var/www/html/storage  # Volumen compartido con AI Worker
     depends_on:
       - db
       - redis
     restart: on-failure
-    environment:
-      - DB_WAIT_MAX_ATTEMPTS=120
-      - DB_WAIT_SLEEP=3
     networks:
       - saas_net
     links:
