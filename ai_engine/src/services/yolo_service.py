@@ -147,27 +147,26 @@ class YoloFallbackService:
         else:
             self._classes = ["object"]
 
-        try:
-            print("⏳ Loading YOLOv4-Tiny...")
+        def _init_net(backend, target, label):
             self._net = cv2.dnn.readNet(weights_path, cfg_path)
-            # Prefer CUDA si está disponible
-            self._net.setPreferableBackend(cv2.dnn.DNN_BACKEND_CUDA)
-            self._net.setPreferableTarget(cv2.dnn.DNN_TARGET_CUDA)
+            self._net.setPreferableBackend(backend)
+            self._net.setPreferableTarget(target)
             layer_names = self._net.getLayerNames()
-            self._output_layers = [layer_names[i[0] - 1] for i in self._net.getUnconnectedOutLayers()]
-            self._model_name = "yolov4-tiny"
+            indices = self._net.getUnconnectedOutLayers()
+            if hasattr(indices, "flatten"):
+                indices = indices.flatten()
+            self._output_layers = [layer_names[int(idx) - 1] for idx in indices]
+            self._model_name = label
             return True
+
+        print("⏳ Loading YOLOv4-Tiny...")
+        try:
+            return _init_net(cv2.dnn.DNN_BACKEND_CUDA, cv2.dnn.DNN_TARGET_CUDA, "yolov4-tiny")
         except Exception as exc:
-            print(f"❌ Error cargando YOLO con CUDA: {exc}")
+            print(f"❌ CUDA load failed: {exc}")
             try:
-                print("⚠️ Retrying on CPU...")
-                self._net = cv2.dnn.readNet(weights_path, cfg_path)
-                self._net.setPreferableBackend(cv2.dnn.DNN_BACKEND_OPENCV)
-                self._net.setPreferableTarget(cv2.dnn.DNN_TARGET_CPU)
-                layer_names = self._net.getLayerNames()
-                self._output_layers = [layer_names[i[0] - 1] for i in self._net.getUnconnectedOutLayers()]
-                self._model_name = "yolov4-tiny-cpu"
-                return True
+                print("⚠️ Retrying YOLO on CPU backend…")
+                return _init_net(cv2.dnn.DNN_BACKEND_OPENCV, cv2.dnn.DNN_TARGET_CPU, "yolov4-tiny-cpu")
             except Exception as fallback_exc:
                 print(f"❌ CPU fallback failed: {fallback_exc}")
                 self._net = None
