@@ -31,6 +31,8 @@ services:
       - db
       - redis
     restart: on-failure
+    ports:
+      - "8000:8000"
     networks:
       - saas_net
     links:
