@@ -12,6 +12,10 @@
 # =============================================================================
 
 services:
+# PROJECT_NAME: unique prefix for Traefik router/service names to avoid conflicts when deploying multiple projects
+# TRAEFIK_NETWORK: Docker network that Traefik should use to reach services (dokploy uses `dokploy-network`)
+# Example: export PROJECT_NAME=myproject && export TRAEFIK_NETWORK=dokploy-network && docker compose -f docker-compose.mediamtx.yml up -d
+
   # --- BACKEND (Laravel API) ---
   api:
     build:
@@ -37,12 +41,12 @@ services:
       - redis
     labels:
       - "traefik.enable=true"
-      - "traefik.docker.network=video-analytics-saas_saas_net"
-      - "traefik.http.routers.saas_api.rule=Host(`dev.pellit.com.ar`) && PathPrefix(`/api`)"
-      - "traefik.http.routers.saas_api.entrypoints=websecure"
-      - "traefik.http.routers.saas_api.tls=true"
-      - "traefik.http.routers.saas_api.tls.certresolver=letsencrypt"
-      - "traefik.http.services.saas_api.loadbalancer.server.port=8000"
+      - "traefik.docker.network=${TRAEFIK_NETWORK:-dokploy-network}"
+      - "traefik.http.routers.${PROJECT_NAME:-saas}-api.rule=Host(`dev.pellit.com.ar`) && PathPrefix(`/api`)"
+      - "traefik.http.routers.${PROJECT_NAME:-saas}-api.entrypoints=websecure"
+      - "traefik.http.routers.${PROJECT_NAME:-saas}-api.tls=true"
+      - "traefik.http.routers.${PROJECT_NAME:-saas}-api.tls.certresolver=letsencrypt"
+      - "traefik.http.services.${PROJECT_NAME:-saas}-api.loadbalancer.server.port=8000"
 
   # --- FRONTEND (Vue.js) ---
   frontend:
@@ -98,16 +102,17 @@ services:
       - dokploy-network
     labels:
       - "traefik.enable=true"
+      - "traefik.docker.network=${TRAEFIK_NETWORK:-dokploy-network}"
       # Route /worker/* to AI worker
-      - "traefik.http.routers.ai-worker.rule=Host(`dev.pellit.com.ar`) && PathPrefix(`/worker`)"
-      - "traefik.http.routers.ai-worker.entrypoints=websecure"
-      - "traefik.http.routers.ai-worker.tls=true"
-      - "traefik.http.routers.ai-worker.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.${PROJECT_NAME:-saas}-ai-worker.rule=Host(`dev.pellit.com.ar`) && PathPrefix(`/worker`)"
+      - "traefik.http.routers.${PROJECT_NAME:-saas}-ai-worker.entrypoints=websecure"
+      - "traefik.http.routers.${PROJECT_NAME:-saas}-ai-worker.tls=true"
+      - "traefik.http.routers.${PROJECT_NAME:-saas}-ai-worker.tls.certresolver=letsencrypt"
       # Strip /worker prefix before sending to backend
-      - "traefik.http.middlewares.strip-worker.stripprefix.prefixes=/worker"
-      - "traefik.http.routers.ai-worker.middlewares=strip-worker"
+      - "traefik.http.middlewares.${PROJECT_NAME:-saas}-strip-worker.stripprefix.prefixes=/worker"
+      - "traefik.http.routers.${PROJECT_NAME:-saas}-ai-worker.middlewares=${PROJECT_NAME:-saas}-strip-worker"
       # Service config
-      - "traefik.http.services.ai-worker.loadbalancer.server.port=5000"
+      - "traefik.http.services.${PROJECT_NAME:-saas}-ai-worker.loadbalancer.server.port=5000"
 
   # --- RUST AI WORKER (High Performance) ---
   # Use this for: High FPS detection, low latency video processing

@@ -34,6 +34,7 @@ Para los despliegues de Docker Compose, Dokploy proporciona un **editor de códi
 
 *   **Ubicación:** Dentro de la configuración de tu servicio Docker Compose, navega a la pestaña **"Environment" (Entorno)**.
 *   **Mecanismo:** Dokploy crea por defecto un archivo `.env` en la ruta especificada de tu archivo Docker Compose con las variables que ingreses en el editor.
+*   **Recomendación:** Define `PROJECT_NAME` (ej. `saas-dev`) y `TRAEFIK_NETWORK` (ej. `dokploy-network`) en la sección Environment para que los labels parametrizados en `docker-compose.*.yml` protejan tus routers de colisiones.
 
 #### Variables multilinea
 Si necesitas usar una variable multilinea (como una clave privada o un certificado), debes envolverla en comillas dobles, de esta manera: `'"aquí_va_mi_clave_privada"'`.
@@ -378,6 +379,30 @@ Using Cloudflare's Origin CA, you are sure that the certificate will be valid fo
 You can also create a certificate for wildcards domains eg. *.dokploy.com and use it for multiple subdomains.
 
 Important: With a free Cloudflare account, this methods work only for the main domain and subdomains, not for sub-subdomains. Eg. api.dokploy.com works but staging.api.dokploy.com does not work.
+
+## Despliegue Seguro (Docker Compose + Dokploy)
+
+Cuando despliegues con Dokploy usando Docker Compose, evita colisiones en Traefik (routers/servicios duplicados) siguiendo estos pasos:
+
+- **Usa `PROJECT_NAME` como prefijo:** exporta `PROJECT_NAME` y úsalo para prefijar los nombres de routers y servicios en tu `docker-compose` (nuestros `docker-compose.mediamtx.yml` ya aceptan `${PROJECT_NAME:-saas}`).
+- **Define `TRAEFIK_NETWORK`:** configura `TRAEFIK_NETWORK` con la red que Traefik usa en Dokploy (por defecto `dokploy-network`). Ejemplo: `export TRAEFIK_NETWORK=dokploy-network`.
+- **Pre-check antes de desplegar:** en el servidor, busca routers/servicios existentes o stacks Dokploy que puedan colisionar y deténlos:
+  - `docker ps --filter "name=dokploy"` y busca servicios con labels Traefik que coincidan.
+  - Si existe un stack anterior del mismo proyecto, remuévelo: `dokploy rm <project>` o `docker rm -f <container>`.
+- **Ejemplo de despliegue sin colisiones:**
+  - `export PROJECT_NAME=myproject`
+  - `export TRAEFIK_NETWORK=dokploy-network`
+  - `docker compose -f docker-compose.mediamtx.yml up -d`
+
+Si sigues estos pasos evitamos que Docker/Trafik asigne routers con nombres duplicados (por ejemplo `api` o `ai-worker`) que producen errores 502/504.
+
+He añadido `bin/deploy-dokploy.sh` que realiza los pre-checks y ejecuta `docker compose up` de forma segura. Hazlo ejecutable con `chmod +x bin/deploy-dokploy.sh` y ejecútalo así:
+
+```
+export PROJECT_NAME=myproject
+export TRAEFIK_NETWORK=dokploy-network
+./bin/deploy-dokploy.sh
+```
 
 Assign a Domain Flexible
 We assume that you have enabled the Flexible mode in the previous step, is super important to follow the steps in the same order to prevent any issues.

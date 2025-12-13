@@ -24,14 +24,14 @@ services:
         - redis
       labels:
         - "traefik.enable=true"
-        - "traefik.http.routers.api.rule=Host(`dev.pellit.com.ar`) && PathPrefix(`/api`)"
-        - "traefik.http.routers.api.entrypoints=web"
-        - "traefik.http.services.api.loadbalancer.server.port=8000"
-        - "traefik.http.routers.api-secure.rule=Host(`dev.pellit.com.ar`) && PathPrefix(`/api`)"
-        - "traefik.http.routers.api-secure.entrypoints=websecure"
-        - "traefik.http.routers.api-secure.tls=true"
-        - "traefik.http.routers.api-secure.tls.certresolver=letsencrypt"
-        - "traefik.docker.network=dokploy-network"
+        - "traefik.docker.network=${TRAEFIK_NETWORK:-dokploy-network}"
+        - "traefik.http.routers.${PROJECT_NAME:-saas}-api.rule=Host(`dev.pellit.com.ar`) && PathPrefix(`/api`)"
+        - "traefik.http.routers.${PROJECT_NAME:-saas}-api.entrypoints=web"
+        - "traefik.http.services.${PROJECT_NAME:-saas}-api.loadbalancer.server.port=8000"
+        - "traefik.http.routers.${PROJECT_NAME:-saas}-api-secure.rule=Host(`dev.pellit.com.ar`) && PathPrefix(`/api`)"
+        - "traefik.http.routers.${PROJECT_NAME:-saas}-api-secure.entrypoints=websecure"
+        - "traefik.http.routers.${PROJECT_NAME:-saas}-api-secure.tls=true"
+        - "traefik.http.routers.${PROJECT_NAME:-saas}-api-secure.tls.certresolver=letsencrypt"
 
   # --- FRONTEND ---
   frontend:
@@ -51,14 +51,14 @@ services:
       - dokploy-network
     labels:
       - "traefik.enable=true"
-      - "traefik.http.routers.frontend.rule=Host(`dev.pellit.com.ar`)"
-      - "traefik.http.routers.frontend.entrypoints=web"
-      - "traefik.http.services.frontend.loadbalancer.server.port=80"
-      - "traefik.http.routers.frontend-secure.rule=Host(`dev.pellit.com.ar`)"
-      - "traefik.http.routers.frontend-secure.entrypoints=websecure"
-      - "traefik.http.routers.frontend-secure.tls=true"
-      - "traefik.http.routers.frontend-secure.tls.certresolver=letsencrypt"
-      - "traefik.docker.network=dokploy-network"
+      - "traefik.docker.network=${TRAEFIK_NETWORK:-dokploy-network}"
+      - "traefik.http.routers.${PROJECT_NAME:-saas}-frontend.rule=Host(`dev.pellit.com.ar`)"
+      - "traefik.http.routers.${PROJECT_NAME:-saas}-frontend.entrypoints=web"
+      - "traefik.http.services.${PROJECT_NAME:-saas}-frontend.loadbalancer.server.port=80"
+      - "traefik.http.routers.${PROJECT_NAME:-saas}-frontend-secure.rule=Host(`dev.pellit.com.ar`)"
+      - "traefik.http.routers.${PROJECT_NAME:-saas}-frontend-secure.entrypoints=websecure"
+      - "traefik.http.routers.${PROJECT_NAME:-saas}-frontend-secure.tls=true"
+      - "traefik.http.routers.${PROJECT_NAME:-saas}-frontend-secure.tls.certresolver=letsencrypt"
 
   # --- AI WORKER ---
   ai_worker:
@@ -90,6 +90,19 @@ services:
         - ./ai_engine/models:/app/models
         - app_storage:/app/storage  # Volumen compartido con Laravel para CAD
       # Worker is internal by default in production - do not publish to avoid host port conflicts
+      networks:
+        - saas_net
+        - dokploy-network
+      labels:
+        - "traefik.enable=true"
+        - "traefik.docker.network=${TRAEFIK_NETWORK:-dokploy-network}"
+        - "traefik.http.routers.${PROJECT_NAME:-saas}-ai-worker.rule=Host(`dev.pellit.com.ar`) && PathPrefix(`/worker`)"
+        - "traefik.http.routers.${PROJECT_NAME:-saas}-ai-worker.entrypoints=websecure"
+        - "traefik.http.routers.${PROJECT_NAME:-saas}-ai-worker.tls=true"
+        - "traefik.http.routers.${PROJECT_NAME:-saas}-ai-worker.tls.certresolver=letsencrypt"
+        - "traefik.http.middlewares.${PROJECT_NAME:-saas}-strip-worker.stripprefix.prefixes=/worker"
+        - "traefik.http.routers.${PROJECT_NAME:-saas}-ai-worker.middlewares=${PROJECT_NAME:-saas}-strip-worker"
+        - "traefik.http.services.${PROJECT_NAME:-saas}-ai-worker.loadbalancer.server.port=5000"
       depends_on:
         - redis
         - vlm_service

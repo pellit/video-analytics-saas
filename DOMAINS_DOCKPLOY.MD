@@ -79,6 +79,9 @@ Esta guía documenta cómo configurar los dominios, rutas y puertos para cada se
 - **CORS:** Permite el dominio principal en todos los servicios que expongan APIs.
 - **Proxy:** Si usas Nginx/Traefik, asegúrate de que las rutas estén correctamente mapeadas a los puertos internos.
 - **Red interna:** Todos los servicios deben estar en la misma red de Docker Compose (`saas_net` o similar).
+- **Prefijo de proyecto (recomendado):** Usa `PROJECT_NAME` para prefijar routers/servicios en los labels de Traefik y así evitar colisiones con otras aplicaciones desplegadas en Dokploy.
+- **TRAEFIK_NETWORK:** Define `TRAEFIK_NETWORK` con la red que Traefik usa en Dokploy (por ejemplo `dokploy-network`) y añádela a las labels `traefik.docker.network`.
+- **Pre-despliegue:** Antes de desplegar, comprueba y detén stacks Dokploy con routers que puedan colisionar: `dokploy rm <project>` o `docker rm -f <container>`.
 - **Pruebas:** Verifica cada endpoint tras el despliegue accediendo a las rutas recomendadas.
 
 ---
