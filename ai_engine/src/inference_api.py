@@ -92,7 +92,20 @@ SFACE_TEMPLATE = np.array([
     [70.7299, 92.2041]
 ], dtype=np.float32)
 SUPERRES_MODEL_PATH = os.environ.get('SUPERRES_MODEL_PATH')
-SUPERRES_MODEL_DIR = os.environ.get('SUPERRES_MODEL_DIR', '/usr/local/bin/networks/Super-Resolution-BSD500')
+_default_superres_dirs = [
+    os.environ.get('SUPERRES_MODEL_DIR'),
+    os.path.abspath(os.path.join(os.getcwd(), "data/networks/Super-Resolution-BSD500")),
+    os.path.abspath(os.path.join(os.getcwd(), "data/networks/Super-Resolution--BSD500")),
+    "/usr/local/bin/networks/Super-Resolution-BSD500",
+    "/usr/local/bin/networks/Super-Resolution--BSD500",
+]
+SUPERRES_MODEL_DIR = None
+for candidate in _default_superres_dirs:
+    if candidate and os.path.isdir(candidate):
+        SUPERRES_MODEL_DIR = candidate
+        break
+if SUPERRES_MODEL_DIR is None:
+    SUPERRES_MODEL_DIR = _default_superres_dirs[-2]
 
 # Global model instance
 BASE_DIR = os.path.dirname(__file__)

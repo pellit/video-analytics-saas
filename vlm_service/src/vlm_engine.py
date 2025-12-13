@@ -39,13 +39,16 @@ class _GenerationAdapter(nn.Module, GenerationMixin):
     def __getattr__(self, name):
         if name in {"base_model", "config", "main_input_name"}:
             return super().__getattribute__(name)
-        return getattr(self.base_model, name)
+        target = self.base_model if "base_model" in self.__dict__ else None
+        return getattr(target, name) if target is not None else super().__getattribute__(name)
 
     def __setattr__(self, name, value):
         if name in {"base_model", "config", "main_input_name"}:
             super().__setattr__(name, value)
-        else:
+        elif "base_model" in self.__dict__:
             setattr(self.base_model, name, value)
+        else:
+            super().__setattr__(name, value)
 
 
 class MoondreamAnalyzer:

@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 from typing import Optional, Tuple
 
 import cv2
@@ -39,23 +40,40 @@ class SuperResolutionService:
         candidates = []
         if self.preferred_model_path:
             candidates.append(self.preferred_model_path)
-        preferred = [
-            os.path.join(self.default_model_dir, 'superres.pb'),
-            os.path.join(self.default_model_dir, 'super_resolution_bsd500.pb'),
-            os.path.join(self.default_model_dir, 'super_resolution.pb'),
+        search_dirs = []
+        if self.default_model_dir:
+            search_dirs.append(self.default_model_dir)
+        # Additional fallbacks relative to repo
+        repo_root = Path(__file__).resolve().parents[2]
+        search_dirs.extend([
+            repo_root / "data" / "networks" / "Super-Resolution-BSD500",
+            repo_root / "data" / "networks" / "Super-Resolution--BSD500",
+            Path("/usr/local/bin/networks/Super-Resolution-BSD500"),
+            Path("/usr/local/bin/networks/Super-Resolution--BSD500"),
+        ])
+        unique_dirs = []
+        for directory in search_dirs:
+            if directory and directory not in unique_dirs:
+                unique_dirs.append(directory)
+        file_candidates = [
+            "superres.pb",
+            "super_resolution_bsd500.pb",
+            "super_resolution.pb",
+            "super_resolution.onnx",
+            "superres.onnx",
+            "model.onnx",
         ]
-        fallbacks = [
-            os.path.join(self.default_model_dir, 'super_resolution.onnx'),
-            os.path.join(self.default_model_dir, 'model.onnx'),
-            os.path.join(self.default_model_dir, 'superres.onnx'),
-        ]
-        candidates.extend(preferred + fallbacks)
-        if self.default_model_dir and os.path.isdir(self.default_model_dir):
-            dir_files = sorted(os.listdir(self.default_model_dir))
-            for ext in ('.pb', '.onnx'):
-                for filename in dir_files:
-                    if filename.lower().endswith(ext):
-                        candidates.append(os.path.join(self.default_model_dir, filename))
+        for base in unique_dirs:
+            base = Path(base)
+            if not base or not base.exists():
+                continue
+            for fname in file_candidates:
+                candidate = base / fname
+                if candidate.exists():
+                    candidates.append(str(candidate))
+            for entry in sorted(base.glob("*")):
+                if entry.suffix.lower() in (".pb", ".onnx"):
+                    candidates.append(str(entry))
         for candidate in candidates:
             if candidate and os.path.exists(candidate):
                 return candidate
@@ -69,13 +87,6 @@ class SuperResolutionService:
         model_path = self._resolve_model_path()
         if not model_path or not os.path.exists(model_path):
             raise HTTPException(503, "No se encontró el modelo de super resolución. Configura SUPERRES_MODEL_PATH o verifica data/networks/Super-Resolution-BSD500.")
-        _, ext = os.path.splitext(model_path)
-        if ext.lower() == '.onnx':
-            raise HTTPException(
-                503,
-                f"El modelo seleccionado ({model_path}) es ONNX y cv2.dnn_superres solo soporta pesos TensorFlow (.pb). "
-                "Descarga/convierte la versión .pb o apunta SUPERRES_MODEL_PATH a un archivo .pb válido."
-            )
         try:
             sr = self._factory()
             sr.readModel(model_path)
@@ -87,4 +98,13 @@ class SuperResolutionService:
             print(f"✅ Super Resolution model loaded ({algo}, x{scale}): {model_path}")
             return self._engine, self._scale
         except Exception as exc:
+            _, ext = os.path.splitext(model_path)
+            if ext.lower() == ".onnx":
+                raise HTTPException(
+                    503,
+                    f"No se pudo cargar el modelo ONNX ({model_path}). cv2.dnn_superres requiere pesos TensorFlow (.pb) "
+                    "o una versión de OpenCV compilada con soporte ONNX para dnn_superres. "
+                    "Convierte el modelo a .pb o especifica SUPERRES_MODEL_PATH apuntando a un archivo compatible. "
+                    f"Detalle original: {exc}"
+                )
             raise HTTPException(503, f"No se pudo cargar el modelo de super resolución en {model_path}: {exc}")

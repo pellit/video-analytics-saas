@@ -91,6 +91,9 @@ app.add_middleware(
 # ============================================================================
 
 vlm_analyzer: Optional[MoondreamAnalyzer] = None
+VLM_MAX_MEMORY_MB = _get_env_int('VLM_MAX_MEMORY_MB')
+if VLM_MAX_MEMORY_MB is None:
+    VLM_MAX_MEMORY_MB = 12000
 redis_client: Optional[redis.Redis] = None
 
 # ============================================================================
