@@ -34,6 +34,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from .vlm_engine import MoondreamAnalyzer, get_prompt, list_prompts, PREDEFINED_PROMPTS
+import gradio as gr
+from .ui import create_ui
 
 # ============================================================================
 # Configuration
@@ -65,15 +67,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ============================================================================
-# --- NUEVO: MONTAJE DE GRADIO UI ---
-# ============================================================================
-# Creamos la UI pasando la función que obtiene tu analyzer singleton
-vlm_ui = create_ui(get_vlm_analyzer)
-
-# Montamos Gradio en la ruta /ui
-# Ahora podrás acceder a http://localhost:5100/ui
-app = gr.mount_gradio_app(app, vlm_ui, path="/ui")
+# NOTE: La creación y montaje de la UI se realiza más abajo, después de definir
+# `get_vlm_analyzer` y otras funciones, para evitar NameError si la función
+# todavía no está definida en el momento de la importación.
 
 # ============================================================================
 # Global State
@@ -131,6 +127,12 @@ def get_vlm_analyzer() -> MoondreamAnalyzer:
     if vlm_analyzer is None:
         vlm_analyzer = MoondreamAnalyzer(model_id=VLM_MODEL, revision=VLM_REVISION)
     return vlm_analyzer
+
+# --- MONTAJE DE GRADIO UI ---
+# Creamos la UI pasando la getter function del analyzer (no la instancia)
+vlm_ui = create_ui(get_vlm_analyzer)
+# Montamos Gradio en la ruta /ui
+app = gr.mount_gradio_app(app, vlm_ui, path="/ui")
 
 def get_redis_client() -> Optional[redis.Redis]:
     """Obtiene o crea la conexión Redis."""
