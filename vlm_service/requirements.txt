@@ -21,7 +21,8 @@ Pillow>=9.0.0
 --extra-index-url https://download.pytorch.org/whl/cpu
 torch==2.2.0+cpu
 torchvision==0.17.0+cpu
-transformers==4.38.0
+# 4.44+ re-exporta is_torchdynamo_compiling requerido por Moondream/transformers
+transformers>=4.44.0,<5.0.0
 einops>=0.7.0
 accelerate>=0.25.0
 gradio
