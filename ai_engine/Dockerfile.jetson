@@ -1,5 +1,5 @@
 # ==============================================================================
-# Dockerfile Jetson Nano - FINAL (OpenCV 4.10 + CUDA)
+# Dockerfile Jetson Nano - FINAL (OpenCV 4.5.5 + CUDA)
 # Base: l4t-ml (OpenCV CUDA pre-instalado, pero lo recompilamos para full features)
 # ==============================================================================
 ARG BASE_IMAGE=dustynv/jetson-inference:r32.7.1
@@ -29,7 +29,7 @@ RUN apt-get update && \
     rm -rf /var/lib/apt/lists/*
 
 # ------------------------------------------------------------------------------
-# 2. Compilar OpenCV 4.10 (compatible con Jetson Nano / CUDA 10.2)
+# 2. Compilar OpenCV 4.5.5 (La versión compatible con Jetson Nano / CUDA 10.2)
 #    Se puede omitir con --build-arg BUILD_OPENCV=0 para reutilizar una imagen precompilada.
 # ------------------------------------------------------------------------------
 ARG BUILD_OPENCV=1
@@ -39,8 +39,8 @@ RUN if [ "$BUILD_OPENCV" = "1" ]; then \
         apt-get remove -y python3-opencv || true && \
         rm -rf /usr/lib/python3.6/dist-packages/cv2 && \
         rm -rf /usr/local/lib/python3.6/dist-packages/cv2 && \
-        git clone --branch 4.10.0 --depth 1 https://github.com/opencv/opencv.git && \
-        git clone --branch 4.10.0 --depth 1 https://github.com/opencv/opencv_contrib.git && \
+        git clone --branch 4.5.5 --depth 1 https://github.com/opencv/opencv.git && \
+        git clone --branch 4.5.5 --depth 1 https://github.com/opencv/opencv_contrib.git && \
         mkdir -p /tmp/opencv/build && cd /tmp/opencv/build && \
         cmake -D CMAKE_BUILD_TYPE=Release \
               -D CMAKE_INSTALL_PREFIX=/usr/local \
@@ -70,7 +70,7 @@ RUN if [ "$BUILD_OPENCV" = "1" ]; then \
         make install && \
         ldconfig && \
         rm -rf /tmp/opencv /tmp/opencv_contrib && \
-        echo "✅ OpenCV 4.10 instalado en la imagen"; \
+        echo "✅ OpenCV 4.5.5 instalado en la imagen"; \
     else \
         echo "⏭️  Saltando compilación de OpenCV (BUILD_OPENCV=$BUILD_OPENCV)"; \
     fi
