@@ -31,6 +31,7 @@ services:
       - jetson_tensorrt_cache:/root/.cache/tensorrt
       - /tmp/argus_socket:/tmp/argus_socket
       - ./data/networks:/jetson-inference/data/networks
+      - /home/jetson/video-analytics-saas/data/networks:/usr/local/bin/networks:ro
       - ./ai_engine/src:/app/src
     logging:
       driver: "json-file"
