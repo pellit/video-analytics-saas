@@ -1,6 +1,6 @@
 import os
 import traceback
-from typing import Dict, Any
+from typing import Dict, Any, List
 
 import cv2
 from fastapi import HTTPException
@@ -9,7 +9,7 @@ from fastapi import HTTPException
 class HitDetectionService:
     """Encapsula la ejecución del modelo hit_detect.onnx."""
 
-    def __init__(self, default_model_dirs: list[str]):
+    def __init__(self, default_model_dirs: List[str]):
         self.default_model_dirs = default_model_dirs
         self._model_override = os.environ.get('HIT_DETECT_MODEL_PATH')
         self._net = None
