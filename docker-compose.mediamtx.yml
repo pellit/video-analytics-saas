@@ -149,6 +149,8 @@ services:
       context: ./vlm_service
       dockerfile: Dockerfile
     command: uvicorn src.main:app --host 0.0.0.0 --port 5100
+    ports:
+      - "5100:5100"
     environment:
       - REDIS_HOST=redis
       - PYTHONUNBUFFERED=1
@@ -162,6 +164,17 @@ services:
       - redis
     networks:
       - saas_net
+      - dokploy-network
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=${TRAEFIK_NETWORK:-dokploy-network}"
+      - "traefik.http.routers.${PROJECT_NAME:-saas}-vlm.rule=Host(`dev.pellit.com.ar`) && PathPrefix(`/vlm`)"
+      - "traefik.http.routers.${PROJECT_NAME:-saas}-vlm.entrypoints=websecure"
+      - "traefik.http.routers.${PROJECT_NAME:-saas}-vlm.tls=true"
+      - "traefik.http.routers.${PROJECT_NAME:-saas}-vlm.tls.certresolver=letsencrypt"
+      - "traefik.http.middlewares.${PROJECT_NAME:-saas}-strip-vlm.stripprefix.prefixes=/vlm"
+      - "traefik.http.routers.${PROJECT_NAME:-saas}-vlm.middlewares=${PROJECT_NAME:-saas}-strip-vlm"
+      - "traefik.http.services.${PROJECT_NAME:-saas}-vlm.loadbalancer.server.port=5100"
 
   # --- MEDIA SERVER (MediaMTX - Go) ---
   media_server:
