@@ -158,6 +158,8 @@ services:
       - VLM_REVISION=${VLM_REVISION:-2024-08-26}
       - VLM_LAZY_LOAD=${VLM_LAZY_LOAD:-true}
       - VLM_PRELOAD=${VLM_PRELOAD:-false}
+      - VLM_MAX_MEMORY_MB=${VLM_MAX_MEMORY_MB:-2400}
+      - VLM_IDLE_UNLOAD_SECONDS=${VLM_IDLE_UNLOAD_SECONDS:-900}
     volumes:
       - vlm_cache:/root/.cache/huggingface
     depends_on:

@@ -9,6 +9,7 @@ numpy<2.0.0
 requests
 fastapi
 uvicorn[standard]
+psutil
 
 # --- Image Processing ---
 opencv-python-headless

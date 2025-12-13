@@ -5,46 +5,32 @@ UPDATED: Uses YOLOv4-Tiny (Reliable & DNN Compatible)
 
 import os
 import time
-import math
 import base64
-import tempfile
-import traceback
 import numpy as np
 import cv2
-import requests
-from collections import defaultdict, Counter
+import tempfile
 from typing import Optional, List, Dict, Any
-from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
-try:
-    from cv2.dnn_superres import DnnSuperResImpl_create
-except ImportError:
-    DnnSuperResImpl_create = None
-
-from .services.jetson_env import JETSON_MODELS_MANIFEST
 from .services.video_utils import bgr_to_cuda
 from .services.depth_pose import run_depthnet_video, analyze_depth_pose_video as depth_pose_service_analyze
-from .services.object_analysis import (
-    run_detectnet_inference,
-    classify_frame_with_imagenet,
-    annotate_depth_for_detections,
-    infer_player_orientation,
-    infer_contact_side,
-    describe_depth_relation,
-    extract_pose_for_bbox,
-    compute_pose_ball_contacts,
+from .services.yolo_service import YoloFallbackService
+from .services.video_io import (
+    decode_base64_image,
+    save_upload_to_temp,
+    ensure_video_duration,
+    get_video_metadata,
 )
+from .services.face_service import FaceEmbeddingService
+from .services.activity_analysis import ActivityAnalyzer, SOCCER_BALL_LABELS, GYM_EQUIPMENT_LABELS
+from .services.actionnet_service import ActionNetService, JETSON_INFERENCE_AVAILABLE as ACTIONNET_AVAILABLE
+from .services.hit_detection_service import HitDetectionService
+from .services.superres_service import SuperResolutionService
 
-try:
-    import jetson.inference
-    import jetson.utils
-    JETSON_INFERENCE_AVAILABLE = True
-except ImportError:
-    JETSON_INFERENCE_AVAILABLE = False
+JETSON_INFERENCE_AVAILABLE = ACTIONNET_AVAILABLE
 
 # --- Configuration ---
 # CAMBIO: Usamos yolov4-tiny por defecto porque es 100% compatible con OpenCV DNN
@@ -109,252 +95,37 @@ SUPERRES_MODEL_PATH = os.environ.get('SUPERRES_MODEL_PATH')
 SUPERRES_MODEL_DIR = os.environ.get('SUPERRES_MODEL_DIR', '/usr/local/bin/networks/Super-Resolution-BSD500')
 
 # Global model instance
-net = None
-output_layers = None
-classes = []
-model_name = None
-actionnet = None
-hit_detection_net = None
-face_detector = None
-face_recognizer = None
-face_recognizer_backend = None
-superres_engine = None
-superres_scale = 2
-superres_model_path = None
-face_detector_backend = None
+BASE_DIR = os.path.dirname(__file__)
 
-HIT_DETECT_MODEL_OVERRIDE = os.environ.get('HIT_DETECT_MODEL_PATH')
+yolo_fallback = YoloFallbackService(MODELS_DIR)
+face_service = FaceEmbeddingService(
+    face_detect_model_path=FACE_DETECT_MODEL_PATH,
+    face_recognition_model_path=FACE_RECOGNITION_MODEL_PATH,
+    jetson_face_network=JETSON_FACE_NETWORK,
+    jetson_face_threshold=JETSON_FACE_THRESHOLD,
+    sface_input_size=SFACE_INPUT_SIZE,
+    sface_template=SFACE_TEMPLATE,
+)
 
+activity_analyzer = ActivityAnalyzer(
+    yolo_fallback=yolo_fallback,
+    enable_ball_fallback=BALL_YOLO_FALLBACK,
+    fallback_confidence=BALL_YOLO_CONFIDENCE,
+    fallback_nms=BALL_YOLO_NMS,
+    soccer_labels=SOCCER_BALL_LABELS,
+    gym_labels=GYM_EQUIPMENT_LABELS,
+)
 
-def _resolve_hit_model_path():
-    base_dir = os.path.dirname(__file__)
-    candidates = [
-        HIT_DETECT_MODEL_OVERRIDE,
-        os.path.join(base_dir, "../models/hit_detect.onnx"),
-        os.path.join(base_dir, "../hit_detect.onnx"),
-        os.path.join(base_dir, "hit_detect.onnx"),
-        os.path.join(MODELS_DIR, "hit_detect.onnx"),
-    ]
-    for candidate in candidates:
-        if candidate:
-            resolved = os.path.abspath(candidate)
-            if os.path.exists(resolved):
-                return resolved
-    return os.path.abspath(os.path.join(base_dir, "../models/hit_detect.onnx"))
+actionnet_service = ActionNetService(ACTIONNET_MODEL, ACTIONNET_LABELS)
 
+hit_detection_service = HitDetectionService([
+    os.path.join(BASE_DIR, "../models/hit_detect.onnx"),
+    os.path.join(BASE_DIR, "../hit_detect.onnx"),
+    os.path.join(BASE_DIR, "hit_detect.onnx"),
+    os.path.join(MODELS_DIR, "hit_detect.onnx"),
+])
 
-HIT_DETECTION_MODEL_PATH = _resolve_hit_model_path()
-
-SOCCER_BALL_LABELS = {"sports_ball", "ball", "frisbee"}
-GYM_EQUIPMENT_LABELS = {
-    "barbell", "dumbbell", "bench", "kettlebell", "backpack", "suitcase",
-    "handbag", "bottle", "chair", "cup"
-}
-BALL_YOLO_FALLBACK = os.environ.get("BALL_YOLO_FALLBACK", "1").lower() not in ("0", "false", "off")
-BALL_YOLO_CONFIDENCE = float(os.environ.get("BALL_YOLO_CONFIDENCE", "0.45"))
-BALL_YOLO_NMS = float(os.environ.get("BALL_YOLO_NMS", "0.35"))
-ORIENTATION_TRANSLATIONS = {
-    "facing_camera": "de frente a la cámara",
-    "facing_away": "de espaldas a la cámara",
-    "sideways": "de perfil",
-    "unknown": "orientación desconocida",
-    None: "orientación desconocida"
-}
-
-
-def _resolve_superres_model_path():
-    """Locate super-resolution weights, preferring TensorFlow (.pb) exports."""
-
-    def _append_unique(seq: List[str], path: Optional[str]):
-        if path and path not in seq:
-            seq.append(path)
-
-    candidates: List[str] = []
-    _append_unique(candidates, SUPERRES_MODEL_PATH)
-
-    preferred = [
-        os.path.join(SUPERRES_MODEL_DIR, 'superres.pb'),
-        os.path.join(SUPERRES_MODEL_DIR, 'super_resolution_bsd500.pb'),
-        os.path.join(SUPERRES_MODEL_DIR, 'super_resolution.pb'),
-        os.path.join(MODELS_DIR, 'superres.pb'),
-        os.path.join(MODELS_DIR, 'super_resolution_bsd500.pb'),
-        os.path.join(MODELS_DIR, 'super_resolution.pb'),
-    ]
-    fallbacks = [
-        os.path.join(SUPERRES_MODEL_DIR, 'super_resolution.onnx'),
-        os.path.join(SUPERRES_MODEL_DIR, 'model.onnx'),
-        os.path.join(SUPERRES_MODEL_DIR, 'superres.onnx'),
-        os.path.join(MODELS_DIR, 'super_resolution.onnx'),
-        os.path.join(MODELS_DIR, 'superres.onnx'),
-    ]
-
-    for path in preferred + fallbacks:
-        _append_unique(candidates, path)
-
-    if SUPERRES_MODEL_DIR and os.path.isdir(SUPERRES_MODEL_DIR):
-        dir_files = sorted(os.listdir(SUPERRES_MODEL_DIR))
-        for ext in ('.pb', '.onnx'):
-            for filename in dir_files:
-                if filename.lower().endswith(ext):
-                    _append_unique(candidates, os.path.join(SUPERRES_MODEL_DIR, filename))
-
-    for candidate in candidates:
-        if candidate and os.path.exists(candidate):
-            return candidate
-    return None
-
-# --- Reliable Model URLs (AlexeyAB Darknet) ---
-MODEL_URLS = {
-    "yolov4-tiny.cfg": "https://raw.githubusercontent.com/AlexeyAB/darknet/master/cfg/yolov4-tiny.cfg",
-    "yolov4-tiny.weights": "https://github.com/AlexeyAB/darknet/releases/download/darknet_yolo_v4_pre/yolov4-tiny.weights",
-    "coco.names": "https://raw.githubusercontent.com/AlexeyAB/darknet/master/data/coco.names"
-}
-
-def download_file(url: str, dest: str):
-    if os.path.exists(dest) and os.path.getsize(dest) > 0:
-        print(f"✅ Found {os.path.basename(dest)}")
-        return
-    print(f"⬇️ Downloading {os.path.basename(dest)}...")
-    try:
-        r = requests.get(url, stream=True, timeout=30)
-        r.raise_for_status()
-        with open(dest, 'wb') as f:
-            for chunk in r.iter_content(chunk_size=8192):
-                f.write(chunk)
-        print(f"✅ Download complete: {dest}")
-    except Exception as e:
-        print(f"❌ Download failed: {e}")
-
-def load_yolo_model():
-    """Load YOLOv4-Tiny using OpenCV DNN"""
-    global net, output_layers, classes, model_name
-    
-    # 1. Download required files
-    cfg_path = os.path.join(MODELS_DIR, "yolov4-tiny.cfg")
-    weights_path = os.path.join(MODELS_DIR, "yolov4-tiny.weights")
-    names_path = os.path.join(MODELS_DIR, "coco.names")
-    
-    download_file(MODEL_URLS["yolov4-tiny.cfg"], cfg_path)
-    download_file(MODEL_URLS["yolov4-tiny.weights"], weights_path)
-    download_file(MODEL_URLS["coco.names"], names_path)
-    
-    # 2. Load Classes
-    if os.path.exists(names_path):
-        with open(names_path, "r") as f:
-            classes = [line.strip() for line in f.readlines()]
-    else:
-        classes = ["object"]
-
-    # 3. Load Network
-    print(f"⏳ Loading YOLOv4-Tiny...")
-    try:
-        net = cv2.dnn.readNet(weights_path, cfg_path)
-        
-        # Enable CUDA if available (Jetson Magic)
-        net.setPreferableBackend(cv2.dnn.DNN_BACKEND_CUDA)
-        net.setPreferableTarget(cv2.dnn.DNN_TARGET_CUDA)
-        print("✅ CUDA Backend Enabled")
-        
-        layer_names = net.getLayerNames()
-        output_layers = [layer_names[i[0] - 1] for i in net.getUnconnectedOutLayers()]
-        model_name = "yolov4-tiny"
-        return True
-    except Exception as e:
-        print(f"❌ Failed to load YOLO: {e}")
-        # Fallback to CPU if CUDA fails
-        try:
-            print("⚠️ Retrying on CPU...")
-            net.setPreferableBackend(cv2.dnn.DNN_BACKEND_OPENCV)
-            net.setPreferableTarget(cv2.dnn.DNN_TARGET_CPU)
-            model_name = "yolov4-tiny-cpu"
-            return True
-        except Exception as e2:
-             print(f"❌ CPU Fallback failed: {e2}")
-             return False
-
-
-def _ensure_yolo_ready():
-    if net is None or output_layers is None:
-        load_yolo_model()
-    if net is None or output_layers is None:
-        raise HTTPException(503, "YOLOv4-Tiny no está disponible para el fallback de pelota")
-
-
-def _run_yolo_detection(
-    image: np.ndarray,
-    confidence: float,
-    nms_threshold: float,
-    labels_filter: Optional[set] = None
-) -> List[Dict[str, Any]]:
-    try:
-        _ensure_yolo_ready()
-    except HTTPException:
-        return []
-
-    h, w = image.shape[:2]
-    blob = cv2.dnn.blobFromImage(image, scalefactor=1 / 255.0, size=(416, 416), swapRB=True, crop=False)
-    net.setInput(blob)
-    try:
-        layer_outputs = net.forward(output_layers)
-    except Exception as exc:
-        print(f"[YOLO fallback] forward failed: {exc}")
-        return []
-
-    boxes = []
-    confidences = []
-    class_ids = []
-    for output in layer_outputs:
-        for detection in output:
-            scores = detection[5:]
-            class_id = int(np.argmax(scores))
-            conf = float(scores[class_id])
-            if conf < confidence:
-                continue
-            center_x = int(detection[0] * w)
-            center_y = int(detection[1] * h)
-            width = int(detection[2] * w)
-            height = int(detection[3] * h)
-            x = max(0, int(center_x - width / 2))
-            y = max(0, int(center_y - height / 2))
-            boxes.append([x, y, width, height])
-            confidences.append(conf)
-            class_ids.append(class_id)
-
-    if not boxes:
-        return []
-
-    try:
-        idxs = cv2.dnn.NMSBoxes(boxes, confidences, confidence, nms_threshold)
-    except Exception:
-        idxs = list(range(len(boxes)))
-
-    results: List[Dict[str, Any]] = []
-    label_filter_set = {lbl.lower() for lbl in labels_filter} if labels_filter else None
-    if len(idxs) == 0 and boxes:
-        idx_iter = range(len(boxes))
-    elif isinstance(idxs, (list, tuple)):
-        idx_iter = [int(i) for i in idxs]
-    else:
-        idx_iter = [int(i[0]) for i in idxs]
-
-    for i in idx_iter:
-        class_name = classes[class_ids[i]] if classes else f"class_{class_ids[i]}"
-        if label_filter_set and class_name.lower() not in label_filter_set:
-            continue
-        x, y, width, height = boxes[i]
-        bbox = [x, y, x + width, y + height]
-        results.append({
-            "class_name": class_name.lower(),
-            "class_id": int(class_ids[i]),
-            "confidence": round(float(confidences[i]), 2),
-            "bbox": bbox,
-            "track_id": None,
-            "area": int(width * height),
-            "status": None,
-            "source": "yolo",
-            "engine": model_name or "yolov4-tiny"
-        })
-    return results
+superres_service = SuperResolutionService(SUPERRES_MODEL_DIR, SUPERRES_MODEL_PATH)
 
 # --- FastAPI App ---
 app = FastAPI(title="Jetson Inference API")
@@ -369,7 +140,10 @@ app.add_middleware(
 @app.on_event("startup")
 async def startup_event():
     print("🚀 Starting Inference API...")
-    load_yolo_model()
+    try:
+        yolo_fallback.ensure_ready()
+    except HTTPException as exc:
+        print(f"⚠️ YOLO fallback no disponible: {exc.detail}")
 
 # --- Request/Response ---
 class DetectionRequest(BaseModel):
@@ -398,380 +172,40 @@ class FaceCompareRequest(BaseModel):
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "model": model_name, "cuda": cv2.cuda.getCudaEnabledDeviceCount() > 0}
-
-
-def _load_actionnet():
-    global actionnet
-    if actionnet is None:
-        if not JETSON_INFERENCE_AVAILABLE:
-            raise HTTPException(503, "jetson-inference is not available on this device")
-        try:
-            if ACTIONNET_LABELS:
-                actionnet = jetson.inference.actionNet(ACTIONNET_MODEL, ACTIONNET_LABELS)
-            else:
-                actionnet = jetson.inference.actionNet(ACTIONNET_MODEL)
-        except Exception as exc:
-            manifest_hint = JETSON_MODELS_MANIFEST or "networks/models.json"
-            raise HTTPException(
-                503,
-                f"jetson-inference actionNet failed to load '{ACTIONNET_MODEL}'. "
-                f"Verifica que exista {manifest_hint} y los pesos requeridos. Detalle: {exc}"
-            )
-    return actionnet
-
-
-def _load_face_detector():
-    global face_detector, face_detector_backend
-    if face_detector is None:
-        if JETSON_INFERENCE_AVAILABLE:
-            try:
-                face_detector = jetson.inference.detectNet(JETSON_FACE_NETWORK, threshold=JETSON_FACE_THRESHOLD)
-                face_detector_backend = "jetson_detectnet"
-                return face_detector, face_detector_backend
-            except Exception:
-                face_detector = None
-
-        if hasattr(cv2, "FaceDetectorYN") and hasattr(cv2.FaceDetectorYN, "create"):
-            model_path = FACE_DETECT_MODEL_PATH
-            if not os.path.exists(model_path):
-                raise HTTPException(503, f"No se encontró el modelo de detección facial en {model_path}")
-            try:
-                face_detector = cv2.FaceDetectorYN.create(model_path, "", (320, 320))
-                face_detector_backend = "yunet"
-            except Exception as exc:
-                raise HTTPException(503, f"cv2.FaceDetectorYN no pudo cargar '{model_path}': {exc}")
-        else:
-            cascade_path = getattr(cv2.data, "haarcascades", "") + "haarcascade_frontalface_default.xml"
-            if not cascade_path or not os.path.exists(cascade_path):
-                raise HTTPException(503, "OpenCV no tiene FaceDetectorYN y no se encontró haarcascade_frontalface_default.xml para el fallback.")
-            detector = cv2.CascadeClassifier(cascade_path)
-            if detector.empty():
-                raise HTTPException(503, "No se pudo inicializar el clasificador Haar para detección facial.")
-            face_detector = detector
-            face_detector_backend = "cascade"
-    return face_detector, face_detector_backend
-
-
-
-
-def _load_face_recognizer():
-    global face_recognizer, face_recognizer_backend
-    if face_recognizer is None:
-        model_path = FACE_RECOGNITION_MODEL_PATH
-        if not os.path.exists(model_path):
-            raise HTTPException(503, f"No se encontró el modelo de reconocimiento facial en {model_path}")
-        if hasattr(cv2, "FaceRecognizerSF") and hasattr(cv2.FaceRecognizerSF, "create"):
-            try:
-                face_recognizer = cv2.FaceRecognizerSF.create(model_path, "")
-                face_recognizer_backend = "opencv_sface"
-            except Exception:
-                face_recognizer = None
-        if face_recognizer is None:
-            try:
-                face_recognizer = _OnnxSFaceRecognizer(model_path)
-                face_recognizer_backend = "onnx_sface"
-            except Exception as exc:
-                raise HTTPException(503, f"No se pudo inicializar el modelo de reconocimiento facial: {exc}")
-    return face_recognizer, face_recognizer_backend
-
-
-def _infer_superres_config(model_path: str):
-    fname = os.path.basename(model_path).lower()
-    algo = 'edsr'
-    for candidate in ('edsr', 'espcn', 'fsrcnn', 'lapsrn'):
-        if candidate in fname:
-            algo = candidate
-            break
-    scale = 4
-    for candidate in (8, 4, 3, 2):
-        token = f"x{candidate}"
-        if token in fname or f"{candidate}x" in fname or f"_x{candidate}" in fname:
-            scale = candidate
-            break
-    return algo, scale
-
-
-def _load_superres_engine():
-    global superres_engine, superres_scale, superres_model_path
-    if superres_engine is not None:
-        return superres_engine, superres_scale
-    if DnnSuperResImpl_create is None:
-        raise HTTPException(503, "cv2.dnn_superres no está disponible en este entorno (compila OpenCV con contrib).")
-    model_path = _resolve_superres_model_path()
-    if not model_path or not os.path.exists(model_path):
-        raise HTTPException(503, "No se encontró el modelo de super resolución. Configura SUPERRES_MODEL_PATH o verifica data/networks/Super-Resolution-BSD500.")
-    _, ext = os.path.splitext(model_path)
-    if ext.lower() == '.onnx':
-        raise HTTPException(
-            503,
-            f"El modelo seleccionado ({model_path}) es ONNX y cv2.dnn_superres solo soporta pesos TensorFlow (.pb). "
-            "Descarga/convierte la versión .pb o apunta SUPERRES_MODEL_PATH a un archivo .pb válido."
-        )
-    try:
-        sr = DnnSuperResImpl_create()
-        sr.readModel(model_path)
-        algo, scale = _infer_superres_config(model_path)
-        sr.setModel(algo, scale)
-        superres_engine = sr
-        superres_scale = scale
-        superres_model_path = model_path
-        print(f"✅ Super Resolution model loaded ({algo}, x{scale}): {model_path}")
-        return superres_engine, superres_scale
-    except Exception as exc:
-        raise HTTPException(503, f"No se pudo cargar el modelo de super resolución en {model_path}: {exc}")
+    return {
+        "status": "ok",
+        "model": yolo_fallback.model_name,
+        "cuda": cv2.cuda.getCudaEnabledDeviceCount() > 0
+    }
 
 
 def _decode_base64_image(image_base64: str) -> np.ndarray:
-    """Decode a base64 image string into a numpy array."""
-    try:
-        payload = image_base64.split(",")[1] if "," in image_base64 else image_base64
-        img_bytes = base64.b64decode(payload)
-        nparr = np.frombuffer(img_bytes, np.uint8)
-        img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-    except Exception:
-        raise HTTPException(400, "Invalid image payload")
-    if img is None:
-        raise HTTPException(400, "Unable to decode image")
-    return img
-
-
-def _align_face_crop(image: np.ndarray, bbox: List[int], landmarks: Optional[List[float]]) -> np.ndarray:
-    x1, y1, x2, y2 = bbox
-    x1 = max(0, int(x1))
-    y1 = max(0, int(y1))
-    x2 = min(image.shape[1], int(x2))
-    y2 = min(image.shape[0], int(y2))
-    if x2 <= x1 or y2 <= y1:
-        return cv2.resize(image, SFACE_INPUT_SIZE)
-    if landmarks and len(landmarks) >= 10:
-        src = np.array(landmarks[:10], dtype=np.float32).reshape(5, 2)
-        try:
-            M, _ = cv2.estimateAffinePartial2D(src, SFACE_TEMPLATE, method=cv2.LMEDS)
-        except Exception:
-            M = None
-        if M is not None:
-            return cv2.warpAffine(image, M, SFACE_INPUT_SIZE)
-    face = image[y1:y2, x1:x2]
-    if face.size == 0:
-        return cv2.resize(image, SFACE_INPUT_SIZE)
-    return cv2.resize(face, SFACE_INPUT_SIZE)
-
-
-class _OnnxSFaceRecognizer:
-    def __init__(self, model_path: str):
-        self.net = cv2.dnn.readNetFromONNX(model_path)
-
-    def extract(self, image: np.ndarray, bbox: List[int], landmarks: Optional[List[float]]) -> List[float]:
-        aligned = _align_face_crop(image, bbox, landmarks)
-        blob = cv2.dnn.blobFromImage(
-            aligned,
-            scalefactor=1 / 255.0,
-            size=SFACE_INPUT_SIZE,
-            mean=(0, 0, 0),
-            swapRB=True,
-            crop=False
-        )
-        self.net.setInput(blob)
-        embedding = self.net.forward().flatten()
-        norm = np.linalg.norm(embedding)
-        if norm > 0:
-            embedding = embedding / norm
-        return embedding.astype(np.float32).tolist()
+    return decode_base64_image(image_base64)
 
 
 def _save_upload_to_temp(file: UploadFile) -> str:
-    try:
-        file.file.seek(0)
-        contents = file.file.read()
-    except Exception:
-        raise HTTPException(400, "Failed to read uploaded file")
-
-    if not contents:
-        raise HTTPException(400, "Uploaded file is empty")
-
-    suffix = os.path.splitext(file.filename or "")[1]
-    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
-    tmp.write(contents)
-    tmp.close()
-    return tmp.name
+    return save_upload_to_temp(file)
 
 
 def _ensure_video_duration(path: str, max_seconds: int = MAX_VIDEO_DURATION_S):
-    cap = cv2.VideoCapture(path)
-    if not cap.isOpened():
-        raise HTTPException(400, "Unable to open uploaded video")
-    fps = cap.get(cv2.CAP_PROP_FPS) or 0
-    frames = cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0
-    cap.release()
-    if fps <= 0 or frames <= 0:
-        raise HTTPException(400, "Unable to determine video duration")
-    duration = frames / fps
-    if duration > max_seconds:
-        raise HTTPException(400, f"Video duration {duration:.1f}s exceeds limit of {max_seconds}s")
-    return duration
+    return ensure_video_duration(path, max_seconds)
 
 
 def _get_video_metadata(path: str) -> Dict[str, float]:
-    cap = cv2.VideoCapture(path)
-    if not cap.isOpened():
-        raise HTTPException(400, "Unable to open uploaded video")
-    fps = cap.get(cv2.CAP_PROP_FPS) or 0
-    frames = cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0
-    width = cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0
-    height = cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0
-    cap.release()
-    if fps <= 0 or frames <= 0:
-        raise HTTPException(400, "Unable to read video metadata")
-    return {
-        "fps": float(fps),
-        "frame_count": int(frames),
-        "width": int(width),
-        "height": int(height)
-    }
+    return get_video_metadata(path)
 
 
 def _run_inference(img: np.ndarray, confidence: float, nms_threshold: float) -> dict:
     """Wrapper around detectNet inference service with optional YOLO fallback for the ball."""
-    result = run_detectnet_inference(img, confidence, nms_threshold)
-    detections = list(result.get("detections", []))
-    has_ball = any(det.get("class_name", "").lower() in SOCCER_BALL_LABELS for det in detections)
-    fallback_info = {
-        "used": False,
-        "reason": None,
-        "new_detections": 0
-    }
-
-    if BALL_YOLO_FALLBACK and not has_ball:
-        fallback_conf = max(confidence, BALL_YOLO_CONFIDENCE)
-        fallback_nms = BALL_YOLO_NMS if BALL_YOLO_NMS > 0 else nms_threshold
-        fallback_dets = _run_yolo_detection(
-            img,
-            fallback_conf,
-            fallback_nms,
-            labels_filter=SOCCER_BALL_LABELS
-        )
-        if fallback_dets:
-            fallback_info.update({
-                "used": True,
-                "reason": "ball_missing",
-                "new_detections": len(fallback_dets),
-                "confidence": fallback_conf
-            })
-            detections.extend(fallback_dets)
-    result["detections"] = detections
-    if fallback_info["used"]:
-        result["ball_fallback"] = fallback_info
-    return result
-
-
-def _select_best_detection(detections: List[Dict[str, Any]], label_set: set) -> Optional[Dict[str, Any]]:
-    best = None
-    for det in detections:
-        if det.get("class_name", "").lower() in label_set:
-            if best is None or det.get("confidence", 0) > best.get("confidence", 0):
-                best = det
-    return best
-
-
-def _bbox_center(bbox: List[int]) -> tuple:
-    x1, y1, x2, y2 = bbox
-    return ((x1 + x2) / 2.0, (y1 + y2) / 2.0)
-
-
-def _center_distance(bbox_a: List[int], bbox_b: List[int]) -> float:
-    ax, ay = _bbox_center(bbox_a)
-    bx, by = _bbox_center(bbox_b)
-    return math.hypot(ax - bx, ay - by)
-
-
-def _map_viewer_side(player_side: Optional[str], orientation: Optional[str]) -> str:
-    side = (player_side or "center").lower()
-    orientation = (orientation or "unknown").lower()
-    if side == "center":
-        return "center"
-    if orientation == "facing_away":
-        return "right" if side == "left" else "left"
-    if orientation == "sideways":
-        return side
-    if orientation == "facing_camera":
-        return side
-    return side
+    return activity_analyzer.run_inference(img, confidence, nms_threshold)
 
 
 def _compute_player_motion_metrics(timeline: List[Dict[str, Any]], fps: float) -> Dict[str, Any]:
-    if not timeline or fps <= 0:
-        return {
-            "avg_speed_px_s": 0.0,
-            "max_speed_px_s": 0.0,
-            "total_distance_px": 0.0,
-            "samples": 0,
-            "movement_rating": "desconocido"
-        }
-
-    prev_center = None
-    prev_frame = None
-    total_distance = 0.0
-    speeds = []
-
-    for entry in timeline:
-        player = entry.get("player")
-        if not player or not player.get("bbox"):
-            prev_center = None
-            prev_frame = None
-            continue
-        center = _bbox_center(player["bbox"])
-        frame_number = int(entry.get("frame", 0))
-        if prev_center is not None and prev_frame is not None:
-            frame_delta = max(1, frame_number - prev_frame)
-            delta_seconds = frame_delta / fps
-            if delta_seconds > 0:
-                dist = math.hypot(center[0] - prev_center[0], center[1] - prev_center[1])
-                total_distance += dist
-                speeds.append(dist / delta_seconds)
-        prev_center = center
-        prev_frame = frame_number
-
-    avg_speed = sum(speeds) / len(speeds) if speeds else 0.0
-    max_speed = max(speeds) if speeds else 0.0
-    if avg_speed < 40:
-        movement_rating = "baja"
-    elif avg_speed < 120:
-        movement_rating = "media"
-    else:
-        movement_rating = "alta"
-
-    return {
-        "avg_speed_px_s": round(avg_speed, 2),
-        "max_speed_px_s": round(max_speed, 2),
-        "total_distance_px": round(total_distance, 2),
-        "samples": len(speeds),
-        "movement_rating": movement_rating
-    }
+    return activity_analyzer.compute_player_motion_metrics(timeline, fps)
 
 
 def _summarize_orientation(timeline: List[Dict[str, Any]]) -> Dict[str, Any]:
-    counts = Counter()
-    for entry in timeline:
-        orientation = entry.get("player_orientation")
-        if orientation:
-            counts[orientation] += 1
-    total = sum(counts.values())
-    if not total:
-        return {
-            "dominant_orientation": "unknown",
-            "dominant_ratio": 0.0,
-            "counts": []
-        }
-    dominant, dom_count = counts.most_common(1)[0]
-    return {
-        "dominant_orientation": dominant,
-        "dominant_ratio": round(dom_count / total, 4),
-        "counts": [
-            {"orientation": key, "frames": value, "ratio": round(value / total, 4)}
-            for key, value in counts.items()
-        ]
-    }
+    return activity_analyzer.summarize_orientation(timeline)
 
 
 def _build_activity_report(
@@ -783,153 +217,17 @@ def _build_activity_report(
     orientation_summary: Dict[str, Any],
     face_checks: Dict[str, Any]
 ) -> Dict[str, Any]:
-    fps = float(metadata.get("fps") or 0.0)
-    frame_count = int(metadata.get("frame_count") or 0)
-    duration = frame_count / fps if fps > 0 else 0.0
-
-    player_pct = round(detection_summary.get("player_presence_ratio", 0.0) * 100, 1)
-    ball_pct = round(detection_summary.get("ball_presence_ratio", 0.0) * 100, 1)
-    possession_pct = round(detection_summary.get("possession_ratio", 0.0) * 100, 1)
-    juggling_hits = int(detection_summary.get("juggling_hits", 0))
-    hand_contacts = len(detection_summary.get("hand_contact_frames", []))
-    ball_sources = detection_summary.get("ball_detection_sources", []) or []
-    fallback_frames = 0
-    for source in ball_sources:
-        if source.get("source") == "yolo":
-            fallback_frames += int(source.get("frames", 0))
-
-    if ball_pct >= 25 and fallback_frames == 0:
-        ball_tracking_quality = "sólida"
-    elif ball_pct >= 8:
-        ball_tracking_quality = "mixta"
-    else:
-        ball_tracking_quality = "débil"
-
-    def _depth_stats(values: List[float]) -> Optional[Dict[str, float]]:
-        if not values:
-            return None
-        return {
-            "min": round(min(values), 3),
-            "max": round(max(values), 3),
-            "spread": round(max(values) - min(values), 3),
-            "mean": round(sum(values) / len(values), 3)
-        }
-
-    player_depth_values = [
-        entry.get("player_depth")
-        for entry in detection_summary.get("timeline", [])
-        if entry.get("player_depth") is not None
-    ]
-    ball_depth_values = [
-        entry.get("ball_depth")
-        for entry in detection_summary.get("timeline", [])
-        if entry.get("ball_depth") is not None
-    ]
-
-    motion_rating = motion_metrics.get("movement_rating", "desconocido")
-    orientation_label = ORIENTATION_TRANSLATIONS.get(
-        orientation_summary.get("dominant_orientation"),
-        ORIENTATION_TRANSLATIONS["unknown"]
+    return activity_analyzer.build_activity_report(
+        metadata=metadata,
+        detection_summary=detection_summary,
+        action_analysis=action_analysis,
+        action_sequences=action_sequences,
+        motion_metrics=motion_metrics,
+        orientation_summary=orientation_summary,
+        face_checks=face_checks
     )
 
-    top_actions = (action_analysis or {}).get("top_labels", [])[:3]
-    primary_action = top_actions[0] if top_actions else None
 
-    action_segment = None
-    if action_sequences and action_sequences.get("segments"):
-        action_segment = action_sequences["segments"][0]
-
-    ball_control_rating = "muy baja"
-    if juggling_hits >= 6 or possession_pct >= 35:
-        ball_control_rating = "alta"
-    elif juggling_hits >= 3 or possession_pct >= 18:
-        ball_control_rating = "media"
-    elif ball_pct > 5:
-        ball_control_rating = "baja"
-
-    report_parts = [
-        f"Analizamos {frame_count} frames (~{duration:.1f}s).",
-        f"El jugador estuvo visible el {player_pct:.1f}% del tiempo."
-    ]
-    if ball_pct > 0:
-        report_parts.append(
-            f"El balón apareció el {ball_pct:.1f}% del tiempo y la posesión estimada fue del {possession_pct:.1f}%."
-        )
-    else:
-        report_parts.append("El balón casi no fue detectado en el video.")
-
-    report_parts.append(f"La movilidad general fue {motion_rating} y predominó una orientación {orientation_label}.")
-
-    if primary_action:
-        report_parts.append(
-            f"ActionNet identificó '{primary_action['label']}' como acción dominante (confianza máx. {primary_action['max_confidence']:.2f})."
-        )
-    if juggling_hits > 0:
-        report_parts.append(f"Se registraron {juggling_hits} toques/controles con miembros inferiores.")
-    else:
-        report_parts.append("No se observaron toques claros de control con los pies.")
-    if hand_contacts > 0:
-        report_parts.append(f"Se detectaron {hand_contacts} contactos con las manos.")
-    if face_checks.get("consistent"):
-        report_parts.append("Los chequeos faciales apuntan a que la misma persona aparece durante todo el clip.")
-    else:
-        report_parts.append("No pudimos confirmar que la misma persona aparezca en todo el video.")
-
-    report_text = " ".join(report_parts)
-
-    insights = [
-        f"Movimiento {motion_rating} con velocidad promedio {motion_metrics.get('avg_speed_px_s', 0.0):.1f}px/s.",
-        f"Control del balón catalogado como {ball_control_rating}.",
-        f"Orientación predominante: {orientation_label}."
-    ]
-    if primary_action:
-        insights.append(f"Acción dominante: {primary_action['label']} ({primary_action['count']} muestras).")
-    if fallback_frames > 0:
-        insights.append(f"Se usó fallback YOLO en {fallback_frames} frames para captar la pelota.")
-    if hand_contacts > 0:
-        insights.append(f"Advertencia: {hand_contacts} frames con posibles contactos de mano.")
-    if face_checks.get("consistent"):
-        insights.append("Chequeo facial consistente.")
-    else:
-        insights.append("El reconocimiento facial necesita mejor iluminación o primeros planos.")
-
-    tips = []
-    if ball_pct < 10:
-        tips.append("Incrementa el contraste del balón o acércalo a cámara para mejorar la detección.")
-    if motion_rating == "baja":
-        tips.append("Agrega desplazamientos en diferentes direcciones para enriquecer el entrenamiento.")
-    if hand_contacts > 0:
-        tips.append("Evita el uso de las manos si buscas métricas estrictas de fútbol freestyle.")
-    if not face_checks.get("consistent"):
-        tips.append("Asegura buena iluminación frontal para que el sistema valide la identidad.")
-    if not tips:
-        tips.append("Mantén esta configuración: los sensores respondieron de forma estable.")
-
-    metrics = {
-        "player_presence_pct": player_pct,
-        "ball_presence_pct": ball_pct,
-        "possession_pct": possession_pct,
-        "juggling_hits": juggling_hits,
-        "hand_contacts": hand_contacts,
-        "ball_detection_sources": ball_sources,
-        "ball_tracking_quality": ball_tracking_quality,
-        "ball_control_rating": ball_control_rating,
-        "motion": motion_metrics,
-        "orientation": orientation_summary,
-        "dominant_actions": top_actions,
-        "action_primary_segment": action_segment,
-        "player_depth_stats": _depth_stats(player_depth_values),
-        "ball_depth_stats": _depth_stats(ball_depth_values),
-        "face_consistent": face_checks.get("consistent"),
-        "face_successful_samples": face_checks.get("successful_samples", 0)
-    }
-
-    return {
-        "report_text": report_text,
-        "metrics": metrics,
-        "insights": insights,
-        "tips": tips
-    }
 def _analyze_soccer_detections(
     video_path: str,
     frame_stride: int,
@@ -939,136 +237,15 @@ def _analyze_soccer_detections(
     contact_threshold_px: Optional[int] = None,
     nms_threshold: float = 0.4
 ) -> Dict[str, Any]:
-    cap = cv2.VideoCapture(video_path)
-    if not cap.isOpened():
-        raise HTTPException(400, "Unable to open uploaded video")
-
-    frame_idx = 0
-    processed = 0
-    timeline = []
-    player_frames = 0
-    ball_frames = 0
-    possession_frames = 0
-    juggling_hits = 0
-    juggling_events: List[Dict[str, Any]] = []
-    last_foot_contact_frame = None
-    hand_contact_frames: List[int] = []
-    hand_contact_events: List[Dict[str, Any]] = []
-    juggling_gap = max(5, frame_stride * 2)
-    ball_source_counts = defaultdict(int)
-
-    while processed < max_frames:
-        ret, frame = cap.read()
-        if not ret:
-            break
-        if frame_idx % frame_stride != 0:
-            frame_idx += 1
-            continue
-
-        inference = _run_inference(frame, confidence, nms_threshold)
-        detections = inference.get("detections", [])
-        depth_context = annotate_depth_for_detections(frame, detections)
-        player_det = _select_best_detection(detections, {"person"})
-        ball_det = _select_best_detection(detections, SOCCER_BALL_LABELS)
-
-        entry: Dict[str, Any] = {"frame": frame_idx}
-        classification = classify_frame_with_imagenet(frame)
-        if classification:
-            entry["scene_classification"] = classification
-        if player_det:
-            entry["player"] = player_det
-            if depth_context:
-                entry["player_depth"] = player_det.get("depth_mean")
-                entry["player_orientation"] = infer_player_orientation(depth_context, player_det["bbox"])
-            player_frames += 1
-        if ball_det:
-            entry["ball"] = ball_det
-            if depth_context:
-                entry["ball_depth"] = ball_det.get("depth_mean")
-            ball_frames += 1
-            source = (ball_det.get("source") or "unknown").lower()
-            ball_source_counts[source] += 1
-
-        pose_data = None
-        if player_det:
-            pose_data = extract_pose_for_bbox(frame, player_det.get("bbox"))
-            if pose_data:
-                entry["pose_keypoints"] = pose_data["keypoints"]
-
-        if player_det and ball_det:
-            distance = _center_distance(player_det["bbox"], ball_det["bbox"])
-            entry["player_ball_distance"] = round(distance, 2)
-            entry["contact_side"] = infer_contact_side(player_det["bbox"], ball_det["bbox"])
-            entry["depth_relation"] = describe_depth_relation(
-                player_det.get("depth_mean"),
-                ball_det.get("depth_mean")
-            )
-            if distance <= possession_distance_px:
-                possession_frames += 1
-
-            contacts = compute_pose_ball_contacts(
-                pose_data,
-                ball_det["bbox"],
-                threshold_px=contact_threshold_px
-            )
-            if contacts:
-                limb_contacts = []
-                orientation = entry.get("player_orientation", "unknown")
-                for contact in contacts:
-                    viewer_side = _map_viewer_side(contact.get("side"), orientation)
-                    contact_entry = {
-                        **contact,
-                        "viewer_side": viewer_side
-                    }
-                    limb_contacts.append(contact_entry)
-                    if contact["limb_type"] in ("foot", "knee"):
-                        if last_foot_contact_frame is None or frame_idx - last_foot_contact_frame <= juggling_gap:
-                            juggling_hits += 1
-                            juggling_events.append({
-                                "frame": frame_idx,
-                                "limb": contact["limb_name"],
-                                "viewer_side": viewer_side,
-                                "distance_px": contact["distance_px"]
-                            })
-                        last_foot_contact_frame = frame_idx
-                    if contact["limb_type"] == "hand":
-                        hand_contact_frames.append(frame_idx)
-                        hand_contact_events.append({
-                            "frame": frame_idx,
-                            "limb": contact["limb_name"],
-                            "viewer_side": viewer_side,
-                            "distance_px": contact["distance_px"]
-                        })
-                entry["limb_contacts"] = limb_contacts
-
-        timeline.append(entry)
-        processed += 1
-        frame_idx += 1
-
-    cap.release()
-    total = len(timeline)
-
-    def _ratio(count: int) -> float:
-        return round((count / total) if total else 0.0, 4)
-
-    ball_source_summary = [
-        {"source": source, "frames": count, "ratio": _ratio(count)}
-        for source, count in sorted(ball_source_counts.items(), key=lambda x: x[1], reverse=True)
-    ]
-
-    return {
-        "frames_analyzed": processed,
-        "timeline": timeline,
-        "player_presence_ratio": _ratio(player_frames),
-        "ball_presence_ratio": _ratio(ball_frames),
-        "possession_ratio": _ratio(possession_frames),
-        "juggling_hits": juggling_hits,
-        "hand_contact_frames": hand_contact_frames,
-        "juggling_events": juggling_events,
-        "hand_contact_events": hand_contact_events,
-        "ball_detection_sources": ball_source_summary,
-        "ball_detection_counts": dict(ball_source_counts)
-    }
+    return activity_analyzer.analyze_soccer_detections(
+        video_path=video_path,
+        frame_stride=frame_stride,
+        max_frames=max_frames,
+        confidence=confidence,
+        possession_distance_px=possession_distance_px,
+        contact_threshold_px=contact_threshold_px,
+        nms_threshold=nms_threshold,
+    )
 
 
 def _analyze_gym_detections(
@@ -1079,114 +256,14 @@ def _analyze_gym_detections(
     interaction_distance_px: int,
     nms_threshold: float = 0.4
 ) -> Dict[str, Any]:
-    cap = cv2.VideoCapture(video_path)
-    if not cap.isOpened():
-        raise HTTPException(400, "Unable to open uploaded video")
-
-    frame_idx = 0
-    processed = 0
-    timeline = []
-    player_frames = 0
-    equipment_frames = 0
-    interaction_frames = 0
-    prev_player_bbox = None
-    vertical_variation_acc = 0.0
-    vertical_variation_count = 0
-    equipment_counts = defaultdict(int)
-
-    while processed < max_frames:
-        ret, frame = cap.read()
-        if not ret:
-            break
-        if frame_idx % frame_stride != 0:
-            frame_idx += 1
-            continue
-
-        inference = _run_inference(frame, confidence, nms_threshold)
-        detections = inference.get("detections", [])
-        player_det = _select_best_detection(detections, {"person"})
-        equipment_det = _select_best_detection(detections, GYM_EQUIPMENT_LABELS)
-
-        entry: Dict[str, Any] = {"frame": frame_idx}
-        if player_det:
-            entry["athlete"] = player_det
-            player_frames += 1
-            if prev_player_bbox:
-                prev_height = prev_player_bbox[3] - prev_player_bbox[1]
-                curr_height = player_det["bbox"][3] - player_det["bbox"][1]
-                delta = abs(curr_height - prev_height)
-                vertical_variation_acc += delta
-                vertical_variation_count += 1
-            prev_player_bbox = player_det["bbox"]
-        else:
-            prev_player_bbox = None
-
-        if equipment_det:
-            entry["equipment"] = equipment_det
-            equipment_frames += 1
-            label = equipment_det.get("class_name")
-            if label:
-                equipment_counts[label] += 1
-
-        if player_det and equipment_det:
-            distance = _center_distance(player_det["bbox"], equipment_det["bbox"])
-            entry["athlete_equipment_distance"] = round(distance, 2)
-            if distance <= interaction_distance_px:
-                entry["interaction"] = True
-                interaction_frames += 1
-            else:
-                entry["interaction"] = False
-
-        timeline.append(entry)
-        processed += 1
-        frame_idx += 1
-
-    cap.release()
-    total = len(timeline)
-
-    def _ratio(count: int) -> float:
-        return round((count / total) if total else 0.0, 4)
-
-    avg_variation = (
-        round(vertical_variation_acc / vertical_variation_count, 2)
-        if vertical_variation_count > 0 else 0.0
+    return activity_analyzer.analyze_gym_detections(
+        video_path=video_path,
+        frame_stride=frame_stride,
+        max_frames=max_frames,
+        confidence=confidence,
+        interaction_distance_px=interaction_distance_px,
+        nms_threshold=nms_threshold,
     )
-
-    equipment_summary = [
-        {"label": label, "ratio": _ratio(count)}
-        for label, count in sorted(equipment_counts.items(), key=lambda x: x[1], reverse=True)
-    ]
-
-    return {
-        "frames_analyzed": processed,
-        "timeline": timeline,
-        "player_presence_ratio": _ratio(player_frames),
-        "equipment_presence_ratio": _ratio(equipment_frames),
-        "interaction_ratio": _ratio(interaction_frames),
-        "avg_vertical_variation": avg_variation,
-        "equipment_summary": equipment_summary
-    }
-
-
-def _read_frame_at(path: str, frame_index: int) -> Optional[np.ndarray]:
-    cap = cv2.VideoCapture(path)
-    if not cap.isOpened():
-        return None
-    frame_index = max(0, frame_index)
-    cap.set(cv2.CAP_PROP_POS_FRAMES, frame_index)
-    ret, frame = cap.read()
-    cap.release()
-    return frame if ret else None
-
-
-def _match_face_embeddings(embedding_a: List[float], embedding_b: List[float]) -> float:
-    recognizer, backend = _load_face_recognizer()
-    vec_a = np.array(embedding_a, dtype=np.float32).reshape(1, -1)
-    vec_b = np.array(embedding_b, dtype=np.float32).reshape(1, -1)
-    if backend == "opencv_sface":
-        return float(recognizer.match(vec_a, vec_b, cv2.FaceRecognizerSF_FR_COSINE))
-    similarity = float(np.dot(vec_a.flatten(), vec_b.flatten()))
-    return similarity
 
 
 def _evaluate_face_consistency(
@@ -1195,63 +272,12 @@ def _evaluate_face_consistency(
     score_threshold: float,
     match_threshold: float
 ) -> Dict[str, Any]:
-    if frame_count <= 0:
-        return {
-            "threshold": match_threshold,
-            "samples": [],
-            "pairwise": [],
-            "consistent": False,
-            "note": "El video no contiene frames válidos"
-        }
-
-    targets = [
-        ("start", 0),
-        ("middle", max(frame_count // 2, 0)),
-        ("end", max(frame_count - 1, 0)),
-    ]
-
-    samples = []
-    embeddings: Dict[str, List[float]] = {}
-
-    for label, idx in targets:
-        frame = _read_frame_at(video_path, idx)
-        sample = {
-            "position": label,
-            "frame": int(idx),
-            "success": False
-        }
-        if frame is None:
-            sample["error"] = "frame_unavailable"
-        else:
-            face = _get_primary_face_embedding(frame, score_threshold)
-            if face:
-                sample["success"] = True
-                sample["score"] = float(face["score"])
-                sample["face_id"] = face["face_id"]
-                embeddings[label] = face["embedding"]
-            else:
-                sample["error"] = "face_not_detected"
-        samples.append(sample)
-
-    pairwise = []
-    positions_to_compare = [("start", "middle"), ("middle", "end"), ("start", "end")]
-    for ref, other in positions_to_compare:
-        if ref in embeddings and other in embeddings:
-            similarity = _match_face_embeddings(embeddings[ref], embeddings[other])
-            pairwise.append({
-                "pair": f"{ref}-{other}",
-                "similarity": similarity,
-                "match": similarity >= match_threshold
-            })
-
-    consistent = bool(pairwise) and all(item["match"] for item in pairwise)
-    return {
-        "threshold": match_threshold,
-        "samples": samples,
-        "pairwise": pairwise,
-        "consistent": consistent,
-        "successful_samples": sum(1 for sample in samples if sample["success"])
-    }
+    return face_service.evaluate_face_consistency(
+        video_path=video_path,
+        frame_count=frame_count,
+        score_threshold=score_threshold,
+        match_threshold=match_threshold
+    )
 
 
 def _derive_action_sequences(
@@ -1259,170 +285,19 @@ def _derive_action_sequences(
     frame_stride: int,
     fps: float
 ) -> Dict[str, Any]:
-    if not predictions or fps <= 0:
-        return {
-            "segments": [],
-            "label_totals": []
-        }
-
-    time_per_sample = frame_stride / fps
-    segments = []
-    label_totals = defaultdict(int)
-    current_label = None
-    current_start = None
-    current_count = 0
-
-    for pred in predictions:
-        label = pred.get("label")
-        frame = pred.get("frame", 0)
-        if label is None:
-            continue
-        label_totals[label] += 1
-        if label != current_label:
-            if current_label is not None:
-                segments.append({
-                    "label": current_label,
-                    "start_frame": current_start,
-                    "end_frame": frame,
-                    "estimated_seconds": round(current_count * time_per_sample, 2)
-                })
-            current_label = label
-            current_start = frame
-            current_count = 0
-        current_count += 1
-
-    if current_label is not None:
-        end_frame = predictions[-1].get("frame", current_start)
-        segments.append({
-            "label": current_label,
-            "start_frame": current_start,
-            "end_frame": end_frame,
-            "estimated_seconds": round(current_count * time_per_sample, 2)
-        })
-
-    totals_payload = [
-        {
-            "label": label,
-            "samples": count,
-            "estimated_seconds": round(count * time_per_sample, 2)
-        }
-        for label, count in sorted(label_totals.items(), key=lambda x: x[1], reverse=True)
-    ]
-
-    return {
-        "segments": segments,
-        "label_totals": totals_payload
-    }
+    return activity_analyzer.derive_action_sequences(
+        predictions=predictions,
+        frame_stride=frame_stride,
+        fps=fps
+    )
 
 
 def _run_actionnet_on_image(image: np.ndarray, top_k: int):
-    net = _load_actionnet()
-    cuda_img = bgr_to_cuda(image)
-    class_id, confidence = net.Classify(cuda_img)
-
-    top_predictions = []
-    classifications = net.GetClassifications()
-    for cls in classifications:
-        top_predictions.append({
-            "class_id": int(cls.classID),
-            "label": net.GetClassDesc(int(cls.classID)),
-            "confidence": float(cls.confidence)
-        })
-        if len(top_predictions) >= top_k:
-            break
-
-    return {
-        "predicted_class": {
-            "class_id": int(class_id),
-            "label": net.GetClassDesc(int(class_id)),
-            "confidence": float(confidence)
-        },
-        "top_predictions": top_predictions
-    }
+    return actionnet_service.classify_image(image, top_k)
 
 
 def _run_actionnet_on_video(video_path: str, frame_stride: int, top_k: int):
-    net = _load_actionnet()
-    cap = cv2.VideoCapture(video_path)
-    if not cap.isOpened():
-        raise HTTPException(400, "Unable to open uploaded video")
-
-    frame_idx = 0
-    processed = 0
-    predictions = []
-
-    while cap.isOpened():
-        ret, frame = cap.read()
-        if not ret:
-            break
-
-        if frame_idx % frame_stride != 0:
-            frame_idx += 1
-            continue
-
-        cuda_img = bgr_to_cuda(frame)
-        class_id, confidence = net.Classify(cuda_img)
-        predictions.append({
-            "frame": frame_idx,
-            "class_id": int(class_id),
-            "label": net.GetClassDesc(int(class_id)),
-            "confidence": float(confidence)
-        })
-        processed += 1
-        frame_idx += 1
-
-    cap.release()
-
-    aggregates = defaultdict(lambda: {"count": 0, "max_confidence": 0.0})
-    for pred in predictions:
-        label = pred["label"]
-        aggregates[label]["count"] += 1
-        aggregates[label]["max_confidence"] = max(
-            aggregates[label]["max_confidence"],
-            pred["confidence"]
-        )
-
-    top_labels = sorted(
-        [{"label": label, **stats} for label, stats in aggregates.items()],
-        key=lambda x: (x["count"], x["max_confidence"]),
-        reverse=True
-    )[:top_k]
-
-    return {
-        "frames_analyzed": processed,
-        "predictions": predictions,
-        "top_labels": top_labels
-    }
-
-
-def _load_hit_detection_model():
-    global hit_detection_net
-    if hit_detection_net is None:
-        model_path = HIT_DETECTION_MODEL_PATH
-        if not os.path.exists(model_path):
-            model_path = _resolve_hit_model_path()
-        if not os.path.exists(model_path):
-            raise HTTPException(
-                503,
-                "hit_detect.onnx no está disponible en el dispositivo. "
-                "Configura HIT_DETECT_MODEL_PATH o copia el archivo a ai_engine/models/."
-            )
-        print(f"[HitDetect] Loading ONNX model from {model_path}")
-        try:
-            hit_detection_net = cv2.dnn.readNetFromONNX(model_path)
-            hit_detection_net.setPreferableBackend(cv2.dnn.DNN_BACKEND_CUDA)
-            hit_detection_net.setPreferableTarget(cv2.dnn.DNN_TARGET_CUDA)
-        except Exception as exc_gpu:
-            print(f"[HitDetect] CUDA backend failed: {exc_gpu}. Falling back to CPU.")
-            traceback.print_exc()
-            try:
-                hit_detection_net = cv2.dnn.readNetFromONNX(model_path)
-                hit_detection_net.setPreferableBackend(cv2.dnn.DNN_BACKEND_DEFAULT)
-                hit_detection_net.setPreferableTarget(cv2.dnn.DNN_TARGET_CPU)
-            except Exception as exc_cpu:
-                traceback.print_exc()
-                raise HTTPException(503, f"No se pudo inicializar hit_detect.onnx: {exc_cpu}")
-    return hit_detection_net
+    return actionnet_service.classify_video(video_path, frame_stride, top_k)
 
 
 def _run_hit_detection_on_video(
@@ -1431,212 +306,20 @@ def _run_hit_detection_on_video(
     max_frames: int,
     hit_threshold: float
 ):
-    net = _load_hit_detection_model()
-    cap = cv2.VideoCapture(video_path)
-    if not cap.isOpened():
-        raise HTTPException(400, "Unable to open uploaded video")
-
-    frame_idx = 0
-    processed = 0
-    detections = []
-    debug_logs = []
-
-    while processed < max_frames:
-        ret, frame = cap.read()
-        if not ret:
-            break
-
-        if frame_idx % frame_stride != 0:
-            frame_idx += 1
-            continue
-
-        resized = cv2.resize(frame, (224, 224))
-        blob = cv2.dnn.blobFromImage(resized, scalefactor=1 / 255.0, size=(224, 224), swapRB=True, crop=False)
-        net.setInput(blob)
-        try:
-            output = net.forward()
-        except Exception as exc:
-            error_msg = f"Hit detection forward failed on frame {frame_idx}: {exc}"
-            print(f"[HitDetect] {error_msg}")
-            traceback.print_exc()
-            cap.release()
-            raise HTTPException(500, error_msg)
-
-        flat = output.flatten().tolist()
-        if not flat:
-            probability = 0.0
-        elif len(flat) == 1:
-            probability = float(flat[0])
-        else:
-            # Suponemos que la segunda salida corresponde a "hit"
-            probability = float(flat[-1])
-
-        detections.append({
-            "frame": frame_idx,
-            "hit_probability": round(probability, 4),
-            "raw_output": flat
-        })
-        if len(debug_logs) < 10:
-            debug_logs.append({
-                "frame": frame_idx,
-                "blob_shape": list(blob.shape),
-                "output_shape": list(output.shape) if hasattr(output, "shape") else None,
-                "hit_probability": round(probability, 4)
-            })
-
-        processed += 1
-        frame_idx += 1
-
-    cap.release()
-
-    hits = [det for det in detections if det["hit_probability"] >= hit_threshold]
-
-    return {
-        "frames_analyzed": processed,
-        "detections": detections,
-        "hits_detected": len(hits),
-        "hit_threshold": hit_threshold,
-        "hit_frames": [det["frame"] for det in hits],
-        "debug_logs": debug_logs
-    }
+    return hit_detection_service.run_on_video(
+        video_path=video_path,
+        frame_stride=frame_stride,
+        max_frames=max_frames,
+        hit_threshold=hit_threshold
+    )
 
 
 def _detect_faces_with_embeddings(image: np.ndarray, score_threshold: float = 0.6) -> List[Dict[str, Any]]:
-    detector, backend = _load_face_detector()
-    recognizer, recognizer_backend = _load_face_recognizer()
-    h, w = image.shape[:2]
-    detections: List[Dict[str, Any]] = []
-    multiscale_factors = [1.0, 0.85, 0.7, 0.55]
-
-    def _scale_image(src: np.ndarray, scale: float) -> np.ndarray:
-        if scale == 1.0:
-            return src
-        new_w = max(1, int(src.shape[1] * scale))
-        new_h = max(1, int(src.shape[0] * scale))
-        return cv2.resize(src, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
-
-    if backend == "jetson_detectnet":
-        for scale in multiscale_factors:
-            scaled_img = _scale_image(image, scale)
-            cuda_img = bgr_to_cuda(scaled_img)
-            raw = detector.Detect(cuda_img, overlay="none")
-            if raw:
-                inv_scale = 1.0 / scale
-                for det in raw:
-                    x1 = max(0, int(det.Left * inv_scale))
-                    y1 = max(0, int(det.Top * inv_scale))
-                    x2 = min(w, int(det.Right * inv_scale))
-                    y2 = min(h, int(det.Bottom * inv_scale))
-                    detections.append({
-                        "bbox": [x1, y1, x2, y2],
-                        "score": float(det.Confidence),
-                        "landmarks": None,
-                        "raw": None
-                    })
-                if detections:
-                    break
-    elif backend == "yunet":
-        for scale in multiscale_factors:
-            scaled_img = _scale_image(image, scale)
-            scaled_h, scaled_w = scaled_img.shape[:2]
-            detector.setInputSize((scaled_w, scaled_h))
-            _, raw = detector.detect(scaled_img)
-            if raw is None or len(raw) == 0:
-                continue
-            inv_scale = 1.0 / scale
-            for face in raw:
-                x, y, box_w, box_h = face[:4]
-                x1 = max(0, int(x * inv_scale))
-                y1 = max(0, int(y * inv_scale))
-                x2 = min(w, int((x + box_w) * inv_scale))
-                y2 = min(h, int((y + box_h) * inv_scale))
-                landmarks = None
-                raw_face = None
-                if len(face) >= 14:
-                    lm = (face[4:14] * inv_scale).tolist()
-                    landmarks = lm
-                    raw_face = face.copy()
-                    raw_face = raw_face.astype(np.float32)
-                    raw_face[0] = x1
-                    raw_face[1] = y1
-                    raw_face[2] = max(0, x2 - x1)
-                    raw_face[3] = max(0, y2 - y1)
-                    raw_face[4:14] = face[4:14] * inv_scale
-                else:
-                    raw_face = None
-                detections.append({
-                    "bbox": [x1, y1, x2, y2],
-                    "score": float(face[4]) if len(face) > 4 else 0.0,
-                    "landmarks": landmarks,
-                    "raw": raw_face
-                })
-            if detections:
-                break
-    else:
-        gray_original = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-        for scale in multiscale_factors:
-            scaled_gray = _scale_image(gray_original, scale)
-            raw = detector.detectMultiScale(
-                scaled_gray,
-                scaleFactor=1.1,
-                minNeighbors=5,
-                minSize=(48, 48)
-            )
-            if len(raw) == 0:
-                continue
-            inv_scale = 1.0 / scale
-            for (x, y, box_w, box_h) in raw:
-                x1 = max(0, int(x * inv_scale))
-                y1 = max(0, int(y * inv_scale))
-                x2 = min(w, int((x + box_w) * inv_scale))
-                y2 = min(h, int((y + box_h) * inv_scale))
-                detections.append({
-                    "bbox": [x1, y1, x2, y2],
-                    "score": 1.0,
-                    "landmarks": None,
-                    "raw": None
-                })
-            if detections:
-                break
-
-    results = []
-    for det in detections:
-        if det["score"] < score_threshold:
-            continue
-
-        bbox = det["bbox"]
-        landmarks = det.get("landmarks")
-        embedding: Optional[List[float]] = None
-
-        if recognizer_backend == "opencv_sface" and det["raw"] is not None:
-            try:
-                embedding = recognizer.feature(image, det["raw"]).flatten().tolist()
-            except Exception:
-                embedding = None
-        else:
-            try:
-                embedding = recognizer.extract(image, bbox, landmarks)
-            except Exception:
-                embedding = None
-
-        if not embedding:
-            continue
-
-        bbox_int = [int(max(0, min(w, bbox[0]))), int(max(0, min(h, bbox[1]))), int(max(0, min(w, bbox[2]))), int(max(0, min(h, bbox[3])))]
-        results.append({
-            "face_id": str(uuid4()),
-            "bbox": bbox_int,
-            "score": det["score"],
-            "embedding": embedding
-        })
-    return results
+    return face_service.detect_with_embeddings(image, score_threshold)
 
 
 def _get_primary_face_embedding(image: np.ndarray, min_score: float = 0.6) -> Optional[Dict[str, Any]]:
-    faces = _detect_faces_with_embeddings(image, min_score)
-    if not faces:
-        return None
-    return max(faces, key=lambda f: f["score"])
+    return face_service.get_primary_face_embedding(image, min_score)
 
 
 
@@ -1739,13 +422,7 @@ def face_compare(req: FaceCompareRequest):
     if not face_b:
         raise HTTPException(422, "No face detected in image B above the threshold")
 
-    recognizer, backend = _load_face_recognizer()
-    vec_a = np.array(face_a["embedding"], dtype=np.float32).reshape(1, -1)
-    vec_b = np.array(face_b["embedding"], dtype=np.float32).reshape(1, -1)
-    if backend == "opencv_sface":
-        similarity = float(recognizer.match(vec_a, vec_b, cv2.FaceRecognizerSF_FR_COSINE))
-    else:
-        similarity = float(np.dot(vec_a.flatten(), vec_b.flatten()))
+    similarity = face_service.compare_embeddings(face_a["embedding"], face_b["embedding"])
     is_same = similarity >= req.score_threshold
 
     return {
@@ -2267,7 +944,7 @@ async def superres_image(file: UploadFile = File(...)):
     if img is None:
         raise HTTPException(400, "No se pudo decodificar la imagen subida")
 
-    sr, scale = _load_superres_engine()
+    sr, scale = superres_service.load_engine()
     try:
         upscaled = sr.upsample(img)
     except Exception as exc:
@@ -2296,7 +973,7 @@ async def superres_video(
     output_tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
     output_tmp.close()
 
-    sr, scale = _load_superres_engine()
+    sr, scale = superres_service.load_engine()
     cap = cv2.VideoCapture(tmp_path)
     if not cap.isOpened():
         os.remove(tmp_path)

@@ -48,6 +48,21 @@ VLM_REVISION = os.environ.get('VLM_REVISION', '2024-08-26')
 LAZY_LOAD = os.environ.get('VLM_LAZY_LOAD', 'true').lower() == 'true'
 PRELOAD_MODEL = os.environ.get('VLM_PRELOAD', 'false').lower() == 'true'
 
+def _get_env_int(name: str, default: Optional[int] = None) -> Optional[int]:
+    """Parsea enteros desde variables de entorno, devolviendo default si no aplica."""
+    value = os.environ.get(name)
+    if value in (None, "", "null", "None"):
+        return default
+    try:
+        return int(float(value))
+    except ValueError:
+        print(f"⚠️ Valor inválido '{value}' para {name}. Se usará {default}.")
+        return default
+
+VLM_MAX_MEMORY_MB = _get_env_int('VLM_MAX_MEMORY_MB')
+VLM_IDLE_UNLOAD_SECONDS = _get_env_int('VLM_IDLE_UNLOAD_SECONDS')
+VLM_MEMORY_MONITOR_INTERVAL = _get_env_int('VLM_MEMORY_MONITOR_INTERVAL', 30)
+
 # ============================================================================
 # FastAPI App
 # ============================================================================
@@ -110,6 +125,10 @@ class StatusResponse(BaseModel):
     revision: str
     error: Optional[str] = None
     prompts_available: int
+    max_memory_mb: Optional[int] = None
+    idle_unload_seconds: Optional[int] = None
+    last_used_at: Optional[float] = None
+    memory_usage_mb: Optional[float] = None
 
 class HealthResponse(BaseModel):
     """Response de health check"""
@@ -125,7 +144,13 @@ def get_vlm_analyzer() -> MoondreamAnalyzer:
     """Obtiene o crea la instancia del analizador VLM."""
     global vlm_analyzer
     if vlm_analyzer is None:
-        vlm_analyzer = MoondreamAnalyzer(model_id=VLM_MODEL, revision=VLM_REVISION)
+        vlm_analyzer = MoondreamAnalyzer(
+            model_id=VLM_MODEL,
+            revision=VLM_REVISION,
+            max_memory_mb=VLM_MAX_MEMORY_MB,
+            idle_unload_seconds=VLM_IDLE_UNLOAD_SECONDS,
+            monitor_interval=VLM_MEMORY_MONITOR_INTERVAL
+        )
     return vlm_analyzer
 
 # --- MONTAJE DE GRADIO UI ---
@@ -216,7 +241,11 @@ async def get_status():
         model=status["model_id"],
         revision=status["revision"],
         error=status["error"],
-        prompts_available=len(PREDEFINED_PROMPTS)
+        prompts_available=len(PREDEFINED_PROMPTS),
+        max_memory_mb=status.get("max_memory_mb"),
+        idle_unload_seconds=status.get("idle_unload_seconds"),
+        last_used_at=status.get("last_used_at"),
+        memory_usage_mb=status.get("memory_usage_mb")
     )
 
 @app.get("/prompts")
@@ -328,6 +357,14 @@ async def preload_model(background_tasks: BackgroundTasks):
     background_tasks.add_task(analyzer.ensure_loaded)
     
     return {"status": "started", "message": "Carga del modelo iniciada en background"}
+
+@app.post("/unload")
+async def unload_model():
+    """Descarga el modelo de memoria manualmente para liberar recursos."""
+    analyzer = get_vlm_analyzer()
+    if analyzer.unload_model("Manual unload endpoint"):
+        return {"status": "unloaded", "message": "Modelo descargado de memoria"}
+    return {"status": "idle", "message": "El modelo ya estaba descargado"}
 
 
 # ============================================================================
@@ -539,6 +576,10 @@ async def startup_event():
     print(f"   Revision: {VLM_REVISION}")
     print(f"   Lazy Load: {LAZY_LOAD}")
     print(f"   Redis: {REDIS_HOST}:{REDIS_PORT}")
+    if VLM_MAX_MEMORY_MB:
+        print(f"   Memory limit: {VLM_MAX_MEMORY_MB} MB")
+    if VLM_IDLE_UNLOAD_SECONDS:
+        print(f"   Idle unload: {VLM_IDLE_UNLOAD_SECONDS}s (interval: {VLM_MEMORY_MONITOR_INTERVAL}s)")
     
     # Inicializar conexión Redis
     get_redis_client()
