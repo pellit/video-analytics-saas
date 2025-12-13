@@ -120,6 +120,10 @@ face_service = FaceEmbeddingService(
     sface_template=SFACE_TEMPLATE,
 )
 
+BALL_YOLO_FALLBACK = os.environ.get("BALL_YOLO_FALLBACK", "1").lower() not in ("0", "false", "off")
+BALL_YOLO_CONFIDENCE = float(os.environ.get("BALL_YOLO_CONFIDENCE", "0.45"))
+BALL_YOLO_NMS = float(os.environ.get("BALL_YOLO_NMS", "0.35"))
+
 activity_analyzer = ActivityAnalyzer(
     yolo_fallback=yolo_fallback,
     enable_ball_fallback=BALL_YOLO_FALLBACK,
