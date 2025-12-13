@@ -16,6 +16,9 @@
 /ai_engine/.venv
 /ai_engine/venv
 
+**/__pycache__/
+*.pyc
+
 .DS_Store
 .idea
 .vscode
