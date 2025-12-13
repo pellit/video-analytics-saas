@@ -161,6 +161,7 @@ async def startup_event():
         yolo_fallback.ensure_ready()
     except HTTPException as exc:
         print(f"⚠️ YOLO fallback no disponible: {exc.detail}")
+    _log_environment_status()
 
 # --- Request/Response ---
 class DetectionRequest(BaseModel):
@@ -210,6 +211,31 @@ def _ensure_video_duration(path: str, max_seconds: int = MAX_VIDEO_DURATION_S):
 
 def _get_video_metadata(path: str) -> Dict[str, float]:
     return get_video_metadata(path)
+
+
+def _log_environment_status():
+    """Muestra info útil al iniciar: CUDA y rutas de modelos."""
+    try:
+        cuda_devices = cv2.cuda.getCudaEnabledDeviceCount()
+    except Exception as exc:
+        cuda_devices = 0
+        print(f"⚠️ No se pudo consultar CUDA: {exc}")
+    if cuda_devices > 0:
+        print(f"✅ CUDA disponible: {cuda_devices} device(s)")
+    else:
+        print("⚠️ CUDA no detectado por OpenCV (cpu fallback)")
+
+    model_dirs = {
+        "jetson_networks": "/usr/local/bin/networks",
+        "jetson_inference_data": "/jetson-inference/data/networks",
+        "repo_data_networks": os.path.abspath(os.path.join(os.getcwd(), "data/networks")),
+        "superres_dir": SUPERRES_MODEL_DIR,
+    }
+    for name, path in model_dirs.items():
+        if path and os.path.isdir(path):
+            print(f"✅ Directorio de modelos '{name}' listo: {path}")
+        else:
+            print(f"⚠️ Directorio de modelos '{name}' no disponible: {path}")
 
 
 def _run_inference(img: np.ndarray, confidence: float, nms_threshold: float) -> dict:
