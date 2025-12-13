@@ -13,7 +13,11 @@ wait_for_mysql() {
     while [ $attempt -le $max_attempts ]; do
         # Ejecutamos un chequeo más verboso para poder depurar en caso de error
         # Ejecutar chequeo y capturar salida para depuración
-        ping_output=$(php -r "try { new PDO('mysql:host=' . getenv('DB_HOST') . ';port=' . getenv('DB_PORT'), getenv('DB_USERNAME'), getenv('DB_PASSWORD')); echo 'ok'; } catch(Exception \$e) { echo 'ERR: ' . $e->getMessage(); exit(1); }" 2>&1 || true)
+        db_host=${DB_HOST:-db}
+        db_port=${DB_PORT:-3306}
+        db_user=${DB_USERNAME:-root}
+        db_pass=${DB_PASSWORD:-secret}
+        ping_output=$(php -r "try { new PDO('mysql:host=' . '${db_host}' . ';port=' . '${db_port}', '${db_user}', '${db_pass}'); echo 'ok'; } catch(Exception \$e) { echo 'ERR: ' . $e->getMessage(); exit(1); }" 2>&1 || true)
         echo "   [mysql_ping] $ping_output"
         if echo "$ping_output" | grep -q '^ok'; then
             echo "✅ MySQL está listo!"
