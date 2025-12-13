@@ -1,5 +1,5 @@
 from collections import defaultdict
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 
 import cv2
 from fastapi import HTTPException
@@ -18,7 +18,7 @@ except ImportError:
 class ActionNetService:
     """Pequeño wrapper alrededor de jetson-inference actionNet."""
 
-    def __init__(self, model_name: str, labels_path: str | None = None):
+    def __init__(self, model_name: str, labels_path: Optional[str] = None):
         self.model_name = model_name
         self.labels_path = labels_path
         self._net = None
