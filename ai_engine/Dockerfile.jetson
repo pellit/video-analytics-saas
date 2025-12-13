@@ -112,6 +112,9 @@ COPY . /app
 RUN mkdir -p /app/ai_engine/models && \
     cp /app/models/* /app/ai_engine/models/
 
+# Modelo por defecto para super resolución (cv2.dnn_superres requiere .pb)
+ENV SUPERRES_MODEL_PATH=/app/models/ESPCN_x4.pb
+
 # ------------------------------------------------------------------------------
 # 6. Ejecución
 # ------------------------------------------------------------------------------
