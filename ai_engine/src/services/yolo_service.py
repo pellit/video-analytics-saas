@@ -90,12 +90,31 @@ class YoloFallbackService:
             idxs = list(range(len(boxes)))
 
         label_filter_set = {lbl.lower() for lbl in labels_filter} if labels_filter else None
-        if isinstance(idxs, (list, tuple)):
-            idx_iter = [int(i) for i in idxs]
-        elif hasattr(idxs, "__iter__"):
-            idx_iter = [int(i[0]) for i in idxs]
-        else:
-            idx_iter = range(len(boxes))
+
+        def _flatten_indices(raw):
+            if raw is None:
+                return []
+            if isinstance(raw, np.ndarray):
+                raw = raw.flatten().tolist()
+            elif isinstance(raw, range):
+                raw = list(raw)
+            elif not isinstance(raw, (list, tuple)):
+                try:
+                    return [int(raw)]
+                except Exception:
+                    return []
+            flat = []
+            for item in raw:
+                if isinstance(item, (list, tuple, np.ndarray)):
+                    if len(item):
+                        flat.append(int(item[0]))
+                else:
+                    flat.append(int(item))
+            return flat
+
+        idx_iter = _flatten_indices(idxs)
+        if not idx_iter:
+            idx_iter = list(range(len(boxes)))
 
         results: List[Dict[str, Any]] = []
         for i in idx_iter:
