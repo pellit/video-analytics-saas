@@ -5,18 +5,25 @@ CUSTOM_JETSON_DATA_DIR = os.environ.get('JETSON_DATA_DIR_OVERRIDE')
 
 
 def _configure_jetson_data_dir():
-    candidate = None
-    if CUSTOM_JETSON_DATA_DIR:
-        candidate = CUSTOM_JETSON_DATA_DIR
-    elif os.path.isdir(DEFAULT_JETSON_DATA_DIR):
-        candidate = DEFAULT_JETSON_DATA_DIR
+    candidates = [
+        CUSTOM_JETSON_DATA_DIR,
+        os.environ.get('JETSON_DATA_DIR'),
+        '/usr/local/bin',
+        '/jetson-inference/data',
+        DEFAULT_JETSON_DATA_DIR,
+    ]
 
-    if candidate and os.path.isdir(candidate):
-        if not os.environ.get('JETSON_DATA_DIR'):
-            os.environ['JETSON_DATA_DIR'] = candidate
-        root_guess = os.path.dirname(candidate)
-        os.environ.setdefault('JETSON_INFERENCE_ROOT', root_guess)
-        print(f"📁 Jetson data dir: {os.environ['JETSON_DATA_DIR']}")
+    for path in candidates:
+        if not path:
+            continue
+        networks_path = os.path.join(path, 'networks')
+        if os.path.isdir(networks_path):
+            os.environ['JETSON_DATA_DIR'] = path
+            os.environ.setdefault('JETSON_INFERENCE_ROOT', os.path.dirname(path))
+            print(f"📁 Jetson data dir detectado: {path}")
+            return
+
+    print("⚠️ No se detectó ninguna ruta de modelos Jetson preconfigurada.")
 
 
 _configure_jetson_data_dir()
