@@ -102,6 +102,7 @@ class ActivityAnalyzer:
         frame_idx = 0
         processed = 0
         timeline = []
+        class_names_detected: Set[str] = set()
         player_frames = 0
         ball_frames = 0
         possession_frames = 0
@@ -123,6 +124,10 @@ class ActivityAnalyzer:
 
             inference = self.run_inference(frame, confidence, nms_threshold)
             detections = inference.get("detections", [])
+            for det in detections:
+                class_name = det.get("class_name")
+                if class_name:
+                    class_names_detected.add(class_name)
             depth_context = annotate_depth_for_detections(frame, detections)
             player_det = self._select_best_detection(detections, {"person"})
             ball_det = self._select_best_detection(detections, self.soccer_labels)
@@ -211,6 +216,12 @@ class ActivityAnalyzer:
             {"source": source, "frames": count, "ratio": _ratio(count)}
             for source, count in sorted(ball_source_counts.items(), key=lambda x: x[1], reverse=True)
         ]
+        class_dictionary = {
+            "detected_classes": sorted(class_names_detected),
+            "ball_labels": sorted(self.soccer_labels),
+            "primary_engine": "detectnet",
+            "fallback_engine": self.yolo_fallback.model_name,
+        }
 
         return {
             "frames_analyzed": processed,
@@ -223,7 +234,8 @@ class ActivityAnalyzer:
             "juggling_events": juggling_events,
             "hand_contact_events": hand_contact_events,
             "ball_detection_sources": ball_source_summary,
-            "ball_detection_counts": dict(ball_source_counts)
+            "ball_detection_counts": dict(ball_source_counts),
+            "class_dictionary": class_dictionary
         }
 
     def analyze_gym_detections(

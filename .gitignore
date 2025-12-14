@@ -16,6 +16,8 @@
 /ai_engine/.venv
 /ai_engine/venv
 
+/data
+
 **/__pycache__/
 *.pyc
 
