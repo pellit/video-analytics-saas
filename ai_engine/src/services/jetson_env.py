@@ -94,6 +94,10 @@ def ensure_jetson_models():
     data_dir = os.environ.get('JETSON_DATA_DIR')
     if not jets_root or not data_dir:
         return
+    models_root = os.path.join(data_dir, 'networks')
+    if not os.path.isdir(models_root):
+        print(f"⚠️ Directorio de modelos no encontrado: {models_root}")
+        return
     required = [
         "Action-ResNet18/resnet-18-kinetics-moments.onnx",
         "Action-ResNet18/resnet-34-kinetics-moments.onnx",
@@ -105,7 +109,7 @@ def ensure_jetson_models():
         "MonoDepth-FCN-ResNet18/monodepth_fcn_resnet18.onnx",
     ]
     missing = [
-        rel for rel in required if not os.path.exists(os.path.join(data_dir, rel))
+        rel for rel in required if not os.path.exists(os.path.join(models_root, rel))
     ]
     if not missing:
         return
@@ -115,15 +119,15 @@ def ensure_jetson_models():
         os.system(f"cd {os.path.dirname(downloader)} && ./download-models.sh")
     else:
         print("⚠️ download-models.sh no encontrado; probando mirrors alternativos.")
-    still_missing = _refresh_missing(data_dir, missing)
+    still_missing = _refresh_missing(models_root, missing)
     if still_missing:
-        downloaded = _download_from_drive_batch(still_missing, data_dir)
+        downloaded = _download_from_drive_batch(still_missing, models_root)
         if downloaded:
-            still_missing = _refresh_missing(data_dir, still_missing)
+            still_missing = _refresh_missing(models_root, still_missing)
     if still_missing:
         print("⚠️ Estos modelos aún faltan tras los intentos automáticos:")
         for rel in still_missing:
-            print(f"    - {os.path.join(data_dir, rel)}")
+            print(f"    - {os.path.join(models_root, rel)}")
     else:
         print("✅ Modelos Jetson descargados correctamente.")
 

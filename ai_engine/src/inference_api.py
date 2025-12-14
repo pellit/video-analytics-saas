@@ -51,6 +51,16 @@ MODELS_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "../models"
 os.makedirs(MODELS_DIR, exist_ok=True)
 
 
+def _add_perf_metadata(payload, start_time, frames_processed):
+    """Annotate payload with elapsed time (ms) and FPS."""
+    elapsed_s = max(time.perf_counter() - start_time, 1e-9)
+    payload["elapsed_ms"] = round(elapsed_s * 1000.0, 2)
+    frames = frames_processed if frames_processed is not None else 0.0
+    fps = (frames / elapsed_s) if frames else 0.0
+    payload["analysis_fps"] = round(fps, 2)
+    return payload
+
+
 def _resolve_model_path(preferred_path: str, filename: str) -> str:
     search_dirs = [
         os.path.dirname(preferred_path),
@@ -371,8 +381,10 @@ def _get_primary_face_embedding(image: np.ndarray, min_score: float = 0.6) -> Op
 
 @app.post("/detect")
 def detect(req: DetectionRequest):
+    start_time = time.perf_counter()
     img = _decode_base64_image(req.image_base64)
-    return _run_inference(img, req.confidence, req.nms_threshold)
+    result = _run_inference(img, req.confidence, req.nms_threshold)
+    return _add_perf_metadata(result, start_time, frames_processed=1)
 
 
 @app.post("/detect/batch")
@@ -381,6 +393,7 @@ def detect_batch(req: BatchDetectionRequest):
     if not req.images_base64:
         raise HTTPException(400, "images_base64 list cannot be empty")
 
+    start_time = time.perf_counter()
     batch_results = []
     for idx, image_base64 in enumerate(req.images_base64):
         try:
@@ -390,7 +403,9 @@ def detect_batch(req: BatchDetectionRequest):
         except HTTPException as exc:
             batch_results.append({"index": idx, "success": False, "error": exc.detail})
 
-    return {"success": True, "frames": len(batch_results), "results": batch_results}
+    payload = {"success": True, "frames": len(batch_results), "results": batch_results}
+    frames_processed = len(req.images_base64)
+    return _add_perf_metadata(payload, start_time, frames_processed=frames_processed)
 
 
 @app.post("/detect/video")
@@ -407,6 +422,7 @@ async def detect_video(
     if frame_stride <= 0:
         raise HTTPException(400, "frame_stride must be > 0")
 
+    start_time = time.perf_counter()
     tmp_path = _save_upload_to_temp(file)
     try:
         cap = cv2.VideoCapture(tmp_path)
@@ -433,12 +449,13 @@ async def detect_video(
             frame_idx += 1
 
         cap.release()
-        return {
+        payload = {
             "success": True,
             "frames_analyzed": processed,
             "frame_stride": frame_stride,
             "results": results,
         }
+        return _add_perf_metadata(payload, start_time, frames_processed=processed)
     finally:
         if os.path.exists(tmp_path):
             os.remove(tmp_path)
@@ -446,17 +463,20 @@ async def detect_video(
 
 @app.post("/face/detect")
 def face_detect(req: FaceDetectionRequest):
+    start_time = time.perf_counter()
     img = _decode_base64_image(req.image_base64)
     faces = _detect_faces_with_embeddings(img, req.score_threshold)
-    return {
+    payload = {
         "success": True,
         "count": len(faces),
         "faces": faces
     }
+    return _add_perf_metadata(payload, start_time, frames_processed=1)
 
 
 @app.post("/face/compare")
 def face_compare(req: FaceCompareRequest):
+    start_time = time.perf_counter()
     img_a = _decode_base64_image(req.image_a_base64)
     img_b = _decode_base64_image(req.image_b_base64)
 
@@ -470,7 +490,7 @@ def face_compare(req: FaceCompareRequest):
     similarity = face_service.compare_embeddings(face_a["embedding"], face_b["embedding"])
     is_same = similarity >= req.score_threshold
 
-    return {
+    payload = {
         "success": True,
         "similarity": similarity,
         "match": is_same,
@@ -478,6 +498,7 @@ def face_compare(req: FaceCompareRequest):
         "face_a": {"face_id": face_a["face_id"], "score": face_a["score"]},
         "face_b": {"face_id": face_b["face_id"], "score": face_b["score"]}
     }
+    return _add_perf_metadata(payload, start_time, frames_processed=2)
 
 
 @app.post("/detect/hit/video")
@@ -487,6 +508,7 @@ async def detect_hit_video(
     max_frames: int = Form(None),
     hit_threshold: float = Form(None)
 ):
+    start_time = time.perf_counter()
     tmp_path = _save_upload_to_temp(file)
     try:
         # Obtener duración y FPS del video
@@ -522,11 +544,13 @@ async def detect_hit_video(
             raise HTTPException(400, "hit_threshold must be between 0 and 1")
 
         results = _run_hit_detection_on_video(tmp_path, frame_stride, max_frames, hit_threshold)
-        return {
+        payload = {
             "success": True,
             "video_duration_s": duration,
             **results
         }
+        frames = results.get("frames_analyzed")
+        return _add_perf_metadata(payload, start_time, frames_processed=frames)
     finally:
         if os.path.exists(tmp_path):
             os.remove(tmp_path)
@@ -547,6 +571,7 @@ async def analyze_depth_pose_video(
     if contact_distance_px <= 0:
         raise HTTPException(400, "contact_distance_px must be > 0")
 
+    start_time = time.perf_counter()
     tmp_path = _save_upload_to_temp(file)
     try:
         duration = _ensure_video_duration(tmp_path)
@@ -561,11 +586,13 @@ async def analyze_depth_pose_video(
             pose_model_name=POSENET_MODEL,
             cuda_from_bgr=bgr_to_cuda
         )
-        return {
+        payload = {
             "success": True,
             "video_duration_s": duration,
             **results
         }
+        frames = results.get("frames_analyzed")
+        return _add_perf_metadata(payload, start_time, frames_processed=frames)
     finally:
         if os.path.exists(tmp_path):
             os.remove(tmp_path)
@@ -597,6 +624,7 @@ async def analyze_football_video(
     if not (0.0 < face_match_threshold <= 1.0):
         raise HTTPException(400, "face_match_threshold must be between 0 and 1")
 
+    start_time = time.perf_counter()
     tmp_path = _save_upload_to_temp(file)
     try:
         duration = _ensure_video_duration(tmp_path)
@@ -670,12 +698,14 @@ async def analyze_football_video(
             "action_analysis": action_analysis,
         }
 
-        return {
+        payload = {
             "success": True,
             "video_duration_s": duration,
             "frames_total": frame_count,
             "analysis": analysis
         }
+        frames = detection_summary.get("frames_analyzed")
+        return _add_perf_metadata(payload, start_time, frames_processed=frames)
     finally:
         if os.path.exists(tmp_path):
             os.remove(tmp_path)
@@ -707,6 +737,7 @@ async def analyze_football_activity_video(
     if not (0.0 < face_match_threshold <= 1.0):
         raise HTTPException(400, "face_match_threshold debe estar entre 0 y 1")
 
+    start_time = time.perf_counter()
     tmp_path = _save_upload_to_temp(file)
     try:
         duration = _ensure_video_duration(tmp_path)
@@ -773,7 +804,7 @@ async def analyze_football_activity_video(
             "hand_contact_frames": detection_summary.get("hand_contact_frames", [])
         }
 
-        return {
+        payload = {
             "success": True,
             "video_duration_s": duration,
             "frames_total": frame_count,
@@ -785,6 +816,8 @@ async def analyze_football_activity_video(
             "orientation_summary": orientation_summary,
             "face_checks": face_checks
         }
+        frames = detection_summary.get("frames_analyzed")
+        return _add_perf_metadata(payload, start_time, frames_processed=frames)
     finally:
         if os.path.exists(tmp_path):
             os.remove(tmp_path)
@@ -816,6 +849,7 @@ async def analyze_gym_video(
     if not (0.0 < face_match_threshold <= 1.0):
         raise HTTPException(400, "face_match_threshold must be between 0 and 1")
 
+    start_time = time.perf_counter()
     tmp_path = _save_upload_to_temp(file)
     try:
         duration = _ensure_video_duration(tmp_path)
@@ -894,12 +928,14 @@ async def analyze_gym_video(
             "action_sequences": action_sequences
         }
 
-        return {
+        payload = {
             "success": True,
             "video_duration_s": duration,
             "frames_total": frame_count,
             "analysis": analysis
         }
+        frames = detection_summary.get("frames_analyzed")
+        return _add_perf_metadata(payload, start_time, frames_processed=frames)
     finally:
         if os.path.exists(tmp_path):
             os.remove(tmp_path)
@@ -918,15 +954,18 @@ async def actionnet_video(
     if not JETSON_INFERENCE_AVAILABLE:
         raise HTTPException(503, "jetson-inference is required for ActionNet endpoints")
 
+    start_time = time.perf_counter()
     tmp_path = _save_upload_to_temp(file)
     try:
         duration = _ensure_video_duration(tmp_path)
         results = _run_actionnet_on_video(tmp_path, frame_stride, top_k)
-        return {
+        payload = {
             "success": True,
             "video_duration_s": duration,
             **results
         }
+        frames = results.get("frames_analyzed")
+        return _add_perf_metadata(payload, start_time, frames_processed=frames)
     finally:
         if os.path.exists(tmp_path):
             os.remove(tmp_path)
@@ -939,12 +978,14 @@ def actionnet_image(req: ActionImageRequest):
     if not JETSON_INFERENCE_AVAILABLE:
         raise HTTPException(503, "jetson-inference is required for ActionNet endpoints")
 
+    start_time = time.perf_counter()
     img = _decode_base64_image(req.image_base64)
     result = _run_actionnet_on_image(img, req.top_k)
-    return {
+    payload = {
         "success": True,
         **result
     }
+    return _add_perf_metadata(payload, start_time, frames_processed=1)
 
 
 @app.post("/depthnet/video")
@@ -960,6 +1001,7 @@ async def depthnet_video(
     if not JETSON_INFERENCE_AVAILABLE:
         raise HTTPException(503, "jetson-inference is required for DepthNet endpoints")
 
+    start_time = time.perf_counter()
     tmp_path = _save_upload_to_temp(file)
     try:
         duration = _ensure_video_duration(tmp_path)
@@ -971,11 +1013,13 @@ async def depthnet_video(
             depth_model_name=DEPTHNET_MODEL,
             cuda_from_bgr=bgr_to_cuda
         )
-        return {
+        payload = {
             "success": True,
             "video_duration_s": duration,
             **results
         }
+        frames = results.get("frames_analyzed")
+        return _add_perf_metadata(payload, start_time, frames_processed=frames)
     finally:
         if os.path.exists(tmp_path):
             os.remove(tmp_path)
@@ -983,6 +1027,7 @@ async def depthnet_video(
 
 @app.post("/superres/image")
 async def superres_image(file: UploadFile = File(...)):
+    start_time = time.perf_counter()
     content = await file.read()
     data = np.frombuffer(content, dtype=np.uint8)
     img = cv2.imdecode(data, cv2.IMREAD_COLOR)
@@ -997,13 +1042,14 @@ async def superres_image(file: UploadFile = File(...)):
 
     _, buffer = cv2.imencode('.jpg', upscaled, [cv2.IMWRITE_JPEG_QUALITY, 90])
     base64_img = base64.b64encode(buffer).decode()
-    return {
+    payload = {
         "success": True,
         "scale": scale,
         "original_size": {"width": int(img.shape[1]), "height": int(img.shape[0])},
         "upscaled_size": {"width": int(upscaled.shape[1]), "height": int(upscaled.shape[0])},
         "image_base64": "data:image/jpeg;base64," + base64_img
     }
+    return _add_perf_metadata(payload, start_time, frames_processed=1)
 
 
 @app.post("/superres/video")
@@ -1014,6 +1060,7 @@ async def superres_video(
     if frame_stride <= 0:
         raise HTTPException(400, "frame_stride debe ser > 0")
 
+    start_time = time.perf_counter()
     tmp_path = _save_upload_to_temp(file)
     output_tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
     output_tmp.close()
@@ -1066,13 +1113,14 @@ async def superres_video(
         video_b64 = base64.b64encode(f.read()).decode()
     os.remove(output_tmp.name)
 
-    return {
+    payload = {
         "success": True,
         "scale": scale,
         "frames_written": processed,
         "upscaled_resolution": {"width": out_size[0], "height": out_size[1]},
         "video_base64": "data:video/mp4;base64," + video_b64
     }
+    return _add_perf_metadata(payload, start_time, frames_processed=processed)
 
 if __name__ == "__main__":
     import uvicorn
