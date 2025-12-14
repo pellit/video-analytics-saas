@@ -1,8 +1,17 @@
 import os
+import shutil
+import urllib.request
 
 DEFAULT_JETSON_DATA_DIR = '/home/jetson/video-analytics-saas/data'
 CUSTOM_JETSON_DATA_DIR = os.environ.get('JETSON_DATA_DIR_OVERRIDE')
 CUSTOM_JETSON_INFERENCE_ROOT = os.environ.get('JETSON_INFERENCE_ROOT_OVERRIDE')
+
+GOOGLE_DRIVE_MODELS = {
+    "Action-ResNet18/resnet-18-kinetics-moments.onnx": "1_FW4jU9G0j-z9OFBhULz47xLRf8GDnsU",
+    "Action-ResNet18/resnet-34-kinetics-moments.onnx": "10By0Loxtu-VWNi84bStWkGwbYfnW9Il1",
+    "Action-ResNet18/resnet-50-kinetics.onnx": "1cz5Gnh-bfWkBBitsxK17s1N2R0uv_e_o",
+    "Action-ResNet18/resnext-101-kinetics.onnx": "1X4NBid0lyWl7CRsa9kZS1HmXMgb-vsXU",
+}
 
 
 def _configure_jetson_data_dir():
@@ -87,29 +96,68 @@ def ensure_jetson_models():
         return
     required = [
         "Action-ResNet18/resnet-18-kinetics-moments.onnx",
+        "Action-ResNet18/resnet-34-kinetics-moments.onnx",
+        "Action-ResNet18/resnet-50-kinetics.onnx",
+        "Action-ResNet18/resnext-101-kinetics.onnx",
         "Action-ResNet18/labels.txt",
         "Pose-ResNet18-Body/human_pose.json",
         "Pose-ResNet18-Body/pose_resnet18_body.onnx",
         "MonoDepth-FCN-ResNet18/monodepth_fcn_resnet18.onnx",
     ]
-    missing = []
-    for rel in required:
-        if not os.path.exists(os.path.join(data_dir, rel)):
-            missing.append(rel)
+    missing = [
+        rel for rel in required if not os.path.exists(os.path.join(data_dir, rel))
+    ]
     if not missing:
         return
     downloader = os.path.join(jets_root, "tools", "download-models.sh")
-    if not os.path.exists(downloader):
-        print("⚠️ download-models.sh no encontrado; no se pueden descargar modelos automáticamente.")
-        return
-    print("⬇️ Descargando modelos Jetson faltantes...")
-    os.system(f"cd {os.path.dirname(downloader)} && ./download-models.sh")
-    still_missing = [
-        rel for rel in missing if not os.path.exists(os.path.join(data_dir, rel))
-    ]
+    if os.path.exists(downloader):
+        print("⬇️ Descargando modelos Jetson faltantes...")
+        os.system(f"cd {os.path.dirname(downloader)} && ./download-models.sh")
+    else:
+        print("⚠️ download-models.sh no encontrado; probando mirrors alternativos.")
+    still_missing = _refresh_missing(data_dir, missing)
     if still_missing:
-        print("⚠️ Estos modelos aún faltan tras la descarga automática:")
+        downloaded = _download_from_drive_batch(still_missing, data_dir)
+        if downloaded:
+            still_missing = _refresh_missing(data_dir, still_missing)
+    if still_missing:
+        print("⚠️ Estos modelos aún faltan tras los intentos automáticos:")
         for rel in still_missing:
             print(f"    - {os.path.join(data_dir, rel)}")
     else:
         print("✅ Modelos Jetson descargados correctamente.")
+
+
+def _refresh_missing(base_dir, entries):
+    return [
+        rel for rel in entries if not os.path.exists(os.path.join(base_dir, rel))
+    ]
+
+
+def _download_file_from_drive(file_id, destination):
+    url = f"https://drive.usercontent.google.com/download?id={file_id}&export=download"
+    tmp_path = f"{destination}.part"
+    os.makedirs(os.path.dirname(destination), exist_ok=True)
+    try:
+        with urllib.request.urlopen(url) as response, open(tmp_path, 'wb') as tmp_file:
+            shutil.copyfileobj(response, tmp_file)
+        os.replace(tmp_path, destination)
+        print(f"⬇️ Descargado desde Google Drive: {destination}")
+        return True
+    except Exception as exc:
+        print(f"⚠️ No se pudo descargar {destination}: {exc}")
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+        return False
+
+
+def _download_from_drive_batch(missing, base_dir):
+    downloaded = []
+    for rel in missing:
+        file_id = GOOGLE_DRIVE_MODELS.get(rel)
+        if not file_id:
+            continue
+        dest = os.path.join(base_dir, rel)
+        if _download_file_from_drive(file_id, dest):
+            downloaded.append(rel)
+    return downloaded
