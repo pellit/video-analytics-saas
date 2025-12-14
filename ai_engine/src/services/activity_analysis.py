@@ -39,6 +39,8 @@ class ActivityAnalyzer:
         fallback_nms: float,
         soccer_labels: Optional[Iterable[str]] = None,
         gym_labels: Optional[Iterable[str]] = None,
+        ball_aliases: Optional[Dict[str, str]] = None,
+        ball_target_class_id: Optional[int] = None,
     ):
         self.yolo_fallback = yolo_fallback
         self.enable_ball_fallback = enable_ball_fallback
@@ -46,6 +48,8 @@ class ActivityAnalyzer:
         self.fallback_nms = fallback_nms
         self.soccer_labels = set(soccer_labels or SOCCER_BALL_LABELS)
         self.gym_labels = set(gym_labels or GYM_EQUIPMENT_LABELS)
+        self.ball_aliases = {k.lower(): v.lower() for k, v in (ball_aliases or {}).items()}
+        self.ball_target_class_id = ball_target_class_id
 
     # ------------------------------------------------------------------ #
     # Inference helpers
@@ -80,7 +84,19 @@ class ActivityAnalyzer:
         result["detections"] = detections
         if fallback_info["used"]:
             result["ball_fallback"] = fallback_info
+        if self.ball_aliases:
+            self._apply_ball_aliases(result["detections"])
         return result
+
+    def _apply_ball_aliases(self, detections: List[Dict[str, Any]]) -> None:
+        for det in detections:
+            label = (det.get("class_name") or "").lower()
+            if label in self.ball_aliases:
+                det.setdefault("alias_source", det.get("class_name"))
+                det["class_name"] = self.ball_aliases[label]
+                if self.ball_target_class_id is not None:
+                    det["class_id"] = self.ball_target_class_id
+
 
     # ------------------------------------------------------------------ #
     # Video analysis

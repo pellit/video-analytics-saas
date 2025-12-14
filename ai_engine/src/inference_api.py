@@ -244,6 +244,8 @@ SFACE_TEMPLATE = np.array([
     [70.7299, 92.2041]
 ], dtype=np.float32)
 SUPERRES_MODEL_PATH = os.environ.get('SUPERRES_MODEL_PATH')
+SUPERRES_IMAGE_MODEL_PATH = os.environ.get('SUPERRES_IMAGE_MODEL_PATH', '/app/models/FSRCNN_x4.pb')
+SUPERRES_VIDEO_MODEL_PATH = os.environ.get('SUPERRES_VIDEO_MODEL_PATH', '/app/models/ESPCN_x4.pb')
 _default_superres_dirs = [
     os.environ.get('SUPERRES_MODEL_DIR'),
     os.path.abspath(os.path.join(os.getcwd(), "data/networks/Super-Resolution-BSD500")),
@@ -275,6 +277,15 @@ face_service = FaceEmbeddingService(
 BALL_YOLO_FALLBACK = os.environ.get("BALL_YOLO_FALLBACK", "1").lower() not in ("0", "false", "off")
 BALL_YOLO_CONFIDENCE = float(os.environ.get("BALL_YOLO_CONFIDENCE", "0.45"))
 BALL_YOLO_NMS = float(os.environ.get("BALL_YOLO_NMS", "0.35"))
+BALL_TARGET_CLASS_ID = int(os.environ.get("BALL_TARGET_CLASS_ID", "37"))
+BALL_ALIAS_MAPPING = {}
+for pair in os.environ.get("BALL_ALIAS_MAPPING", "frisbee:sports_ball").split(","):
+    pair = pair.strip()
+    if not pair or ":" not in pair:
+        continue
+    src, dst = [p.strip().lower() for p in pair.split(":", 1)]
+    if src and dst:
+        BALL_ALIAS_MAPPING[src] = dst
 
 activity_analyzer = ActivityAnalyzer(
     yolo_fallback=yolo_fallback,
@@ -283,6 +294,8 @@ activity_analyzer = ActivityAnalyzer(
     fallback_nms=BALL_YOLO_NMS,
     soccer_labels=SOCCER_BALL_LABELS,
     gym_labels=GYM_EQUIPMENT_LABELS,
+    ball_aliases=BALL_ALIAS_MAPPING,
+    ball_target_class_id=BALL_TARGET_CLASS_ID,
 )
 
 actionnet_service = ActionNetService(ACTIONNET_MODEL, ACTIONNET_LABELS)
@@ -1202,7 +1215,7 @@ async def superres_image(file: UploadFile = File(...)):
     if img is None:
         raise HTTPException(400, "No se pudo decodificar la imagen subida")
 
-    sr, scale = superres_service.load_engine()
+    sr, scale = superres_service.load_engine(SUPERRES_IMAGE_MODEL_PATH or SUPERRES_MODEL_PATH)
     try:
         upscaled = sr.upsample(img)
     except Exception as exc:
@@ -1233,7 +1246,7 @@ async def superres_video(
     output_tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
     output_tmp.close()
 
-    sr, scale = superres_service.load_engine()
+    sr, scale = superres_service.load_engine(SUPERRES_VIDEO_MODEL_PATH or SUPERRES_MODEL_PATH)
     cap = cv2.VideoCapture(tmp_path)
     if not cap.isOpened():
         os.remove(tmp_path)

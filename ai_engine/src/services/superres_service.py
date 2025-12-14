@@ -79,12 +79,22 @@ class SuperResolutionService:
                 return candidate
         return None
 
-    def load_engine(self):
-        if self._engine is not None:
-            return self._engine, self._scale
+    def load_engine(self, model_override: Optional[str] = None):
+        if model_override:
+            model_override = os.path.abspath(model_override)
+            if not os.path.exists(model_override):
+                raise HTTPException(503, f"El modelo de super resolución '{model_override}' no existe en el contenedor.")
+            if self._engine is not None and self._model_path == model_override:
+                return self._engine, self._scale
+            self._engine = None
+            self._model_path = None
+            model_path = model_override
+        else:
+            if self._engine is not None:
+                return self._engine, self._scale
+            model_path = self._resolve_model_path()
         if self._factory is None:
             raise HTTPException(503, "cv2.dnn_superres no está disponible en este entorno (compila OpenCV con contrib).")
-        model_path = self._resolve_model_path()
         if not model_path or not os.path.exists(model_path):
             raise HTTPException(503, "No se encontró el modelo de super resolución. Configura SUPERRES_MODEL_PATH o verifica data/networks/Super-Resolution-BSD500.")
         try:
