@@ -2,6 +2,7 @@ import os
 
 DEFAULT_JETSON_DATA_DIR = '/home/jetson/video-analytics-saas/data'
 CUSTOM_JETSON_DATA_DIR = os.environ.get('JETSON_DATA_DIR_OVERRIDE')
+CUSTOM_JETSON_INFERENCE_ROOT = os.environ.get('JETSON_INFERENCE_ROOT_OVERRIDE')
 
 
 def _configure_jetson_data_dir():
@@ -19,14 +20,53 @@ def _configure_jetson_data_dir():
         networks_path = os.path.join(path, 'networks')
         if os.path.isdir(networks_path):
             os.environ['JETSON_DATA_DIR'] = path
-            os.environ.setdefault('JETSON_INFERENCE_ROOT', os.path.dirname(path))
             print(f"📁 Jetson data dir detectado: {path}")
-            return
+            return path
 
     print("⚠️ No se detectó ninguna ruta de modelos Jetson preconfigurada.")
+    return None
 
 
-_configure_jetson_data_dir()
+def _configure_jetson_inference_root(data_dir_path):
+    """Detecta la raíz del repo jetson-inference para usar download-models.sh."""
+    existing = os.environ.get('JETSON_INFERENCE_ROOT')
+
+    def _has_downloader(root_path):
+        if not root_path:
+            return False
+        return os.path.exists(os.path.join(root_path, 'tools', 'download-models.sh'))
+
+    if existing and _has_downloader(existing):
+        print(f"📦 Jetson inference root detectado: {existing}")
+        return existing
+
+    base_hint = os.path.dirname(data_dir_path) if data_dir_path else None
+    candidates = [
+        CUSTOM_JETSON_INFERENCE_ROOT,
+        base_hint,
+        '/jetson-inference',
+        '/opt/jetson-inference',
+        '/usr/local/jetson-inference',
+        os.path.expanduser('~/jetson-inference'),
+    ]
+
+    for candidate in candidates:
+        if not candidate:
+            continue
+        if _has_downloader(candidate):
+            os.environ['JETSON_INFERENCE_ROOT'] = candidate
+            print(f"📦 Jetson inference root detectado: {candidate}")
+            return candidate
+
+    if existing:
+        print(f"⚠️ No se encontró download-models.sh en {existing}")
+    else:
+        print("⚠️ No se detectó jetson-inference root (download-models.sh).")
+    return None
+
+
+detected_data_dir = _configure_jetson_data_dir()
+_configure_jetson_inference_root(detected_data_dir)
 
 JETSON_DATA_DIR_ACTIVE = os.environ.get('JETSON_DATA_DIR')
 JETSON_NETWORKS_DIR = (
