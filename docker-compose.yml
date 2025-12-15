@@ -106,8 +106,6 @@ services:
       depends_on:
         - redis
         - vlm_service
-      networks:
-        - saas_net
 
   # --- VLM SERVICE (Moondream2 Microservice) ---
   vlm_service:
