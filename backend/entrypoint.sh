@@ -32,10 +32,9 @@ wait_for_mysql() {
     return 1
 }
 
-# 0. Crear .env desde variables de entorno si no existe
-if [ ! -f .env ]; then
-    echo "📝 Creando .env desde variables de entorno..."
-    cat > .env << EOF
+# 0. Crear .env desde variables de entorno (siempre las sincronizamos con DOCKER)
+echo "📝 Generando .env desde variables de entorno..."
+cat > .env << EOF
 APP_NAME="${APP_NAME:-Video SaaS}"
 APP_ENV=${APP_ENV:-production}
 APP_KEY=${APP_KEY}
@@ -67,8 +66,7 @@ CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS:-*}
 
 WORKER_API_KEY=${WORKER_API_KEY:-}
 EOF
-    echo "✅ .env creado"
-fi
+echo "✅ .env actualizado"
 
 # Control: Permite saltar migraciones/seeders si la variable ENTRYPOINT_RUN_MIGRATIONS es "false"
 # Esto es útil para ejecutar comandos puntuales en el contenedor (p.ej. composer require) sin que

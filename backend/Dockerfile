@@ -22,6 +22,7 @@ WORKDIR /var/www/html
 
 # 4. Copiar código y dependencias
 COPY . .
+RUN rm -f .env
 RUN composer install --no-interaction --optimize-autoloader --no-dev
 
 # 5. Permisos
