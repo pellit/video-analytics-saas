@@ -23,7 +23,7 @@ services:
       dockerfile: Dockerfile
     command: ["php", "artisan", "serve", "--host=0.0.0.0", "--port=8000"]
     environment:
-      - DB_HOST=db
+      - DB_HOST=${DB_HOST:-saas-db}
       - APP_KEY=${APP_KEY:-}
       - REDIS_HOST=redis
       - DB_WAIT_MAX_ATTEMPTS=120
@@ -242,7 +242,9 @@ services:
     volumes:
       - db_data:/var/lib/mysql
     networks:
-      - saas_net
+      saas_net:
+        aliases:
+          - saas-db
     healthcheck:
       test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
       interval: 10s

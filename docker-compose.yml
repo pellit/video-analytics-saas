@@ -12,7 +12,7 @@ services:
         - APP_ENV=${APP_ENV:-production}
         - APP_KEY=${APP_KEY:-base64:E26wzpvGUYWuJGNUBWqwO9ZVtvw69D6ltkr9KXjnBn8=}
         - DB_CONNECTION=${DB_CONNECTION:-mysql}
-        - DB_HOST=${DB_HOST:-db}
+        - DB_HOST=${DB_HOST:-saas-db}
         - DB_PORT=${DB_PORT:-3306}
         - DB_DATABASE=${DB_DATABASE:-saas_video}
         - DB_USERNAME=${DB_USERNAME:-root}
@@ -186,7 +186,9 @@ services:
     volumes:
       - db_data:/var/lib/mysql
     networks:
-      - saas_net
+      saas_net:
+        aliases:
+          - saas-db
 
   label_studio:
     image: heartexlabs/label-studio:latest
