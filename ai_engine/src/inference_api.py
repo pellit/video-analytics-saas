@@ -9,11 +9,12 @@ import base64
 import numpy as np
 import cv2
 import tempfile
-from typing import Optional, List, Dict, Any
+import shutil
+from typing import Optional, List, Dict, Any, Type, TypeVar
 
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 from .services.video_utils import bgr_to_cuda
 from .services.depth_pose import run_depthnet_video, analyze_depth_pose_video as depth_pose_service_analyze
@@ -30,6 +31,12 @@ from .services.actionnet_service import ActionNetService, JETSON_INFERENCE_AVAIL
 from .services.hit_detection_service import HitDetectionService
 from .services.superres_service import SuperResolutionService
 from .services.jetson_env import ensure_jetson_models
+from .schemas.model_conversion import PyTorchToOnnxConfig, OnnxToTensorRTConfig
+from .services.model_conversion import (
+    convert_pytorch_checkpoint_to_onnx,
+    convert_onnx_to_tensorrt,
+    ModelConversionError,
+)
 
 JETSON_INFERENCE_AVAILABLE = ACTIONNET_AVAILABLE
 
@@ -49,6 +56,15 @@ POSENET_MODEL = os.environ.get('POSENET_MODEL', 'resnet18-body')
 # Models directory
 MODELS_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "../models"))
 os.makedirs(MODELS_DIR, exist_ok=True)
+
+ConversionModel = TypeVar('ConversionModel', bound=BaseModel)
+
+
+def _parse_conversion_payload(model_cls: Type[ConversionModel], payload: str) -> ConversionModel:
+    try:
+        return model_cls.parse_raw(payload)
+    except ValidationError as exc:
+        raise HTTPException(status_code=400, detail={"errors": exc.errors()}) from exc
 
 
 def _add_perf_metadata(payload, start_time, frames_processed):
@@ -1302,6 +1318,104 @@ async def superres_video(
         "video_base64": "data:video/mp4;base64," + video_b64
     }
     return _add_perf_metadata(payload, start_time, frames_processed=processed)
+
+
+@app.post("/models/convert/pytorch-to-onnx")
+async def jetson_convert_pytorch_to_onnx(
+    weights: UploadFile = File(...),
+    config: str = Form(...),
+):
+    """
+    Convert uploaded PyTorch checkpoints to ONNX directly on the Jetson device.
+    """
+    conversion_cfg = _parse_conversion_payload(PyTorchToOnnxConfig, config)
+    tmp_path = _save_upload_to_temp(weights)
+    output_name = conversion_cfg.output_filename or f"{conversion_cfg.model_name}.onnx"
+    output_path = os.path.join(MODELS_DIR, output_name)
+
+    if os.path.exists(output_path) and not conversion_cfg.overwrite:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise HTTPException(409, f"El archivo {output_name} ya existe. Usa overwrite=true para reemplazarlo.")
+
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    try:
+        result = convert_pytorch_checkpoint_to_onnx(tmp_path, output_path, conversion_cfg)
+    except ModelConversionError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+
+    return {
+        "success": True,
+        "data": {
+            **result,
+            "file_name": output_name,
+        },
+    }
+
+
+@app.post("/models/convert/onnx-to-tensorrt")
+async def jetson_convert_onnx_to_tensorrt(
+    model_file: UploadFile = File(...),
+    config: str = Form(...),
+):
+    """
+    Convert ONNX models into TensorRT FP16 engines optimized for Jetson hardware.
+    """
+    conversion_cfg = _parse_conversion_payload(OnnxToTensorRTConfig, config)
+    tmp_path = _save_upload_to_temp(model_file)
+
+    engine_name = conversion_cfg.resolved_engine_name()
+    engine_path = os.path.join(MODELS_DIR, engine_name)
+    if os.path.exists(engine_path) and not conversion_cfg.overwrite:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise HTTPException(409, f"El engine {engine_name} ya existe. Usa overwrite=true para reemplazarlo.")
+
+    stored_onnx_path = None
+    try:
+        onnx_source_path = tmp_path
+        if conversion_cfg.keep_onnx_copy:
+            onnx_name = conversion_cfg.resolved_onnx_name()
+            if onnx_name:
+                stored_onnx_path = os.path.join(MODELS_DIR, onnx_name)
+                if os.path.exists(stored_onnx_path) and not conversion_cfg.overwrite:
+                    try:
+                        os.unlink(tmp_path)
+                    except OSError:
+                        pass
+                    raise HTTPException(409, f"El ONNX {onnx_name} ya existe. Usa overwrite=true para reemplazarlo.")
+                os.makedirs(os.path.dirname(stored_onnx_path), exist_ok=True)
+                shutil.move(tmp_path, stored_onnx_path)
+                onnx_source_path = stored_onnx_path
+        result = convert_onnx_to_tensorrt(onnx_source_path, engine_path, conversion_cfg)
+    except ModelConversionError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    finally:
+        if not conversion_cfg.keep_onnx_copy and os.path.exists(tmp_path):
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+
+    if stored_onnx_path:
+        result["onnx_path"] = stored_onnx_path
+
+    return {
+        "success": True,
+        "data": {
+            **result,
+            "engine_name": engine_name,
+        },
+    }
 
 if __name__ == "__main__":
     import uvicorn

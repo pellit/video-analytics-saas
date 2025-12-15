@@ -1,5 +1,6 @@
 import base64
 import os
+import shutil
 import tempfile
 from typing import Dict, Optional
 
@@ -22,20 +23,35 @@ def decode_base64_image(image_base64: str) -> np.ndarray:
     return img
 
 
-def save_upload_to_temp(file: UploadFile) -> str:
+def save_upload_to_temp(file: UploadFile, allow_empty: bool = False) -> str:
+    """
+    Persist an uploaded file to a secure temporary location without loading everything in memory.
+    
+    Args:
+        file: UploadFile received by FastAPI.
+        allow_empty: Whether to allow zero-byte files.
+    
+    Returns:
+        Path to the temporary file on disk.
+    """
     try:
         file.file.seek(0)
-        contents = file.file.read()
     except Exception:
         raise HTTPException(400, "Failed to read uploaded file")
 
-    if not contents:
-        raise HTTPException(400, "Uploaded file is empty")
-
     suffix = os.path.splitext(file.filename or "")[1]
     tmp = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
-    tmp.write(contents)
-    tmp.close()
+    bytes_written = 0
+    try:
+        shutil.copyfileobj(file.file, tmp)
+        bytes_written = tmp.tell()
+    finally:
+        tmp.close()
+        file.file.seek(0)
+
+    if bytes_written == 0 and not allow_empty:
+        os.unlink(tmp.name)
+        raise HTTPException(400, "Uploaded file is empty")
     return tmp.name
 
 

@@ -114,6 +114,76 @@ detector = get_detector(model_type='rt_detr')
 print(ModelFactory.list_available_models())
 ```
 
+## Conversión de Modelos vía API (Super Admin)
+
+El AI Worker expone nuevos endpoints (también disponibles en la Jetson) para automatizar la conversión de modelos desde el panel de Super Admin.
+
+### 1. PyTorch (.pt/.pth) ➝ ONNX
+
+```
+POST /models/convert/pytorch-to-onnx
+Form-Data:
+  - weights: archivo .pt / .pth
+  - config: JSON con la configuración
+```
+
+Ejemplo:
+
+```bash
+curl -X POST "$WORKER_URL/models/convert/pytorch-to-onnx" \
+  -H "Accept: application/json" \
+  -F "weights=@/path/a/tu_modelo.pth" \
+  -F 'config={
+        "model_name": "mi_detector",
+        "framework": "torchscript",
+        "batch_size": 1,
+        "input_height": 640,
+        "input_width": 640,
+        "input_channels": 3,
+        "opset": 13,
+        "overwrite": true
+      }'
+```
+
+Campos clave:
+
+- `framework`: `torchscript`, `state_dict` (requiere `model_class` y `model_kwargs`) o `ultralytics`.
+- `output_filename`: nombre del ONNX destino (por defecto `<model_name>.onnx`).
+- `dynamic_batch`, `half_precision`, `simplify`: banderas adicionales para el export.
+
+### 2. ONNX ➝ TensorRT (.engine FP16)
+
+```
+POST /models/convert/onnx-to-tensorrt
+Form-Data:
+  - model_file: archivo ONNX
+  - config: JSON con la configuración
+```
+
+Ejemplo:
+
+```bash
+curl -X POST "$WORKER_URL/models/convert/onnx-to-tensorrt" \
+  -F "model_file=@models/yolo_nas_s.onnx" \
+  -F 'config={
+        "model_name": "yolo_nas_s_fp16",
+        "engine_filename": "yolo_nas_s_fp16.engine",
+        "fp16": true,
+        "workspace_size_mb": 1024,
+        "keep_onnx_copy": true,
+        "overwrite": true,
+        "input_shapes": {
+          "images": [1, 3, 640, 640]
+        }
+      }'
+```
+
+Notas:
+
+- Si `keep_onnx_copy` es `true`, el ONNX se guarda en `ai_engine/models/`.
+- Para redes con dimensiones dinámicas, usa `input_shapes` o `input_profiles` (min/opt/max por tensor).
+- La Jetson utiliza TensorRT FP16 para duplicar el rendimiento; en servidores sin TensorRT el endpoint devolverá un error claro.
+
 ## API Endpoints
 
 ### GET /models

@@ -4,18 +4,35 @@ import time
 import threading
 import base64
 import asyncio
+import shutil
 import cv2
 import redis
 import numpy as np
 import requests
-from fastapi import FastAPI
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from yt_dlp import YoutubeDL
-from pydantic import BaseModel
-from typing import Optional, List, Dict, Any
+from pydantic import BaseModel, ValidationError
+from typing import Optional, List, Dict, Any, Type, TypeVar
 from .depth_service import DepthService
 from .models import get_detector, ModelFactory, ModelType, Resolution
+from .services.video_io import save_upload_to_temp
+from .schemas.model_conversion import PyTorchToOnnxConfig, OnnxToTensorRTConfig
+from .services.model_conversion import (
+    convert_pytorch_checkpoint_to_onnx,
+    convert_onnx_to_tensorrt,
+    ModelConversionError,
+)
+
+TConfig = TypeVar('TConfig', bound=BaseModel)
+
+
+def _parse_config(model_cls: Type[TConfig], raw_config: str) -> TConfig:
+    try:
+        return model_cls.parse_raw(raw_config)
+    except ValidationError as exc:
+        raise HTTPException(status_code=400, detail={"errors": exc.errors()}) from exc
 
 # --- JPEG Encoding Optimization ---
 # simplejpeg uses libjpeg-turbo (SIMD optimized) - 4x faster than cv2.imencode
@@ -1178,6 +1195,102 @@ def models_reload():
             "error": str(e)
         }
 
+@app.post('/models/convert/pytorch-to-onnx')
+async def convert_pytorch_to_onnx_endpoint(
+    weights: UploadFile = File(...),
+    config: str = Form(...),
+):
+    """
+    Upload a PyTorch checkpoint (.pt/.pth) and convert it to ONNX.
+    """
+    conversion_cfg = _parse_config(PyTorchToOnnxConfig, config)
+    tmp_path = save_upload_to_temp(weights)
+    output_name = conversion_cfg.output_filename or f"{conversion_cfg.model_name}.onnx"
+    output_path = os.path.join(MODELS_DIR, output_name)
+
+    if os.path.exists(output_path) and not conversion_cfg.overwrite:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise HTTPException(409, f"El archivo {output_name} ya existe. Usa overwrite=true para reemplazarlo.")
+
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    try:
+        result = convert_pytorch_checkpoint_to_onnx(tmp_path, output_path, conversion_cfg)
+    except ModelConversionError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+
+    return {
+        "success": True,
+        "data": {
+            **result,
+            "file_name": output_name,
+        },
+    }
+
+
+@app.post('/models/convert/onnx-to-tensorrt')
+async def convert_onnx_to_trt_endpoint(
+    model_file: UploadFile = File(...),
+    config: str = Form(...),
+):
+    """
+    Upload an ONNX model and compile it into a TensorRT engine (FP16 capable).
+    """
+    conversion_cfg = _parse_config(OnnxToTensorRTConfig, config)
+    tmp_path = save_upload_to_temp(model_file)
+
+    engine_name = conversion_cfg.resolved_engine_name()
+    engine_path = os.path.join(MODELS_DIR, engine_name)
+    if os.path.exists(engine_path) and not conversion_cfg.overwrite:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise HTTPException(409, f"El engine {engine_name} ya existe. Usa overwrite=true para reemplazarlo.")
+
+    stored_onnx_path = None
+    try:
+        onnx_source_path = tmp_path
+        if conversion_cfg.keep_onnx_copy:
+            onnx_name = conversion_cfg.resolved_onnx_name()
+            if onnx_name:
+                stored_onnx_path = os.path.join(MODELS_DIR, onnx_name)
+                if os.path.exists(stored_onnx_path) and not conversion_cfg.overwrite:
+                    try:
+                        os.unlink(tmp_path)
+                    except OSError:
+                        pass
+                    raise HTTPException(409, f"El ONNX {onnx_name} ya existe. Usa overwrite=true para reemplazarlo.")
+                os.makedirs(os.path.dirname(stored_onnx_path), exist_ok=True)
+                shutil.move(tmp_path, stored_onnx_path)
+                onnx_source_path = stored_onnx_path
+        result = convert_onnx_to_tensorrt(onnx_source_path, engine_path, conversion_cfg)
+    except ModelConversionError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    finally:
+        if not conversion_cfg.keep_onnx_copy and os.path.exists(tmp_path):
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+
+    if stored_onnx_path:
+        result["onnx_path"] = stored_onnx_path
+
+    return {
+        "success": True,
+        "data": {
+            **result,
+            "engine_name": engine_name,
+        },
+    }
 
 class ModelChangeRequest(BaseModel):
     model_type: str
@@ -2842,4 +2955,3 @@ def architecture_info():
             "REDIS_HOST": os.environ.get('REDIS_HOST', 'localhost')
         }
     }
-
