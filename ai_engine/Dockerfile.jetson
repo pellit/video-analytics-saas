@@ -1,6 +1,5 @@
 # ==============================================================================
 # Dockerfile Jetson Nano - OpenCV 4.10 + CUDA + Python 3.11
-# Base: l4t-ml (se recompila para habilitar módulos extra y bindings modernos)
 # ==============================================================================
 ARG BASE_IMAGE=dustynv/jetson-inference:r32.7.1
 FROM ${BASE_IMAGE}
@@ -17,7 +16,7 @@ ENV PYTHON_BIN=python3.11
 ENV PYTHONPATH=/usr/local/lib/python3.11/site-packages:/usr/local/lib/python3.11/dist-packages:/usr/local/python:/app/ai_engine/src
 
 # ------------------------------------------------------------------------------
-# 1. Instalación de Dependencias de Compilación y Sistema
+# 1. Instalación de Dependencias
 # ------------------------------------------------------------------------------
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
@@ -34,12 +33,18 @@ RUN apt-get update && \
         xz-utils tk-dev uuid-dev && \
     rm -rf /var/lib/apt/lists/*
 
-# libcudacxx headers (no deb package on JetPack 4.x) for cuda/std support
-RUN git clone --depth 1 https://github.com/NVIDIA/libcudacxx.git /usr/local/libcudacxx && \
-    rm -rf /usr/local/libcudacxx/.git
+# ------------------------------------------------------------------------------
+# 2. Corrección de libcudacxx para CUDA 10.2 (CRÍTICO)
+# ------------------------------------------------------------------------------
+# En lugar de usar flags -I, copiamos las cabeceras directamente al directorio de CUDA.
+# Esto soluciona el error "fatal error: cuda/std/tuple: No such file or directory"
+RUN git clone --depth 1 https://github.com/NVIDIA/libcudacxx.git /tmp/libcudacxx && \
+    cp -r /tmp/libcudacxx/include/cuda /usr/local/cuda/include/ && \
+    cp -r /tmp/libcudacxx/include/nv /usr/local/cuda/include/ || true && \
+    rm -rf /tmp/libcudacxx
 
 # ------------------------------------------------------------------------------
-# 2. Compilación de Python 3.11 (necesario para OpenCV >= 4.6 con wheel moderno)
+# 3. Compilación de Python 3.11
 # ------------------------------------------------------------------------------
 WORKDIR /tmp
 RUN wget https://www.python.org/ftp/python/${PYTHON_VERSION}/Python-${PYTHON_VERSION}.tgz && \
@@ -53,13 +58,12 @@ RUN wget https://www.python.org/ftp/python/${PYTHON_VERSION}/Python-${PYTHON_VER
     ${PYTHON_BIN} -m pip install --upgrade pip setuptools wheel numpy
 
 # ------------------------------------------------------------------------------
-# 3. Compilar OpenCV 4.10 (compatible con Python 3.11 + CUDA)
-#    Se puede omitir con --build-arg BUILD_OPENCV=0 para reutilizar una imagen precompilada.
+# 4. Compilar OpenCV 4.10
 # ------------------------------------------------------------------------------
 ARG BUILD_OPENCV=1
 WORKDIR /tmp
 RUN if [ "$BUILD_OPENCV" = "1" ]; then \
-        echo "🛠️  Compilando OpenCV (esto puede tardar varios minutos)..."; \
+        echo "🛠️  Compilando OpenCV (esto puede tardar 4-5 horas)..."; \
         apt-get remove -y python3-opencv || true && \
         rm -rf /usr/lib/python3.6/dist-packages/cv2 && \
         rm -rf /usr/local/lib/python3.6/dist-packages/cv2 && \
@@ -96,7 +100,8 @@ RUN if [ "$BUILD_OPENCV" = "1" ]; then \
               -D BUILD_opencv_python3=ON \
               -D CUDA_TOOLKIT_ROOT_DIR=/usr/local/cuda \
               -D CMAKE_CUDA_COMPILER=/usr/local/cuda/bin/nvcc \
-              -D CMAKE_CUDA_FLAGS="--expt-relaxed-constexpr -I/usr/local/libcudacxx/include" \
+              -D CMAKE_CUDA_FLAGS="--expt-relaxed-constexpr" \
+              -D CMAKE_CXX_STANDARD=17 \
               -D PYTHON3_EXECUTABLE=$(which ${PYTHON_BIN}) \
               -D PYTHON3_INCLUDE_DIR=${PY_INCLUDE} \
               -D PYTHON3_LIBRARY=${PY_LIB} \
@@ -114,52 +119,35 @@ RUN if [ "$BUILD_OPENCV" = "1" ]; then \
         make install && \
         ldconfig && \
         rm -rf /tmp/opencv /tmp/opencv_contrib && \
-        echo "✅ OpenCV 4.10 instalado en la imagen"; \
+        echo "✅ OpenCV 4.10 instalado correctamente"; \
     else \
-        echo "⏭️  Saltando compilación de OpenCV (BUILD_OPENCV=$BUILD_OPENCV)"; \
+        echo "⏭️  Saltando compilación de OpenCV"; \
     fi
 
 # ------------------------------------------------------------------------------
-# 4. Dependencias Python del proyecto
+# 5. Dependencias y Modelos del Proyecto
 # ------------------------------------------------------------------------------
 WORKDIR /app
 COPY requirements.jetson.txt /app/requirements.txt
 
-# Instalamos requirements filtrando opencv-python para no romper la compilación manual
 RUN ${PYTHON_BIN} -m pip install --no-cache-dir --upgrade pip setuptools wheel && \
     ${PYTHON_BIN} -m pip install --no-cache-dir --ignore-installed PyYAML && \
     cat requirements.txt | grep -v "opencv-python" > requirements_filtered.txt && \
     ${PYTHON_BIN} -m pip install --no-cache-dir -r requirements_filtered.txt && \
-    # Descargar modelos base de jetson-inference si es necesario
     if [ -d /opt/jetson-inference/python/training/classification ]; then \
         cd /opt/jetson-inference/python/training/classification && ./download-models.sh; \
     fi
 
-# ------------------------------------------------------------------------------
-# 4. Descarga de Modelos Específicos (Face + Super Resolution)
-# ------------------------------------------------------------------------------
 RUN mkdir -p /app/models && \
-    # A. Modelos Faciales (YuNet y SFace)
     curl -L -o /app/models/face_detection_yunet_2023mar.onnx https://github.com/opencv/opencv_zoo/raw/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx && \
     curl -L -o /app/models/face_recognition_sface_2021dec.onnx https://github.com/opencv/opencv_zoo/raw/main/models/face_recognition_sface/face_recognition_sface_2021dec.onnx && \
-    # B. Modelos Super Resolución (.pb para OpenCV dnn_superres)
-    # Descargamos ESPCN y FSRCNN que son rápidos para la Jetson
     curl -L -o /app/models/ESPCN_x4.pb https://github.com/Saafke/EDSR_Tensorflow/raw/master/models/ESPCN_x4.pb && \
     curl -L -o /app/models/FSRCNN_x4.pb https://github.com/Saafke/FSRCNN_Tensorflow/raw/master/models/FSRCNN_x4.pb
 
-# ------------------------------------------------------------------------------
-# 5. Copiar código fuente y configuración final
-# ------------------------------------------------------------------------------
 COPY . /app
-
-# Aseguramos que los modelos estén también en ai_engine si el código los busca ahí
 RUN mkdir -p /app/ai_engine/models && \
     cp /app/models/* /app/ai_engine/models/
 
-# Modelo por defecto para super resolución (cv2.dnn_superres requiere .pb)
 ENV SUPERRES_MODEL_PATH=/app/models/ESPCN_x4.pb
 
-# ------------------------------------------------------------------------------
-# 6. Ejecución
-# ------------------------------------------------------------------------------
 CMD ["uvicorn", "src.inference_api:app", "--host", "0.0.0.0", "--port", "5050", "--workers", "1"]
