@@ -34,12 +34,9 @@ RUN apt-get update && \
         xz-utils tk-dev uuid-dev && \
     rm -rf /var/lib/apt/lists/*
 
-# libcudacxx headers (not packaged on JetPack 4.x) for cuda/std support
-RUN git clone --depth 1 https://github.com/NVIDIA/libcudacxx.git /tmp/libcudacxx && \
-    mkdir -p /usr/local/cuda/include/cuda /usr/local/cuda/include/nv && \
-    cp -r /tmp/libcudacxx/libcxx/include/cuda/. /usr/local/cuda/include/cuda/ && \
-    cp -r /tmp/libcudacxx/libcxx/include/nv/. /usr/local/cuda/include/nv/ && \
-    rm -rf /tmp/libcudacxx
+# libcudacxx headers (no deb package on JetPack 4.x) for cuda/std support
+RUN git clone --depth 1 https://github.com/NVIDIA/libcudacxx.git /usr/local/libcudacxx && \
+    rm -rf /usr/local/libcudacxx/.git
 
 # ------------------------------------------------------------------------------
 # 2. Compilación de Python 3.11 (necesario para OpenCV >= 4.6 con wheel moderno)
@@ -96,7 +93,7 @@ RUN if [ "$BUILD_OPENCV" = "1" ]; then \
               -D BUILD_opencv_python3=ON \
               -D CUDA_TOOLKIT_ROOT_DIR=/usr/local/cuda \
               -D CMAKE_CUDA_COMPILER=/usr/local/cuda/bin/nvcc \
-              -D CMAKE_CUDA_FLAGS=--expt-relaxed-constexpr \
+              -D CMAKE_CUDA_FLAGS="--expt-relaxed-constexpr -I/usr/local/libcudacxx/include" \
               -D PYTHON3_EXECUTABLE=$(which ${PYTHON_BIN}) \
               -D PYTHON3_INCLUDE_DIR=${PY_INCLUDE} \
               -D PYTHON3_LIBRARY=${PY_LIB} \
