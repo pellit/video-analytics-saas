@@ -205,9 +205,21 @@ class HitDetectionService:
             self._backend = 'tensorrt'
             self._input_hw = self._trt_runner.input_hw
             print("[HitDetect] TensorRT fallback activo.")
-        except Exception as exc_trt:
+            return True
+        except ImportError as exc_trt:
+            # TensorRT Python bindings no están disponibles en este entorno (p. ej. Python 3.11 en Jetson)
+            print(f"⚠️ TensorRT no disponible: {exc_trt}. Se omitirá el fallback TensorRT.")
             traceback.print_exc()
-            raise HTTPException(503, f"No se pudo inicializar hit_detect.onnx con TensorRT: {exc_trt}")
+            self._trt_runner = None
+            self._backend = None
+            return False
+        except Exception as exc_trt:
+            # Otros errores al inicializar TensorRT: registramos y continuamos sin TensorRT
+            print(f"⚠️ Error inicializando TensorRT: {exc_trt}. Se omitirá el fallback TensorRT.")
+            traceback.print_exc()
+            self._trt_runner = None
+            self._backend = None
+            return False
 
     def _load_model(self):
         if self._backend in ('opencv', 'tensorrt'):
