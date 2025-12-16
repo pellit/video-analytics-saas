@@ -34,11 +34,15 @@ RUN apt-get update && \
     rm -rf /var/lib/apt/lists/*
 
 # ------------------------------------------------------------------------------
-# 2. Instalación de libcudacxx (SOLUCIÓN DEFINITIVA)
+# 2. Parche de libcudacxx (LA OPCIÓN NUCLEAR)
 # ------------------------------------------------------------------------------
-# Clonamos en /opt para que sea persistente y referenciable.
-# Esto provee <cuda/std/tuple> que le falta a CUDA 10.2
-RUN git clone --depth 1 https://github.com/NVIDIA/libcudacxx.git /opt/libcudacxx
+# CUDA 10.2 es viejo y no tiene <cuda/std/tuple>.
+# Copiamos la librería DIRECTAMENTE dentro de los includes de CUDA.
+# Esto evita que opencv_contrib ignore los flags de ruta externa.
+RUN git clone --depth 1 https://github.com/NVIDIA/libcudacxx.git /tmp/libcudacxx && \
+    cp -r /tmp/libcudacxx/include/cuda /usr/local/cuda/include/ && \
+    cp -r /tmp/libcudacxx/include/nv /usr/local/cuda/include/ || true && \
+    rm -rf /tmp/libcudacxx
 
 # ------------------------------------------------------------------------------
 # 3. Compilación de Python 3.11
@@ -97,7 +101,7 @@ RUN if [ "$BUILD_OPENCV" = "1" ]; then \
               -D BUILD_opencv_python3=ON \
               -D CUDA_TOOLKIT_ROOT_DIR=/usr/local/cuda \
               -D CMAKE_CUDA_COMPILER=/usr/local/cuda/bin/nvcc \
-              -D CMAKE_CUDA_FLAGS="--expt-relaxed-constexpr -I/opt/libcudacxx/include" \
+              -D CMAKE_CUDA_FLAGS="--expt-relaxed-constexpr" \
               -D CMAKE_CXX_STANDARD=17 \
               -D PYTHON3_EXECUTABLE=$(which ${PYTHON_BIN}) \
               -D PYTHON3_INCLUDE_DIR=${PY_INCLUDE} \
