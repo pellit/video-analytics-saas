@@ -80,7 +80,11 @@ from .core.image_comparison import (
 )
 
 # MediaMTX Streaming (optional - enabled via environment)
-ENABLE_MEDIAMTX = os.environ.get('ENABLE_MEDIAMTX', 'false').lower() == 'true'
+_mediamtx_flag = os.environ.get('ENABLE_MEDIAMTX')
+if _mediamtx_flag is None:
+    # Backwards compatibility with docker-compose that still sets MEDIAMTX_ENABLED
+    _mediamtx_flag = os.environ.get('MEDIAMTX_ENABLED', 'false')
+ENABLE_MEDIAMTX = _mediamtx_flag.lower() == 'true'
 mediamtx_streamers: Dict[str, Any] = {}  # camera_id => MediaMTXStreamer instance
 
 if ENABLE_MEDIAMTX:
