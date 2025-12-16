@@ -377,6 +377,11 @@ def _get_primary_face_embedding(image: np.ndarray, min_score: float = 0.6) -> Op
     return face_service.get_primary_face_embedding(image, min_score)
 
 
+def _encode_image_to_base64(img: np.ndarray) -> str:
+    _, buf = cv2.imencode('.jpg', img)
+    return 'data:image/jpeg;base64,' + base64.b64encode(buf.tobytes()).decode('ascii')
+
+
 
 
 @app.post("/detect")
@@ -385,6 +390,118 @@ def detect(req: DetectionRequest):
     img = _decode_base64_image(req.image_base64)
     result = _run_inference(img, req.confidence, req.nms_threshold)
     return _add_perf_metadata(result, start_time, frames_processed=1)
+
+
+@app.post("/face/consistency-video")
+def face_consistency_video(
+    file: UploadFile = File(...),
+    confidence: float = Form(0.6),
+    match_threshold: float = Form(0.7),
+    sample_interval_pct: int = Form(20),
+):
+    """Analiza un video muestreando frames cada `sample_interval_pct` por ciento
+    y determina si la misma persona aparece en todos los samples. Devuelve
+    un resumen y una foto por cada cara distinta detectada.
+    """
+    # Guardar upload
+    video_path = _save_upload_to_temp(file)
+    # Validar duración y metadatos
+    _ensure_video_duration(video_path, MAX_VIDEO_DURATION_S)
+    meta = _get_video_metadata(video_path)
+    frame_count = int(meta.get("frame_count", 0))
+    if frame_count <= 0:
+        raise HTTPException(400, "No se pudieron leer frames del video")
+
+    # Build sample indices (include 0 and last). sample_interval_pct e.g. 20 -> [0,20,40,60,80,100]
+    if sample_interval_pct <= 0 or sample_interval_pct > 100:
+        raise HTTPException(400, "sample_interval_pct debe estar entre 1 y 100")
+    percents = list(range(0, 101, sample_interval_pct))
+    indices = []
+    for p in percents:
+        idx = min(frame_count - 1, max(0, int(round(frame_count * p / 100.0))))
+        if not indices or idx != indices[-1]:
+            indices.append(idx)
+
+    distinct_faces_embeddings: List[List[float]] = []
+    distinct_faces_images: List[str] = []
+    distinct_faces_counts: List[int] = []
+
+    samples_report = []
+
+    for idx in indices:
+        from .services.video_io import read_frame_at as _read_frame_at
+        frame = _read_frame_at(video_path, int(idx))
+        sample = {"frame": int(idx), "success": False, "faces": []}
+        if frame is None:
+            sample["error"] = "frame_unavailable"
+            samples_report.append(sample)
+            continue
+
+        faces = face_service.detect_with_embeddings(frame, confidence)
+        if not faces:
+            sample["error"] = "no_faces"
+            samples_report.append(sample)
+            continue
+
+        sample["success"] = True
+        for f in faces:
+            emb = f.get("embedding")
+            bbox = f.get("bbox")
+            score = float(f.get("score", 0.0))
+            # Compare to known distinct faces
+            matched_idx = None
+            for di, de in enumerate(distinct_faces_embeddings):
+                try:
+                    sim = face_service.compare_embeddings(de, emb)
+                except Exception:
+                    sim = 0.0
+                if sim >= match_threshold:
+                    matched_idx = di
+                    distinct_faces_counts[di] += 1
+                    break
+            if matched_idx is None:
+                # new distinct face
+                distinct_faces_embeddings.append(emb)
+                # crop image
+                x1, y1, x2, y2 = bbox
+                x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)
+                # clamp to frame bounds
+                h, w = frame.shape[:2]
+                x1, x2 = max(0, min(x1, w - 1)), max(0, min(x2, w - 1))
+                y1, y2 = max(0, min(y1, h - 1)), max(0, min(y2, h - 1))
+                try:
+                    crop = frame[y1:y2, x1:x2]
+                    if crop is None or crop.size == 0:
+                        crop = frame
+                except Exception:
+                    crop = frame
+                img_b64 = _encode_image_to_base64(crop)
+                distinct_faces_images.append(img_b64)
+                distinct_faces_counts.append(1)
+                matched_idx = len(distinct_faces_embeddings) - 1
+
+            sample["faces"].append({
+                "distinct_id": matched_idx,
+                "score": score,
+                "bbox": bbox,
+            })
+
+        samples_report.append(sample)
+
+    consistent = len(distinct_faces_embeddings) <= 1 and len(distinct_faces_embeddings) > 0
+
+    result = {
+        "consistent": consistent,
+        "match_threshold": match_threshold,
+        "sample_interval_pct": sample_interval_pct,
+        "frame_count": frame_count,
+        "samples": samples_report,
+        "distinct_faces_count": len(distinct_faces_embeddings),
+        "distinct_faces_images": distinct_faces_images,
+        "distinct_faces_occurrences": distinct_faces_counts,
+    }
+
+    return result
 
 
 @app.post("/detect/batch")
