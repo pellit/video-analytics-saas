@@ -21,7 +21,7 @@ class BearerTokenAuthenticate
             return $this->unauthorized();
         }
 
-        $accessToken = PersonalAccessToken::findToken($token);
+        $accessToken = $this->findAccessToken($token);
 
         if (!$accessToken || !$accessToken->tokenable) {
             return $this->unauthorized();
@@ -40,6 +40,27 @@ class BearerTokenAuthenticate
         $accessToken->forceFill(['last_used_at' => now()])->save();
 
         return $next($request);
+    }
+
+    private function findAccessToken(string $token): ?PersonalAccessToken
+    {
+        if (str_contains($token, '|')) {
+            [$id, $plain] = explode('|', $token, 2);
+            if (!$plain || !$id) {
+                return null;
+            }
+
+            $accessToken = PersonalAccessToken::query()->find($id);
+            if (!$accessToken) {
+                return null;
+            }
+
+            return hash_equals($accessToken->token, hash('sha256', $plain)) ? $accessToken : null;
+        }
+
+        return PersonalAccessToken::query()
+            ->where('token', hash('sha256', $token))
+            ->first();
     }
 
     private function unauthorized(string $message = 'Unauthenticated.')
