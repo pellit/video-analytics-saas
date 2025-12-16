@@ -1,7 +1,20 @@
-fastapi==0.83.0
-uvicorn[standard]==0.16.0
-pydantic<2.0.0
-typing_extensions>=4.1.1
-python-multipart
+# --- Core Framework (Versiones estables para Py3.11) ---
+fastapi>=0.95.0              # Versiones modernas funcionan mejor con Py3.11
+uvicorn[standard]>=0.22.0    # CRÍTICO: Versiones nuevas traen httptools arreglado para Py3.11
+python-multipart             # Necesario para subir archivos
+
+# --- Pydantic (Compatibilidad) ---
+# Si tu código es viejo, mantén la v1, pero la última versión de la v1 (1.10.x)
+# La 1.10.x es la única de la serie 1 que soporta Python 3.11 bien.
+pydantic>=1.10.0,<2.0.0
+
+# --- Procesamiento de Imagen ---
+# No limites Pillow a <9.0.0, Python 3.11 prefiere Pillow >= 9.5
+Pillow>=9.5.0
+numpy>=1.24.0
+
+# --- Utilidades ---
 requests
-Pillow<9.0.0
+typing_extensions>=4.5.0
+
+# NOTA: No pongas opencv-python aquí, ya lo compilamos manualmente en el Dockerfile.
