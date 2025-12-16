@@ -11,7 +11,9 @@ class AppServiceProvider extends ServiceProvider
      */
     public function register(): void
     {
-        //
+        // Bind legacy middleware alias 'token.auth' to the actual class
+        // Some runtime code may attempt to resolve the alias directly from the container.
+        $this->app->bind('token.auth', \App\Http\Middleware\BearerTokenAuthenticate::class);
     }
 
     /**
@@ -19,6 +21,7 @@ class AppServiceProvider extends ServiceProvider
      */
     public function boot(): void
     {
-        //
+        // Ensure the container recognizes the legacy middleware alias
+        $this->app->alias(\App\Http\Middleware\BearerTokenAuthenticate::class, 'token.auth');
     }
 }

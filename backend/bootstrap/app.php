@@ -21,6 +21,7 @@ return Application::configure(basePath: dirname(__DIR__))
             'camera.limit' => \App\Http\Middleware\CheckCameraLimit::class,
             'api.limit' => \App\Http\Middleware\CheckApiLimit::class,
             'analysis.limit' => \App\Http\Middleware\CheckAnalysisLimit::class,
+            'token.auth' => \App\Http\Middleware\BearerTokenAuthenticate::class,
         ]);
     })
     ->withExceptions(function (Exceptions $exceptions) {

@@ -57,3 +57,15 @@ class Kernel extends HttpKernel
         'token.auth' => BearerTokenAuthenticate::class,
     ];
 }
+
+    /**
+     * Override terminateMiddleware to resolve middleware aliases before container make.
+     */
+    protected function terminateMiddleware($middleware, $request, $response)
+    {
+        if (is_string($middleware) && isset($this->routeMiddleware[$middleware])) {
+            $middleware = $this->routeMiddleware[$middleware];
+        }
+
+        return parent::terminateMiddleware($middleware, $request, $response);
+    }

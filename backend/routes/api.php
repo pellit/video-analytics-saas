@@ -87,7 +87,7 @@ Route::prefix('v1')->middleware('api.key')->group(function () {
 
 // 2. Cargar Rutas Protegidas de Usuario
 // Aplicamos el middleware de autenticación a todo este grupo
-Route::middleware('token.auth')->group(function () {
+Route::middleware(\App\Http\Middleware\BearerTokenAuthenticate::class)->group(function () {
     require __DIR__ . '/api/user.php';
 });
 
@@ -95,7 +95,7 @@ Route::middleware('token.auth')->group(function () {
 // 3. Cargar Rutas de SuperAdmin
 // Aplicamos Auth + el Alias 'superadmin' que creamos en bootstrap/app.php
 // CORRECCIÓN IMPORTANTE: Usamos el alias string, no una función anónima.
-Route::middleware(['token.auth', 'superadmin'])
+Route::middleware([\App\Http\Middleware\BearerTokenAuthenticate::class, 'superadmin'])
     ->prefix('admin')
     ->group(function () {
         require __DIR__ . '/api/admin.php';
