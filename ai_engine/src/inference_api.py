@@ -9,12 +9,11 @@ import base64
 import numpy as np
 import cv2
 import tempfile
-import shutil
-from typing import Optional, List, Dict, Any, Type, TypeVar
+from typing import Optional, List, Dict, Any
 
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field
 
 from .services.video_utils import bgr_to_cuda
 from .services.depth_pose import run_depthnet_video, analyze_depth_pose_video as depth_pose_service_analyze
@@ -31,12 +30,6 @@ from .services.actionnet_service import ActionNetService, JETSON_INFERENCE_AVAIL
 from .services.hit_detection_service import HitDetectionService
 from .services.superres_service import SuperResolutionService
 from .services.jetson_env import ensure_jetson_models
-from .schemas.model_conversion import PyTorchToOnnxConfig, OnnxToTensorRTConfig
-from .services.model_conversion import (
-    convert_pytorch_checkpoint_to_onnx,
-    convert_onnx_to_tensorrt,
-    ModelConversionError,
-)
 
 JETSON_INFERENCE_AVAILABLE = ACTIONNET_AVAILABLE
 
@@ -57,15 +50,6 @@ POSENET_MODEL = os.environ.get('POSENET_MODEL', 'resnet18-body')
 MODELS_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "../models"))
 os.makedirs(MODELS_DIR, exist_ok=True)
 
-ConversionModel = TypeVar('ConversionModel', bound=BaseModel)
-
-
-def _parse_conversion_payload(model_cls: Type[ConversionModel], payload: str) -> ConversionModel:
-    try:
-        return model_cls.parse_raw(payload)
-    except ValidationError as exc:
-        raise HTTPException(status_code=400, detail={"errors": exc.errors()}) from exc
-
 
 def _add_perf_metadata(payload, start_time, frames_processed):
     """Annotate payload with elapsed time (ms) and FPS."""
@@ -75,147 +59,6 @@ def _add_perf_metadata(payload, start_time, frames_processed):
     fps = (frames / elapsed_s) if frames else 0.0
     payload["analysis_fps"] = round(fps, 2)
     return payload
-
-
-def _build_compact_detection_report(timeline: List[Dict[str, Any]], fps: float) -> Optional[Dict[str, Any]]:
-    """Genera un timeline compacto con metadata y frames optimizados."""
-    if not timeline:
-        return None
-
-    fps = max(float(fps), 1e-6)
-    engines: List[str] = []
-    engine_index: Dict[str, int] = {}
-    class_map: Dict[str, str] = {}
-    frames: List[Dict[str, Any]] = []
-
-    def _register_engine(name: str) -> int:
-        if name not in engine_index:
-            engine_index[name] = len(engines)
-            engines.append(name)
-        return engine_index[name]
-
-    for entry in timeline:
-        frame_dets = []
-        fallback_used = False
-        for det_key in ("player", "ball"):
-            det = entry.get(det_key)
-            if not det:
-                continue
-            engine_name = det.get("engine") or "unknown"
-            engine_idx = _register_engine(engine_name)
-            class_id = det.get("class_id")
-            class_name = det.get("class_name") or (f"class_{class_id}" if class_id is not None else None)
-            if class_id is not None and class_name:
-                class_map.setdefault(str(int(class_id)), class_name)
-            bbox = det.get("bbox") or [0, 0, 0, 0]
-            detection_entry = [
-                int(class_id) if class_id is not None else -1,
-                round(float(det.get("confidence", 0.0)), 2),
-                int(bbox[0]),
-                int(bbox[1]),
-                int(bbox[2]),
-                int(bbox[3]),
-                det.get("track_id") if det.get("track_id") is not None else -1,
-                engine_idx,
-            ]
-            frame_dets.append(detection_entry)
-            if (det.get("source") or "").lower() == "yolo":
-                fallback_used = True
-
-        if not frame_dets:
-            continue
-
-        frame_number = int(entry.get("frame", 0))
-        timestamp_ms = int(round((frame_number / fps) * 1000.0)) if fps > 0 else frame_number
-        frame_payload: Dict[str, Any] = {
-            "n": frame_number,
-            "t": timestamp_ms,
-            "d": frame_dets,
-        }
-        if fallback_used:
-            frame_payload["fb"] = 1
-        frames.append(frame_payload)
-
-    if not frames:
-        return None
-
-    return {
-        "metadata": {
-            "fps": round(fps, 4),
-            "engines": engines,
-            "classes": class_map,
-        },
-        "frames": frames,
-    }
-
-
-def _render_soccer_debug_video(video_path: str, timeline: List[Dict[str, Any]], frame_stride: int, max_frames: int, fps: float) -> Optional[str]:
-    if not timeline or not os.path.exists(video_path):
-        return None
-    overlay_map = {int(entry.get("frame", -1)): entry for entry in timeline if isinstance(entry.get("frame"), int)}
-    if not overlay_map:
-        return None
-
-    tmp_video = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
-    tmp_video.close()
-    cap = cv2.VideoCapture(video_path)
-    if not cap.isOpened():
-        os.remove(tmp_video.name)
-        return None
-    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
-    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
-    if width <= 0 or height <= 0:
-        cap.release()
-        os.remove(tmp_video.name)
-        return None
-    fps_value = max(float(fps) if fps else cap.get(cv2.CAP_PROP_FPS) or 0.0, 1.0)
-    out_fps = fps_value / frame_stride if frame_stride > 1 else fps_value
-    writer = cv2.VideoWriter(
-        tmp_video.name,
-        cv2.VideoWriter_fourcc(*'mp4v'),
-        out_fps,
-        (width, height)
-    )
-    frame_idx = 0
-    processed = 0
-    try:
-        while processed < max_frames:
-            ret, frame = cap.read()
-            if not ret:
-                break
-            if frame_idx % frame_stride != 0:
-                frame_idx += 1
-                continue
-            entry = overlay_map.get(frame_idx)
-            if entry:
-                for key, color in (("player", (0, 255, 0)), ("ball", (0, 165, 255))):
-                    det = entry.get(key)
-                    if not det:
-                        continue
-                    bbox = det.get("bbox") or []
-                    if len(bbox) != 4:
-                        continue
-                    x1, y1, x2, y2 = map(int, bbox)
-                    cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
-                    label = det.get("class_name") or key
-                    cv2.putText(frame, label, (x1, max(0, y1 - 6)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1, cv2.LINE_AA)
-            writer.write(frame)
-            processed += 1
-            frame_idx += 1
-    finally:
-        cap.release()
-        writer.release()
-
-    try:
-        with open(tmp_video.name, "rb") as f:
-            encoded = base64.b64encode(f.read()).decode()
-        return "data:video/mp4;base64," + encoded
-    except Exception as exc:
-        print(f"⚠️ No se pudo generar debug overlay: {exc}")
-        return None
-    finally:
-        if os.path.exists(tmp_video.name):
-            os.remove(tmp_video.name)
 
 
 def _resolve_model_path(preferred_path: str, filename: str) -> str:
@@ -260,8 +103,6 @@ SFACE_TEMPLATE = np.array([
     [70.7299, 92.2041]
 ], dtype=np.float32)
 SUPERRES_MODEL_PATH = os.environ.get('SUPERRES_MODEL_PATH')
-SUPERRES_IMAGE_MODEL_PATH = os.environ.get('SUPERRES_IMAGE_MODEL_PATH', '/app/models/FSRCNN_x4.pb')
-SUPERRES_VIDEO_MODEL_PATH = os.environ.get('SUPERRES_VIDEO_MODEL_PATH', '/app/models/ESPCN_x4.pb')
 _default_superres_dirs = [
     os.environ.get('SUPERRES_MODEL_DIR'),
     os.path.abspath(os.path.join(os.getcwd(), "data/networks/Super-Resolution-BSD500")),
@@ -293,15 +134,6 @@ face_service = FaceEmbeddingService(
 BALL_YOLO_FALLBACK = os.environ.get("BALL_YOLO_FALLBACK", "1").lower() not in ("0", "false", "off")
 BALL_YOLO_CONFIDENCE = float(os.environ.get("BALL_YOLO_CONFIDENCE", "0.45"))
 BALL_YOLO_NMS = float(os.environ.get("BALL_YOLO_NMS", "0.35"))
-BALL_TARGET_CLASS_ID = int(os.environ.get("BALL_TARGET_CLASS_ID", "37"))
-BALL_ALIAS_MAPPING = {}
-for pair in os.environ.get("BALL_ALIAS_MAPPING", "frisbee:sports_ball").split(","):
-    pair = pair.strip()
-    if not pair or ":" not in pair:
-        continue
-    src, dst = [p.strip().lower() for p in pair.split(":", 1)]
-    if src and dst:
-        BALL_ALIAS_MAPPING[src] = dst
 
 activity_analyzer = ActivityAnalyzer(
     yolo_fallback=yolo_fallback,
@@ -310,8 +142,6 @@ activity_analyzer = ActivityAnalyzer(
     fallback_nms=BALL_YOLO_NMS,
     soccer_labels=SOCCER_BALL_LABELS,
     gym_labels=GYM_EQUIPMENT_LABELS,
-    ball_aliases=BALL_ALIAS_MAPPING,
-    ball_target_class_id=BALL_TARGET_CLASS_ID,
 )
 
 actionnet_service = ActionNetService(ACTIONNET_MODEL, ACTIONNET_LABELS)
@@ -646,7 +476,6 @@ def face_detect(req: FaceDetectionRequest):
 
 @app.post("/face/compare")
 def face_compare(req: FaceCompareRequest):
-    start_time = time.perf_counter()
     img_a = _decode_base64_image(req.image_a_base64)
     img_b = _decode_base64_image(req.image_b_base64)
 
@@ -660,7 +489,7 @@ def face_compare(req: FaceCompareRequest):
     similarity = face_service.compare_embeddings(face_a["embedding"], face_b["embedding"])
     is_same = similarity >= req.score_threshold
 
-    payload = {
+    return {
         "success": True,
         "similarity": similarity,
         "match": is_same,
@@ -668,7 +497,6 @@ def face_compare(req: FaceCompareRequest):
         "face_a": {"face_id": face_a["face_id"], "score": face_a["score"]},
         "face_b": {"face_id": face_b["face_id"], "score": face_b["score"]}
     }
-    return _add_perf_metadata(payload, start_time, frames_processed=2)
 
 
 @app.post("/detect/hit/video")
@@ -678,7 +506,6 @@ async def detect_hit_video(
     max_frames: int = Form(None),
     hit_threshold: float = Form(None)
 ):
-    start_time = time.perf_counter()
     tmp_path = _save_upload_to_temp(file)
     try:
         # Obtener duración y FPS del video
@@ -714,13 +541,11 @@ async def detect_hit_video(
             raise HTTPException(400, "hit_threshold must be between 0 and 1")
 
         results = _run_hit_detection_on_video(tmp_path, frame_stride, max_frames, hit_threshold)
-        payload = {
+        return {
             "success": True,
             "video_duration_s": duration,
             **results
         }
-        frames = results.get("frames_analyzed")
-        return _add_perf_metadata(payload, start_time, frames_processed=frames)
     finally:
         if os.path.exists(tmp_path):
             os.remove(tmp_path)
@@ -741,7 +566,6 @@ async def analyze_depth_pose_video(
     if contact_distance_px <= 0:
         raise HTTPException(400, "contact_distance_px must be > 0")
 
-    start_time = time.perf_counter()
     tmp_path = _save_upload_to_temp(file)
     try:
         duration = _ensure_video_duration(tmp_path)
@@ -756,13 +580,11 @@ async def analyze_depth_pose_video(
             pose_model_name=POSENET_MODEL,
             cuda_from_bgr=bgr_to_cuda
         )
-        payload = {
+        return {
             "success": True,
             "video_duration_s": duration,
             **results
         }
-        frames = results.get("frames_analyzed")
-        return _add_perf_metadata(payload, start_time, frames_processed=frames)
     finally:
         if os.path.exists(tmp_path):
             os.remove(tmp_path)
@@ -781,11 +603,6 @@ async def analyze_football_video(
     face_score_threshold: float = Form(0.6),
     face_match_threshold: float = Form(0.6)
 ):
-    """Analiza un video de fútbol y documenta las clases detectadas.
-
-    El payload incluye `detection_summary.class_dictionary`, `detection_frames_compact`
-    y, opcionalmente, un video de depuración (`debug_overlay`=true) con las cajas dibujadas.
-    """
     if frame_stride <= 0 or max_frames <= 0:
         raise HTTPException(400, "frame_stride and max_frames must be > 0")
     if not (0.0 < detection_confidence <= 1.0):
@@ -799,13 +616,11 @@ async def analyze_football_video(
     if not (0.0 < face_match_threshold <= 1.0):
         raise HTTPException(400, "face_match_threshold must be between 0 and 1")
 
-    start_time = time.perf_counter()
     tmp_path = _save_upload_to_temp(file)
     try:
         duration = _ensure_video_duration(tmp_path)
         metadata = _get_video_metadata(tmp_path)
         frame_count = int(metadata["frame_count"])
-        fps_value = max(float(metadata.get("fps") or 0.0), 1e-3)
 
         detection_summary = _analyze_soccer_detections(
             tmp_path,
@@ -873,19 +688,13 @@ async def analyze_football_video(
             },
             "action_analysis": action_analysis,
         }
-        analysis["class_dictionary"] = detection_summary.get("class_dictionary")
-        compact_frames = _build_compact_detection_report(detection_summary["timeline"], fps_value)
-        if compact_frames:
-            analysis["detection_frames_compact"] = compact_frames
 
-        payload = {
+        return {
             "success": True,
             "video_duration_s": duration,
             "frames_total": frame_count,
             "analysis": analysis
         }
-        frames = detection_summary.get("frames_analyzed")
-        return _add_perf_metadata(payload, start_time, frames_processed=frames)
     finally:
         if os.path.exists(tmp_path):
             os.remove(tmp_path)
@@ -894,16 +703,15 @@ async def analyze_football_video(
 @app.post("/analyze/football/activity/video")
 async def analyze_football_activity_video(
     file: UploadFile = File(...),
-    debug_overlay: bool = Form(False),
-    frame_stride: int = Form(4),
-    max_frames: int = Form(180),
-    detection_confidence: float = Form(0.45),
-    contact_distance_px: int = Form(45),
-    possession_distance_px: int = Form(90),
+    frame_stride: int = Form(1),
+    max_frames: int = Form(1600),
+    detection_confidence: float = Form(0.35),
+    contact_distance_px: int = Form(15),
+    possession_distance_px: int = Form(50),
     action_frame_stride: int = Form(8),
-    action_top_k: int = Form(3),
-    face_score_threshold: float = Form(0.6),
-    face_match_threshold: float = Form(0.6)
+    action_top_k: int = Form(1),
+    face_score_threshold: float = Form(0.2),
+    face_match_threshold: float = Form(0.2)
 ):
     if frame_stride <= 0 or max_frames <= 0:
         raise HTTPException(400, "frame_stride y max_frames deben ser > 0")
@@ -918,7 +726,6 @@ async def analyze_football_activity_video(
     if not (0.0 < face_match_threshold <= 1.0):
         raise HTTPException(400, "face_match_threshold debe estar entre 0 y 1")
 
-    start_time = time.perf_counter()
     tmp_path = _save_upload_to_temp(file)
     try:
         duration = _ensure_video_duration(tmp_path)
@@ -934,15 +741,6 @@ async def analyze_football_activity_video(
             possession_distance_px=possession_distance_px,
             contact_threshold_px=contact_distance_px
         )
-        overlay_video_b64 = None
-        if debug_overlay:
-            overlay_video_b64 = _render_soccer_debug_video(
-                tmp_path,
-                detection_summary.get("timeline", []),
-                frame_stride,
-                max_frames,
-                fps
-            )
 
         if JETSON_INFERENCE_AVAILABLE:
             action_analysis = _run_actionnet_on_video(tmp_path, action_frame_stride, action_top_k)
@@ -991,12 +789,10 @@ async def analyze_football_activity_video(
             "timeline": detection_summary["timeline"],
             "juggling_events": detection_summary.get("juggling_events", []),
             "hand_contact_events": detection_summary.get("hand_contact_events", []),
-            "hand_contact_frames": detection_summary.get("hand_contact_frames", []),
-            "class_dictionary": detection_summary.get("class_dictionary")
+            "hand_contact_frames": detection_summary.get("hand_contact_frames", [])
         }
-        compact_frames = _build_compact_detection_report(detection_summary["timeline"], fps)
 
-        payload = {
+        return {
             "success": True,
             "video_duration_s": duration,
             "frames_total": frame_count,
@@ -1008,13 +804,6 @@ async def analyze_football_activity_video(
             "orientation_summary": orientation_summary,
             "face_checks": face_checks
         }
-        if compact_frames:
-            payload["detection_frames_compact"] = compact_frames
-        payload["class_dictionary"] = detection_summary.get("class_dictionary")
-        if overlay_video_b64:
-            payload["debug_overlay_video"] = overlay_video_b64
-        frames = detection_summary.get("frames_analyzed")
-        return _add_perf_metadata(payload, start_time, frames_processed=frames)
     finally:
         if os.path.exists(tmp_path):
             os.remove(tmp_path)
@@ -1046,7 +835,6 @@ async def analyze_gym_video(
     if not (0.0 < face_match_threshold <= 1.0):
         raise HTTPException(400, "face_match_threshold must be between 0 and 1")
 
-    start_time = time.perf_counter()
     tmp_path = _save_upload_to_temp(file)
     try:
         duration = _ensure_video_duration(tmp_path)
@@ -1125,14 +913,12 @@ async def analyze_gym_video(
             "action_sequences": action_sequences
         }
 
-        payload = {
+        return {
             "success": True,
             "video_duration_s": duration,
             "frames_total": frame_count,
             "analysis": analysis
         }
-        frames = detection_summary.get("frames_analyzed")
-        return _add_perf_metadata(payload, start_time, frames_processed=frames)
     finally:
         if os.path.exists(tmp_path):
             os.remove(tmp_path)
@@ -1151,18 +937,15 @@ async def actionnet_video(
     if not JETSON_INFERENCE_AVAILABLE:
         raise HTTPException(503, "jetson-inference is required for ActionNet endpoints")
 
-    start_time = time.perf_counter()
     tmp_path = _save_upload_to_temp(file)
     try:
         duration = _ensure_video_duration(tmp_path)
         results = _run_actionnet_on_video(tmp_path, frame_stride, top_k)
-        payload = {
+        return {
             "success": True,
             "video_duration_s": duration,
             **results
         }
-        frames = results.get("frames_analyzed")
-        return _add_perf_metadata(payload, start_time, frames_processed=frames)
     finally:
         if os.path.exists(tmp_path):
             os.remove(tmp_path)
@@ -1175,14 +958,12 @@ def actionnet_image(req: ActionImageRequest):
     if not JETSON_INFERENCE_AVAILABLE:
         raise HTTPException(503, "jetson-inference is required for ActionNet endpoints")
 
-    start_time = time.perf_counter()
     img = _decode_base64_image(req.image_base64)
     result = _run_actionnet_on_image(img, req.top_k)
-    payload = {
+    return {
         "success": True,
         **result
     }
-    return _add_perf_metadata(payload, start_time, frames_processed=1)
 
 
 @app.post("/depthnet/video")
@@ -1198,7 +979,6 @@ async def depthnet_video(
     if not JETSON_INFERENCE_AVAILABLE:
         raise HTTPException(503, "jetson-inference is required for DepthNet endpoints")
 
-    start_time = time.perf_counter()
     tmp_path = _save_upload_to_temp(file)
     try:
         duration = _ensure_video_duration(tmp_path)
@@ -1210,13 +990,11 @@ async def depthnet_video(
             depth_model_name=DEPTHNET_MODEL,
             cuda_from_bgr=bgr_to_cuda
         )
-        payload = {
+        return {
             "success": True,
             "video_duration_s": duration,
             **results
         }
-        frames = results.get("frames_analyzed")
-        return _add_perf_metadata(payload, start_time, frames_processed=frames)
     finally:
         if os.path.exists(tmp_path):
             os.remove(tmp_path)
@@ -1224,14 +1002,13 @@ async def depthnet_video(
 
 @app.post("/superres/image")
 async def superres_image(file: UploadFile = File(...)):
-    start_time = time.perf_counter()
     content = await file.read()
     data = np.frombuffer(content, dtype=np.uint8)
     img = cv2.imdecode(data, cv2.IMREAD_COLOR)
     if img is None:
         raise HTTPException(400, "No se pudo decodificar la imagen subida")
 
-    sr, scale = superres_service.load_engine(SUPERRES_IMAGE_MODEL_PATH or SUPERRES_MODEL_PATH)
+    sr, scale = superres_service.load_engine()
     try:
         upscaled = sr.upsample(img)
     except Exception as exc:
@@ -1239,14 +1016,13 @@ async def superres_image(file: UploadFile = File(...)):
 
     _, buffer = cv2.imencode('.jpg', upscaled, [cv2.IMWRITE_JPEG_QUALITY, 90])
     base64_img = base64.b64encode(buffer).decode()
-    payload = {
+    return {
         "success": True,
         "scale": scale,
         "original_size": {"width": int(img.shape[1]), "height": int(img.shape[0])},
         "upscaled_size": {"width": int(upscaled.shape[1]), "height": int(upscaled.shape[0])},
         "image_base64": "data:image/jpeg;base64," + base64_img
     }
-    return _add_perf_metadata(payload, start_time, frames_processed=1)
 
 
 @app.post("/superres/video")
@@ -1257,12 +1033,11 @@ async def superres_video(
     if frame_stride <= 0:
         raise HTTPException(400, "frame_stride debe ser > 0")
 
-    start_time = time.perf_counter()
     tmp_path = _save_upload_to_temp(file)
     output_tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
     output_tmp.close()
 
-    sr, scale = superres_service.load_engine(SUPERRES_VIDEO_MODEL_PATH or SUPERRES_MODEL_PATH)
+    sr, scale = superres_service.load_engine()
     cap = cv2.VideoCapture(tmp_path)
     if not cap.isOpened():
         os.remove(tmp_path)
@@ -1310,111 +1085,12 @@ async def superres_video(
         video_b64 = base64.b64encode(f.read()).decode()
     os.remove(output_tmp.name)
 
-    payload = {
+    return {
         "success": True,
         "scale": scale,
         "frames_written": processed,
         "upscaled_resolution": {"width": out_size[0], "height": out_size[1]},
         "video_base64": "data:video/mp4;base64," + video_b64
-    }
-    return _add_perf_metadata(payload, start_time, frames_processed=processed)
-
-
-@app.post("/models/convert/pytorch-to-onnx")
-async def jetson_convert_pytorch_to_onnx(
-    weights: UploadFile = File(...),
-    config: str = Form(...),
-):
-    """
-    Convert uploaded PyTorch checkpoints to ONNX directly on the Jetson device.
-    """
-    conversion_cfg = _parse_conversion_payload(PyTorchToOnnxConfig, config)
-    tmp_path = _save_upload_to_temp(weights)
-    output_name = conversion_cfg.output_filename or f"{conversion_cfg.model_name}.onnx"
-    output_path = os.path.join(MODELS_DIR, output_name)
-
-    if os.path.exists(output_path) and not conversion_cfg.overwrite:
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
-        raise HTTPException(409, f"El archivo {output_name} ya existe. Usa overwrite=true para reemplazarlo.")
-
-    os.makedirs(os.path.dirname(output_path), exist_ok=True)
-    try:
-        result = convert_pytorch_checkpoint_to_onnx(tmp_path, output_path, conversion_cfg)
-    except ModelConversionError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    finally:
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
-
-    return {
-        "success": True,
-        "data": {
-            **result,
-            "file_name": output_name,
-        },
-    }
-
-
-@app.post("/models/convert/onnx-to-tensorrt")
-async def jetson_convert_onnx_to_tensorrt(
-    model_file: UploadFile = File(...),
-    config: str = Form(...),
-):
-    """
-    Convert ONNX models into TensorRT FP16 engines optimized for Jetson hardware.
-    """
-    conversion_cfg = _parse_conversion_payload(OnnxToTensorRTConfig, config)
-    tmp_path = _save_upload_to_temp(model_file)
-
-    engine_name = conversion_cfg.resolved_engine_name()
-    engine_path = os.path.join(MODELS_DIR, engine_name)
-    if os.path.exists(engine_path) and not conversion_cfg.overwrite:
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
-        raise HTTPException(409, f"El engine {engine_name} ya existe. Usa overwrite=true para reemplazarlo.")
-
-    stored_onnx_path = None
-    try:
-        onnx_source_path = tmp_path
-        if conversion_cfg.keep_onnx_copy:
-            onnx_name = conversion_cfg.resolved_onnx_name()
-            if onnx_name:
-                stored_onnx_path = os.path.join(MODELS_DIR, onnx_name)
-                if os.path.exists(stored_onnx_path) and not conversion_cfg.overwrite:
-                    try:
-                        os.unlink(tmp_path)
-                    except OSError:
-                        pass
-                    raise HTTPException(409, f"El ONNX {onnx_name} ya existe. Usa overwrite=true para reemplazarlo.")
-                os.makedirs(os.path.dirname(stored_onnx_path), exist_ok=True)
-                shutil.move(tmp_path, stored_onnx_path)
-                onnx_source_path = stored_onnx_path
-        result = convert_onnx_to_tensorrt(onnx_source_path, engine_path, conversion_cfg)
-    except ModelConversionError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    finally:
-        if not conversion_cfg.keep_onnx_copy and os.path.exists(tmp_path):
-            try:
-                os.unlink(tmp_path)
-            except OSError:
-                pass
-
-    if stored_onnx_path:
-        result["onnx_path"] = stored_onnx_path
-
-    return {
-        "success": True,
-        "data": {
-            **result,
-            "engine_name": engine_name,
-        },
     }
 
 if __name__ == "__main__":

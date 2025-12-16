@@ -10,6 +10,7 @@ ENV SHELL /bin/bash
 ENV LC_ALL=C.UTF-8
 ENV LANG=C.UTF-8
 ENV PATH=/usr/local/bin:${PATH}
+ENV CUDACXX=/usr/local/cuda/bin/nvcc
 ARG PYTHON_VERSION=3.11.9
 ENV PYTHON_VERSION=${PYTHON_VERSION}
 ENV PYTHON_BIN=python3.11
@@ -28,6 +29,7 @@ RUN apt-get update && \
         libv4l-dev v4l-utils \
         libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
         libdc1394-22-dev \
+        libcudacxx-dev \
         libssl-dev libffi-dev zlib1g-dev libbz2-dev \
         libreadline-dev libsqlite3-dev libncursesw5-dev \
         xz-utils tk-dev uuid-dev && \
@@ -86,6 +88,9 @@ RUN if [ "$BUILD_OPENCV" = "1" ]; then \
               -D WITH_GSTREAMER=ON \
               -D BUILD_opencv_python2=OFF \
               -D BUILD_opencv_python3=ON \
+              -D CUDA_TOOLKIT_ROOT_DIR=/usr/local/cuda \
+              -D CMAKE_CUDA_COMPILER=/usr/local/cuda/bin/nvcc \
+              -D CMAKE_CUDA_FLAGS=--expt-relaxed-constexpr \
               -D PYTHON3_EXECUTABLE=$(which ${PYTHON_BIN}) \
               -D PYTHON3_INCLUDE_DIR=${PY_INCLUDE} \
               -D PYTHON3_LIBRARY=${PY_LIB} \
