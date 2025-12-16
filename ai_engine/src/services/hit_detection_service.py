@@ -7,6 +7,68 @@ import numpy as np
 from fastapi import HTTPException
 
 
+_TOPK_REGISTERED = False
+
+
+def _register_topk_layer():
+    """
+    OpenCV 4.10 en Jetson no implementa TopK en el módulo DNN.
+    Registramos una versión en Python para que readNetFromONNX no falle.
+    """
+    global _TOPK_REGISTERED
+    if _TOPK_REGISTERED:
+        return
+
+    class TopKLayer(cv2.dnn.Layer):
+        def __init__(self, params=None, blobs=None):
+            super().__init__(params, blobs)
+            params = params or {}
+            self.axis = int(params.get('axis', -1))
+            self.sorted = bool(params.get('sorted', 1))
+            self.k = None
+            if blobs:
+                # Algunos grafos guardan K en blobs (constante)
+                flat = blobs[0].flatten()
+                if flat.size > 0:
+                    self.k = int(flat[0])
+
+        def forward(self, inputs, outputs, internals=None):
+            if not inputs:
+                raise RuntimeError("TopK layer requires at least one input tensor")
+
+            data = inputs[0]
+            if data.size == 0:
+                outputs[0][...] = data
+                outputs[1][...] = np.zeros_like(data, dtype=np.int64)
+                return
+
+            k = self.k or 1
+            if len(inputs) > 1 and inputs[1].size > 0:
+                k = int(inputs[1].flatten()[0])
+
+            axis = self.axis
+            if axis < 0:
+                axis += data.ndim
+
+            k = max(1, min(k, data.shape[axis]))
+
+            # Seleccionamos los K índices con mayores valores en el eje indicado
+            partial = np.argpartition(-data, k - 1, axis=axis)
+            take_idx = np.take(partial, np.arange(k), axis=axis)
+            values = np.take_along_axis(data, take_idx, axis=axis)
+
+            if self.sorted:
+                order = np.argsort(-values, axis=axis)
+                take_idx = np.take_along_axis(take_idx, order, axis=axis)
+                values = np.take_along_axis(values, order, axis=axis)
+
+            outputs[0][...] = values
+            outputs[1][...] = take_idx.astype(outputs[1].dtype, copy=False)
+
+    cv2.dnn_registerLayer("TopK", TopKLayer)
+    _TOPK_REGISTERED = True
+
+
 class TensorRTHitRunner:
     """TensorRT fallback para ejecutar hit_detect.onnx cuando OpenCV falla."""
 
@@ -152,6 +214,7 @@ class HitDetectionService:
             return
         model_path = self._resolve_model_path()
         print(f"[HitDetect] Loading ONNX model from {model_path}")
+        _register_topk_layer()
         try:
             net = cv2.dnn.readNetFromONNX(model_path)
             net.setPreferableBackend(cv2.dnn.DNN_BACKEND_CUDA)
