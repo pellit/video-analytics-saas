@@ -271,18 +271,17 @@ RUN if [ "$BUILD_OPENCV" = "1" ]; then \
     fi
 
 # ------------------------------------------------------------------------------
-# 5. Dependencias y Modelos del Proyecto (CORREGIDO FINAL)
+# 5. Dependencias y Modelos del Proyecto (CORREGIDO - SIN ONNXSIM)
 # ------------------------------------------------------------------------------
 WORKDIR /app
 COPY requirements.jetson.txt /app/requirements.txt
 
-# CORRECCIONES ACUMULADAS:
-# 1. Cython: Para compilar extensiones C.
-# 2. httptools/uvloop: Para evitar el error de 'longintrepr.h' en Py3.11.
-# 3. onnx-simplifier>=0.4.33: Para evitar el error 'Invalid version: unknown' de las versiones viejas.
+# CORRECCIÓN:
+# 1. Mantenemos Cython, httptools y uvloop para que FastAPI vuele.
+# 2. QUITAMOS onnx-simplifier. Lo harás en tu PC.
 RUN ${PYTHON_BIN} -m pip install --no-cache-dir --upgrade pip setuptools wheel && \
     ${PYTHON_BIN} -m pip install --no-cache-dir Cython && \
-    ${PYTHON_BIN} -m pip install --no-cache-dir "httptools>=0.6.0" "uvloop>=0.17.0" "websockets>=11.0" "onnx-simplifier>=0.4.33" && \
+    ${PYTHON_BIN} -m pip install --no-cache-dir "httptools>=0.6.0" "uvloop>=0.17.0" "websockets>=11.0" && \
     ${PYTHON_BIN} -m pip install --no-cache-dir --ignore-installed PyYAML && \
     cat requirements.txt | grep -v "opencv-python" > requirements_filtered.txt && \
     ${PYTHON_BIN} -m pip install --no-cache-dir -r requirements_filtered.txt && \
