@@ -29,11 +29,17 @@ RUN apt-get update && \
         libv4l-dev v4l-utils \
         libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
         libdc1394-22-dev \
-        libcudacxx-dev \
         libssl-dev libffi-dev zlib1g-dev libbz2-dev \
         libreadline-dev libsqlite3-dev libncursesw5-dev \
         xz-utils tk-dev uuid-dev && \
     rm -rf /var/lib/apt/lists/*
+
+# libcudacxx headers (not packaged on JetPack 4.x) for cuda/std support
+RUN git clone --depth 1 https://github.com/NVIDIA/libcudacxx.git /tmp/libcudacxx && \
+    mkdir -p /usr/local/cuda/include/cuda /usr/local/cuda/include/nv && \
+    cp -r /tmp/libcudacxx/libcxx/include/cuda/. /usr/local/cuda/include/cuda/ && \
+    cp -r /tmp/libcudacxx/libcxx/include/nv/. /usr/local/cuda/include/nv/ && \
+    rm -rf /tmp/libcudacxx
 
 # ------------------------------------------------------------------------------
 # 2. Compilación de Python 3.11 (necesario para OpenCV >= 4.6 con wheel moderno)
