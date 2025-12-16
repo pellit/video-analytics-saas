@@ -13,6 +13,7 @@ use App\Http\Middleware\CheckSuperAdmin;
 use App\Http\Middleware\CheckCameraLimit;
 use App\Http\Middleware\CheckAnalysisLimit;
 use App\Http\Middleware\CheckApiLimit;
+use App\Http\Middleware\BearerTokenAuthenticate;
 
 class Kernel extends HttpKernel
 {
@@ -53,5 +54,6 @@ class Kernel extends HttpKernel
         'camera.limit' => CheckCameraLimit::class,
         'analysis.limit' => CheckAnalysisLimit::class,
         'api.limit' => CheckApiLimit::class,
+        'token.auth' => BearerTokenAuthenticate::class,
     ];
 }
