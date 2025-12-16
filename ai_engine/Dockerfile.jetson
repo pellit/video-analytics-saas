@@ -271,18 +271,18 @@ RUN if [ "$BUILD_OPENCV" = "1" ]; then \
     fi
 
 # ------------------------------------------------------------------------------
-# 5. Dependencias y Modelos del Proyecto (CORREGIDO)
+# 5. Dependencias y Modelos del Proyecto (CORREGIDO FINAL)
 # ------------------------------------------------------------------------------
 WORKDIR /app
 COPY requirements.jetson.txt /app/requirements.txt
 
-# CORRECCIÓN IMPORTANTE:
-# 1. Instalamos Cython primero (necesario para regenerar archivos C en ARM).
-# 2. Forzamos la instalación de httptools y uvloop MODERNOS (compatibles con Py3.11).
-#    Esto evita que 'requirements.txt' intente bajar versiones viejas que piden 'longintrepr.h'.
+# CORRECCIONES ACUMULADAS:
+# 1. Cython: Para compilar extensiones C.
+# 2. httptools/uvloop: Para evitar el error de 'longintrepr.h' en Py3.11.
+# 3. onnx-simplifier>=0.4.33: Para evitar el error 'Invalid version: unknown' de las versiones viejas.
 RUN ${PYTHON_BIN} -m pip install --no-cache-dir --upgrade pip setuptools wheel && \
     ${PYTHON_BIN} -m pip install --no-cache-dir Cython && \
-    ${PYTHON_BIN} -m pip install --no-cache-dir "httptools>=0.6.0" "uvloop>=0.17.0" "websockets>=11.0" && \
+    ${PYTHON_BIN} -m pip install --no-cache-dir "httptools>=0.6.0" "uvloop>=0.17.0" "websockets>=11.0" "onnx-simplifier>=0.4.33" && \
     ${PYTHON_BIN} -m pip install --no-cache-dir --ignore-installed PyYAML && \
     cat requirements.txt | grep -v "opencv-python" > requirements_filtered.txt && \
     ${PYTHON_BIN} -m pip install --no-cache-dir -r requirements_filtered.txt && \
