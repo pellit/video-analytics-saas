@@ -475,6 +475,24 @@ def _encode_image_to_base64(img: np.ndarray) -> str:
     return 'data:image/jpeg;base64,' + base64.b64encode(buf.tobytes()).decode('ascii')
 
 
+def _segment_scene(image: np.ndarray, segments: int = 5) -> np.ndarray:
+    """
+    Simple color-based segmentation using k-means clustering.
+    Returns a pseudo-colored mask for visualization purposes.
+    """
+    h, w = image.shape[:2]
+    data = image.reshape((-1, 3)).astype(np.float32)
+    K = max(2, min(segments, 12))
+    criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 10, 1.0)
+    attempts = 3
+    _, labels, centers = cv2.kmeans(data, K, None, criteria, attempts, cv2.KMEANS_PP_CENTERS)
+    centers = np.uint8(centers)
+    mask = centers[labels.flatten()].reshape((h, w, 3))
+    # Enhance separation by blending with original image
+    segmented = cv2.addWeighted(image, 0.4, mask, 0.6, 0)
+    return segmented
+
+
 def _crop_face(frame: np.ndarray, bbox: List[int]) -> np.ndarray:
     x1, y1, x2, y2 = [int(v) for v in bbox]
     h, w = frame.shape[:2]
@@ -1212,6 +1230,30 @@ async def detect_hit_video(
     finally:
         if os.path.exists(tmp_path):
             os.remove(tmp_path)
+
+
+@app.post("/segment/image")
+async def segment_image(
+    file: UploadFile = File(...),
+    segments: int = Form(5)
+):
+    """
+    Simple scene segmentation helper.
+    Returns a pseudo-colored segmentation mask (for quick tests).
+    """
+    if segments < 2:
+        raise HTTPException(400, "segments must be >= 2")
+    data = await file.read()
+    np_arr = np.frombuffer(data, np.uint8)
+    img = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+    if img is None:
+        raise HTTPException(400, "Invalid image")
+    segmented = _segment_scene(img, segments)
+    return {
+        "success": True,
+        "segments": segments,
+        "segmentation_image_base64": _encode_image_to_base64(segmented)
+    }
 
 
 @app.post("/analyze/depth_pose/video")
