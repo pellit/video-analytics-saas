@@ -1,3 +1,4 @@
+import base64
 import cv2
 import numpy as np
 import os
@@ -112,7 +113,15 @@ class HitDetectionService:
                 })
         return results
 
-    def run_on_video(self, video_path: str, frame_stride: int, max_frames: int, hit_threshold: float) -> Dict[str, Any]:
+    def run_on_video(
+        self,
+        video_path: str,
+        frame_stride: int,
+        max_frames: int,
+        hit_threshold: float,
+        return_images: bool = False,
+        max_preview_images: int = 3
+    ) -> Dict[str, Any]:
         if self._net is None: self._load_model()
         cap = cv2.VideoCapture(video_path)
         
@@ -123,6 +132,7 @@ class HitDetectionService:
         processed = 0
         hits_detected = 0
         debug_logs = []
+        preview_images: List[Dict[str, Any]] = []
 
         while processed < max_frames:
             ret, frame = cap.read()
@@ -143,7 +153,30 @@ class HitDetectionService:
             max_conf = max([d['confidence'] for d in detections]) if detections else 0.0
             is_hit = max_conf >= hit_threshold
             
-            if is_hit: hits_detected += 1
+            if is_hit:
+                hits_detected += 1
+                if return_images and len(preview_images) < max_preview_images:
+                    annotated = frame.copy()
+                    for det in detections:
+                        x, y, w, h = det['box']
+                        cv2.rectangle(annotated, (x, y), (x + w, y + h), (0, 255, 255), 2)
+                        label = f"{det['confidence']:.2f}"
+                        cv2.putText(
+                            annotated,
+                            label,
+                            (x, max(0, y - 5)),
+                            cv2.FONT_HERSHEY_SIMPLEX,
+                            0.5,
+                            (0, 255, 255),
+                            1,
+                            cv2.LINE_AA
+                        )
+                    _, buffer = cv2.imencode('.jpg', annotated, [cv2.IMWRITE_JPEG_QUALITY, 85])
+                    preview_images.append({
+                        "frame": int(frame_idx),
+                        "confidence": float(max_conf),
+                        "image_base64": "data:image/jpeg;base64," + base64.b64encode(buffer).decode('ascii')
+                    })
             
             # Guardar logs de los primeros frames para depurar
             if len(debug_logs) < 10: 
@@ -153,4 +186,7 @@ class HitDetectionService:
             frame_idx += 1
 
         cap.release()
-        return {"hits_detected": hits_detected, "debug_logs": debug_logs}
+        result = {"hits_detected": hits_detected, "debug_logs": debug_logs}
+        if return_images:
+            result["preview_images"] = preview_images
+        return result

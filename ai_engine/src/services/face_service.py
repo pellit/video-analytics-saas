@@ -183,6 +183,8 @@ class FaceEmbeddingService:
                 if raw:
                     inv_scale = 1.0 / scale
                     for det in raw:
+                        if not np.isfinite(det.Left) or not np.isfinite(det.Top) or not np.isfinite(det.Right) or not np.isfinite(det.Bottom):
+                            continue
                         x1 = max(0, int(det.Left * inv_scale))
                         y1 = max(0, int(det.Top * inv_scale))
                         x2 = min(w, int(det.Right * inv_scale))
@@ -206,13 +208,15 @@ class FaceEmbeddingService:
                 inv_scale = 1.0 / scale
                 for face in raw:
                     x, y, box_w, box_h = face[:4]
+                    if not np.isfinite(x) or not np.isfinite(y) or not np.isfinite(box_w) or not np.isfinite(box_h):
+                        continue
                     x1 = max(0, int(x * inv_scale))
                     y1 = max(0, int(y * inv_scale))
                     x2 = min(w, int((x + box_w) * inv_scale))
                     y2 = min(h, int((y + box_h) * inv_scale))
                     landmarks = None
                     raw_face = None
-                    if len(face) >= 14:
+                    if len(face) >= 14 and np.all(np.isfinite(face[4:14])):
                         lm = (face[4:14] * inv_scale).tolist()
                         landmarks = lm
                         raw_face = face.copy().astype(np.float32)

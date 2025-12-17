@@ -450,13 +450,15 @@ def _run_hit_detection_on_video(
     video_path: str,
     frame_stride: int,
     max_frames: int,
-    hit_threshold: float
+    hit_threshold: float,
+    return_images: bool = False
 ):
     return hit_detection_service.run_on_video(
         video_path=video_path,
         frame_stride=frame_stride,
         max_frames=max_frames,
-        hit_threshold=hit_threshold
+        hit_threshold=hit_threshold,
+        return_images=return_images
     )
 
 
@@ -1164,7 +1166,8 @@ async def detect_hit_video(
     file: UploadFile = File(...),
     frame_stride: int = Form(None),
     max_frames: int = Form(None),
-    hit_threshold: float = Form(None)
+    hit_threshold: float = Form(None),
+    return_images: bool = Form(False)
 ):
     tmp_path = _save_upload_to_temp(file)
     try:
@@ -1200,7 +1203,7 @@ async def detect_hit_video(
         if hit_threshold < 0 or hit_threshold > 1:
             raise HTTPException(400, "hit_threshold must be between 0 and 1")
 
-        results = _run_hit_detection_on_video(tmp_path, frame_stride, max_frames, hit_threshold)
+        results = _run_hit_detection_on_video(tmp_path, frame_stride, max_frames, hit_threshold, return_images=return_images)
         return {
             "success": True,
             "video_duration_s": duration,
