@@ -15,7 +15,9 @@ ENV PYTHON_VERSION=${PYTHON_VERSION}
 ENV PYTHON_BIN=python3.11
 ENV PYTHONPATH=/usr/local/lib/python3.11/site-packages:/usr/local/lib/python3.11/dist-packages:/usr/local/python:/app/ai_engine/src
 
-# 1. Instalación de Dependencias
+# ------------------------------------------------------------------------------
+# 1. Instalación de Dependencias del Sistema
+# ------------------------------------------------------------------------------
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         nano wget curl unzip ca-certificates \
@@ -31,10 +33,14 @@ RUN apt-get update && \
         xz-utils tk-dev uuid-dev && \
     rm -rf /var/lib/apt/lists/*
 
-# 2. Instalación de libcudacxx (ESTRATEGIA SEGURA)
+# ------------------------------------------------------------------------------
+# 2. Parche de libcudacxx (Para que OpenCV compile con CUDA 10.2)
+# ------------------------------------------------------------------------------
 RUN git clone --depth 1 https://github.com/NVIDIA/libcudacxx.git /opt/libcudacxx
 
+# ------------------------------------------------------------------------------
 # 3. Compilación de Python 3.11
+# ------------------------------------------------------------------------------
 WORKDIR /tmp
 RUN wget https://www.python.org/ftp/python/${PYTHON_VERSION}/Python-${PYTHON_VERSION}.tgz && \
     tar -xzf Python-${PYTHON_VERSION}.tgz && \
@@ -47,7 +53,7 @@ RUN wget https://www.python.org/ftp/python/${PYTHON_VERSION}/Python-${PYTHON_VER
     ${PYTHON_BIN} -m pip install --upgrade pip setuptools wheel numpy
 
 # ------------------------------------------------------------------------------
-# 3.5. Recompilar jetson-inference para Python 3.11 (NUEVO)
+# 3.5. Recompilar jetson-inference para Python 3.11
 # ------------------------------------------------------------------------------
 WORKDIR /tmp
 RUN echo "🚀 Recompilando jetson-inference para Python 3.11..." && \
@@ -63,15 +69,16 @@ RUN echo "🚀 Recompilando jetson-inference para Python 3.11..." && \
     make -j$(nproc) && \
     make install && \
     ldconfig && \
-    # Aseguramos que esté en el path correcto
     ln -s /usr/local/lib/python3.11/site-packages/jetson /usr/local/lib/python3.11/dist-packages/jetson || true && \
     rm -rf /tmp/jetson-inference
 
-# 4. Compilar OpenCV 4.10
+# ------------------------------------------------------------------------------
+# 4. Compilar OpenCV 4.10 con CUDA
+# ------------------------------------------------------------------------------
 ARG BUILD_OPENCV=1
 WORKDIR /tmp
 RUN if [ "$BUILD_OPENCV" = "1" ]; then \
-        echo "🛠️  Compilando OpenCV (esto puede tardar 4-5 horas)..."; \
+        echo "🛠️  Compilando OpenCV 4.10 (Paciencia, tarda horas)..."; \
         apt-get remove -y python3-opencv || true && \
         rm -rf /usr/lib/python3.6/dist-packages/cv2 && \
         rm -rf /usr/local/lib/python3.6/dist-packages/cv2 && \
@@ -137,12 +144,12 @@ RUN if [ "$BUILD_OPENCV" = "1" ]; then \
     fi
 
 # ------------------------------------------------------------------------------
-# 5. Dependencias y Modelos del Proyecto (CON NANODET + MIDAS)
+# 5. Dependencias y Modelos (SIN auto-reparación de ONNX)
 # ------------------------------------------------------------------------------
 WORKDIR /app
 COPY requirements.jetson.txt /app/requirements.txt
 
-# 1. Instalamos dependencias + onnxslim (por si acaso necesites arreglar otros modelos)
+# Instalamos dependencias (Mantenemos onnxslim instalado por si lo necesitas manualmente)
 RUN ${PYTHON_BIN} -m pip install --no-cache-dir --upgrade pip setuptools wheel && \
     ${PYTHON_BIN} -m pip install --no-cache-dir Cython && \
     ${PYTHON_BIN} -m pip install --no-cache-dir "httptools>=0.6.0" "uvloop>=0.17.0" "websockets>=11.0" && \
@@ -154,46 +161,23 @@ RUN ${PYTHON_BIN} -m pip install --no-cache-dir --upgrade pip setuptools wheel &
         cd /opt/jetson-inference/python/training/classification && ./download-models.sh; \
     fi
 
-# 2. DESCARGA DE MODELOS (Face, SuperRes, NanoDet, MiDaS)
+# Descargamos los modelos recomendados (NanoDet, MiDaS, etc.)
 RUN mkdir -p /app/models && \
-    # A. Modelos Faciales
     curl -L -o /app/models/face_detection_yunet_2023mar.onnx https://github.com/opencv/opencv_zoo/raw/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx && \
     curl -L -o /app/models/face_recognition_sface_2021dec.onnx https://github.com/opencv/opencv_zoo/raw/main/models/face_recognition_sface/face_recognition_sface_2021dec.onnx && \
-    # B. Modelos Super Resolución
     curl -L -o /app/models/ESPCN_x4.pb https://github.com/Saafke/EDSR_Tensorflow/raw/master/models/ESPCN_x4.pb && \
     curl -L -o /app/models/FSRCNN_x4.pb https://github.com/Saafke/FSRCNN_Tensorflow/raw/master/models/FSRCNN_x4.pb && \
-    # C. NanoDet-Plus (Detección de Objetos Rápida - Reemplazo de YOLO)
     curl -L -o /app/models/nanodet-plus-m_416.onnx https://github.com/RangiLyu/nanodet/releases/download/v1.0.0-alpha/nanodet-plus-m_416.onnx && \
-    # D. MiDaS v2.1 Small (Profundidad Monocular - Compatible con OpenCV)
     curl -L -o /app/models/midas_v21_small.onnx https://github.com/isl-org/MiDaS/releases/download/v2_1/model-small.onnx
 
-# 3. Copiamos el código fuente
+# Copiamos el código fuente
 COPY . /app
 
-# 4. >>> LA MAGIA CORREGIDA: AUTO-REPARACIÓN DEL MODELO <<<
-# Buscamos el modelo en la raíz /app (donde dice tu log que está)
-RUN echo "🔍 Buscando hit_detect.onnx para repararlo..." && \
-    if [ -f /app/hit_detect.onnx ]; then \
-        echo "🔧 Encontrado en /app/hit_detect.onnx - Ejecutando onnxslim..."; \
-        onnxslim /app/hit_detect.onnx /app/hit_detect_fixed.onnx && \
-        mv /app/hit_detect_fixed.onnx /app/hit_detect.onnx && \
-        echo "✅ Modelo raíz reparado."; \
-    elif [ -f /app/src/services/hit_detect.onnx ]; then \
-        echo "🔧 Encontrado en /app/src/services/hit_detect.onnx - Ejecutando onnxslim..."; \
-        onnxslim /app/src/services/hit_detect.onnx /app/src/services/hit_detect_fixed.onnx && \
-        mv /app/src/services/hit_detect_fixed.onnx /app/src/services/hit_detect.onnx && \
-        echo "✅ Modelo en subcarpeta reparado."; \
-    else \
-        echo "⚠️ ADVERTENCIA: No se encontró hit_detect.onnx para reparar. Si este archivo existe, verifica la ruta."; \
-        # Listamos archivos para que veas dónde cayó al construir
-        ls -R /app; \
-    fi
-
-# 5. Mover modelos a la carpeta de ejecución
+# Movemos los modelos a la carpeta final de ejecución
 RUN mkdir -p /app/ai_engine/models && \
     cp /app/models/* /app/ai_engine/models/
 
-# 6. Variables de Entorno para encontrar los modelos fácil desde Python
+# Variables de entorno para los modelos
 ENV SUPERRES_MODEL_PATH=/app/ai_engine/models/ESPCN_x4.pb
 ENV NANODET_MODEL_PATH=/app/ai_engine/models/nanodet-plus-m_416.onnx
 ENV MIDAS_MODEL_PATH=/app/ai_engine/models/midas_v21_small.onnx
