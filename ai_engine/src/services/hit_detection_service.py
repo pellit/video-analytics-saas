@@ -6,7 +6,10 @@ import time
 import base64
 from typing import Any, Dict, List
 
-# --- CLASE BASE YOLOV8 (Compartida) ---
+# ==========================================
+# 1. CLASES DE IA (WRAPPERS)
+# ==========================================
+
 class YoloBaseWrapper:
     def __init__(self, model_path, conf_thres=0.4, iou_thres=0.5):
         self.model_path = model_path
@@ -16,11 +19,11 @@ class YoloBaseWrapper:
         self.input_size = (640, 640)
 
     def load_model(self, name="YOLO"):
-        print(f"[{name}] 📂 Cargando modelo: {os.path.basename(self.model_path)}...")
+        print(f"[{name}] 📂 Verificando: {os.path.basename(self.model_path)}...")
         if not os.path.exists(self.model_path) or os.path.getsize(self.model_path) < 1000:
-            print(f"[{name}] ❌ Archivo no encontrado o corrupto: {self.model_path}")
+            print(f"[{name}] ❌ Archivo no encontrado o muy pequeño.")
             return False
-
+        
         try:
             self.net = cv2.dnn.readNet(self.model_path)
             self.net.setPreferableBackend(cv2.dnn.DNN_BACKEND_CUDA)
@@ -30,100 +33,77 @@ class YoloBaseWrapper:
             dummy = np.zeros((1, 3, 640, 640), dtype=np.float32)
             self.net.setInput(dummy)
             self.net.forward()
-            print(f"[{name}] ✅ Modelo cargado en GPU.")
+            print(f"[{name}] ✅ Cargado exitosamente en GPU.")
             return True
         except Exception as e:
-            print(f"[{name}] ❌ Error crítico cargando modelo: {e}")
+            print(f"[{name}] ❌ Error cargando modelo: {e}")
             self.net = None
             return False
 
     def preprocess(self, img):
         return cv2.dnn.blobFromImage(img, 1/255.0, self.input_size, swapRB=True, crop=False)
 
-# --- WRAPPER DETECCIÓN (Pelota) ---
 class YoloDetWrapper(YoloBaseWrapper):
     def detect_ball(self, blob, img_w, img_h):
         if self.net is None: return []
-
         self.net.setInput(blob)
         outputs = self.net.forward()
-        
         preds = np.squeeze(outputs[0]).T
         
+        # Validación de salida (YOLOv8 tiene 84 filas: 4 box + 80 clases)
         if preds.shape[1] > 36: 
-            # Clase 32 = Sports Ball
-            ball_scores = preds[:, 32+4] 
-            keep_idxs = ball_scores > self.conf_thres
+            # La clase "sports ball" es la ID 32. El score está en índice 32+4.
+            scores = preds[:, 32+4] 
+            keep_idxs = scores > self.conf_thres
             preds = preds[keep_idxs]
-            scores = ball_scores[keep_idxs]
-        else:
-            return []
+            scores = scores[keep_idxs]
+        else: return []
         
         if len(scores) == 0: return []
 
         boxes = preds[:, :4]
-        boxes_xywh = boxes.copy()
-        boxes_xywh[:, 0] = boxes[:, 0] - boxes[:, 2] / 2
-        boxes_xywh[:, 1] = boxes[:, 1] - boxes[:, 3] / 2
+        boxes[:, 0] -= boxes[:, 2] / 2
+        boxes[:, 1] -= boxes[:, 3] / 2
         
-        indices = cv2.dnn.NMSBoxes(boxes_xywh.tolist(), scores.tolist(), self.conf_thres, self.iou_thres)
-        
+        indices = cv2.dnn.NMSBoxes(boxes.tolist(), scores.tolist(), self.conf_thres, self.iou_thres)
         balls = []
-        scale_w = img_w / self.input_size[0]
-        scale_h = img_h / self.input_size[1]
+        
+        sx, sy = img_w / self.input_size[0], img_h / self.input_size[1]
 
         for i in indices.flatten():
-            box = boxes_xywh[i]
-            x = int(box[0] * scale_w)
-            y = int(box[1] * scale_h)
-            w = int(box[2] * scale_w)
-            h = int(box[3] * scale_h)
-            balls.append([x, y, w, h, float(scores[i])])
-            
+            b = boxes[i]
+            balls.append([int(b[0]*sx), int(b[1]*sy), int(b[2]*sx), int(b[3]*sy), float(scores[i])])
         return balls
 
-# --- WRAPPER POSE (Persona) ---
 class YoloPoseWrapper(YoloBaseWrapper):
     def detect_pose(self, blob, img_w, img_h):
         if self.net is None: return []
-
         self.net.setInput(blob)
         outputs = self.net.forward()
-        
         preds = np.squeeze(outputs[0]).T
+        
         scores = preds[:, 4]
-        keep_idxs = scores > self.conf_thres
-        preds = preds[keep_idxs]
-        scores = scores[keep_idxs]
-
+        keep = scores > self.conf_thres
+        preds = preds[keep]
+        scores = scores[keep]
         if len(scores) == 0: return []
 
-        boxes = preds[:, :4]
-        boxes_xywh = boxes.copy()
-        boxes_xywh[:, 0] = boxes[:, 0] - boxes[:, 2] / 2
-        boxes_xywh[:, 1] = boxes[:, 1] - boxes[:, 3] / 2
-        
-        kpts = preds[:, 5:]
-        indices = cv2.dnn.NMSBoxes(boxes_xywh.tolist(), scores.tolist(), self.conf_thres, self.iou_thres)
+        kpts = preds[:, 5:] 
+        indices = cv2.dnn.NMSBoxes(preds[:, :4].tolist(), scores.tolist(), self.conf_thres, self.iou_thres)
         
         people = []
-        scale_w = img_w / self.input_size[0]
-        scale_h = img_h / self.input_size[1]
+        sx, sy = img_w / self.input_size[0], img_h / self.input_size[1]
 
         for i in indices.flatten():
-            person_kpts = kpts[i].reshape(-1, 3)
-            kpts_scaled = []
-            for kp in person_kpts:
-                kx, ky, kconf = kp
-                kpts_scaled.append({
-                    "x": int(kx * scale_w),
-                    "y": int(ky * scale_h),
-                    "conf": float(kconf)
-                })
-            people.append({"keypoints": kpts_scaled})
+            pk = kpts[i].reshape(-1, 3)
+            scaled = [{"x": int(p[0]*sx), "y": int(p[1]*sy), "conf": float(p[2])} for p in pk]
+            people.append({"keypoints": scaled, "box": preds[i, :4]})
         return people
 
-# --- SERVICIO PRINCIPAL (FÚTBOL) ---
+# ==========================================
+# 2. SERVICIO PRINCIPAL DE FÚTBOL
+# ==========================================
+
 class HitDetectionService:
     def __init__(self, default_model_dirs: List[str] = None):
         self.models_dir = "/app/ai_engine/models"
@@ -131,22 +111,21 @@ class HitDetectionService:
         self.pose_path = os.path.join(self.models_dir, "yolov8n-pose.onnx")  
         self.midas_path = os.path.join(self.models_dir, "midas_v21_small.onnx") 
 
-        # --- URLs NUEVAS (HuggingFace Mirrors - Mucho más estables) ---
+        # Enlaces estables (HuggingFace Mirrors)
         self.det_url = "https://github.com/pellit/video-analytics-saas/raw/796d243e692b5b18f0344b033a152dcdd6326f36/ai_engine/yolov8n.onnx"
         self.pose_url = "https://huggingface.co/Xenova/yolov8-pose-onnx/resolve/main/yolov8n-pose.onnx?download=true"
-        # MiDaS suele ser estable en Github
         self.midas_url = "https://github.com/isl-org/MiDaS/releases/download/v2_1/model-small.onnx"
 
-        print(f"\n[DEBUG] Iniciando Servicio de Fútbol (YOLOv8n + Pose + MiDaS)...")
-        
+        print(f"\n[FÚTBOL AI] Iniciando servicio...")
         self._check_and_download_models()
 
         # Cargar Modelos
-        self.det_model = YoloDetWrapper(self.det_path, conf_thres=0.30)
-        self.det_model.load_model("YOLO-BALL")
+        # Umbral bajo (0.25) para detectar pelotas rápidas
+        self.det_model = YoloDetWrapper(self.det_path, conf_thres=0.25) 
+        self.det_model.load_model("BALL")
         
         self.pose_model = YoloPoseWrapper(self.pose_path, conf_thres=0.5)
-        self.pose_model.load_model("YOLO-POSE")
+        self.pose_model.load_model("POSE")
         
         self.midas_net = None
         if os.path.exists(self.midas_path):
@@ -154,111 +133,181 @@ class HitDetectionService:
                 self.midas_net = cv2.dnn.readNet(self.midas_path)
                 self.midas_net.setPreferableBackend(cv2.dnn.DNN_BACKEND_CUDA)
                 self.midas_net.setPreferableTarget(cv2.dnn.DNN_TARGET_CUDA)
-                print("[MiDaS] ✅ Cargado.")
-            except Exception as e:
-                print(f"[MiDaS] ❌ Error cargando: {e}")
+                print("[MiDaS] ✅ Profundidad activa.")
+            except: pass
 
-    def _download_file(self, url, path):
-        if os.path.exists(path) and os.path.getsize(path) > 100000:
-            return 
-        print(f"⏳ Descargando {os.path.basename(path)}...")
-        try:
-            opener = urllib.request.build_opener()
-            opener.addheaders = [('User-Agent', 'Mozilla/5.0')]
-            urllib.request.install_opener(opener)
-            urllib.request.urlretrieve(url, path)
-            print("✅ Descarga OK.")
-        except Exception as e:
-            print(f"❌ Error descargando {url}: {e}")
+        # --- VARIABLES DE ESTADO ---
+        self.juggles_count = 0        # Contador de dominadas
+        self.last_hit_time = 0        # Para debounce
+        self.dribble_state = "Parado" # Estado de conducción
 
     def _check_and_download_models(self):
         os.makedirs(self.models_dir, exist_ok=True)
-        self._download_file(self.det_url, self.det_path)
-        self._download_file(self.pose_url, self.pose_path)
-        self._download_file(self.midas_url, self.midas_path)
+        downloads = [
+            (self.det_url, self.det_path), 
+            (self.pose_url, self.pose_path), 
+            (self.midas_url, self.midas_path)
+        ]
+        
+        for url, path in downloads:
+            if not os.path.exists(path) or os.path.getsize(path) < 100000:
+                print(f"⏳ Descargando {os.path.basename(path)}...")
+                try:
+                    opener = urllib.request.build_opener()
+                    opener.addheaders = [('User-Agent', 'Mozilla/5.0')]
+                    urllib.request.install_opener(opener)
+                    urllib.request.urlretrieve(url, path)
+                    print("✅ OK")
+                except Exception as e: 
+                    print(f"❌ Falló descarga de {os.path.basename(path)}: {e}")
 
     def get_depth_map(self, frame):
+        """Genera mapa de profundidad (escala de grises)"""
         if self.midas_net is None: return None
         h, w = frame.shape[:2]
         blob = cv2.dnn.blobFromImage(frame, 1/255.0, (256, 256), (123.675, 116.28, 103.53), True, False)
         self.midas_net.setInput(blob)
         depth = self.midas_net.forward()
-        depth = depth[0,0]
-        depth = cv2.resize(depth, (w, h))
+        depth = cv2.resize(depth[0,0], (w, h))
         return cv2.normalize(depth, None, 0, 255, cv2.NORM_MINMAX, cv2.CV_8U)
 
-    def analyze_soccer_scene(self, balls, people, depth_map):
+    def analyze_football(self, ball_box, person_kpts, depth_map, frame_time):
         """
-        Lógica de Fútbol: Pies (OK), Manos (Falta), Control (Proximidad).
+        Analiza si hay Juggling (Aire) o Dribbling (Piso)
+        Retorna: Texto del evento detectado
         """
-        events = []
-        if not balls or not people or depth_map is None: return events
-
-        # Pelota principal
-        balls.sort(key=lambda x: x[4], reverse=True)
-        bx, by, bw, bh, _ = balls[0]
-        ball_center = (bx + bw//2, by + bh//2)
-        
+        # 1. Datos Pelota
+        bx, by, bw, bh = ball_box[:4]
+        ball_center = np.array([bx + bw//2, by + bh//2])
         try: ball_z = depth_map[ball_center[1], ball_center[0]]
-        except: return events
+        except: return ""
 
-        for p in people:
-            kpts = p['keypoints']
-            
-            # --- ZONA DE IMPACTO (Pies y Rodillas) ---
-            # 15: Tobillo Izq, 16: Tobillo Der
-            # 13: Rodilla Izq, 14: Rodilla Der
-            impact_points = [
-                ("Pie Izq", kpts[15]), ("Pie Der", kpts[16]),
-                ("Rodilla Izq", kpts[13]), ("Rodilla Der", kpts[14])
-            ]
-
-            # --- ZONA PROHIBIDA (Manos) ---
-            # 9: Muñeca Izq, 10: Muñeca Der
-            hands = [("MANO Izq", kpts[9]), ("MANO Der", kpts[10])]
-
-            # 1. Chequear PIES (Toque/Control)
-            for part_name, kp in impact_points:
-                if kp['conf'] < 0.5: continue
-                
-                dist_2d = np.linalg.norm(np.array([kp['x'], kp['y']]) - np.array(ball_center))
-                try: 
-                    kp_z = depth_map[kp['y'], kp['x']]
-                    dist_z = abs(int(ball_z) - int(kp_z))
-                except: continue
-
-                # Umbrales
-                if dist_2d < 80 and dist_z < 40:
-                    events.append(f"Toque {part_name}")
-                elif dist_2d < 150 and dist_z < 50:
-                    events.append(f"Control {part_name} (Cerca)")
-
-            # 2. Chequear MANOS (Faltas)
-            for part_name, kp in hands:
-                if kp['conf'] < 0.5: continue
-                dist_2d = np.linalg.norm(np.array([kp['x'], kp['y']]) - np.array(ball_center))
-                try: 
-                    kp_z = depth_map[kp['y'], kp['x']]
-                    dist_z = abs(int(ball_z) - int(kp_z))
-                except: continue
-
-                if dist_2d < 90 and dist_z < 40:
-                    events.append(f"⚠️ {part_name} (FALTA)")
-
-        return events
-
-    def run_on_video(self, video_path, frame_stride=3, max_frames=200, hit_threshold=0.4, return_images=True):
-        cap = cv2.VideoCapture(video_path)
+        # 2. Datos Jugador (Pies)
+        # 15: Tobillo Izq, 16: Tobillo Der
+        feet = [person_kpts[15], person_kpts[16]]
+        valid_feet = [f for f in feet if f['conf'] > 0.5]
         
-        # Stats Video
-        fps_video = cap.get(cv2.CAP_PROP_FPS)
-        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        video_duration_s = total_frames / fps_video if fps_video > 0 else 0
+        if not valid_feet: return ""
+
+        # Definir "Nivel del Piso" dinámicamente (punto más bajo de los pies)
+        ground_y = max([f['y'] for f in valid_feet]) 
+        
+        # Calcular Altura Pelota respecto al piso (en pixeles)
+        ball_height_from_ground = ground_y - ball_center[1] 
+
+        event = ""
+        
+        # --- CASO A: JUGGLING (Dominadas en el aire) ---
+        # Condición: Pelota levantada (> 30px del piso)
+        if ball_height_from_ground > 30:
+            for foot in valid_feet:
+                dist_x = abs(foot['x'] - ball_center[0])
+                try: foot_z = depth_map[foot['y'], foot['x']]
+                except: foot_z = 0
+                dist_z = abs(int(ball_z) - int(foot_z))
+
+                # Si está cerca del pie en X y Z
+                if dist_x < 70 and dist_z < 45:
+                    if (frame_time - self.last_hit_time) > 0.4: 
+                        self.juggles_count += 1
+                        self.last_hit_time = frame_time
+                        event = "JUGGLE HIT!"
+        
+        # --- CASO B: DRIBBLE (Conducción en el piso) ---
+        # Condición: Pelota cerca del piso (<= 30px)
+        elif ball_height_from_ground <= 30:
+            closest_dist = 999
+            for foot in valid_feet:
+                d = np.linalg.norm(np.array([foot['x'], foot['y']]) - ball_center)
+                if d < closest_dist: closest_dist = d
             
+            # Si la pelota está "pegada" al pie (< 80px)
+            if closest_dist < 80:
+                center_feet_x = (feet[0]['x'] + feet[1]['x']) / 2
+                if ball_center[0] > center_feet_x + 20:
+                    self.dribble_state = "Derecha >>"
+                elif ball_center[0] < center_feet_x - 20:
+                    self.dribble_state = "<< Izquierda"
+                else:
+                    self.dribble_state = "Control (Centro)"
+                event = self.dribble_state
+
+        return event
+
+    def draw_3d_debug(self, frame, kpts, ball_box, depth_map):
+        """
+        Crea un panel lateral con gráficos 3D simulados para debug.
+        """
+        h, w = frame.shape[:2]
+        panel_w = 320
+        panel = np.zeros((h, panel_w, 3), dtype=np.uint8) 
+        panel[:] = (40, 40, 40) # Gris oscuro
+        
+        c_ball = (0, 100, 255) # Naranja
+        c_foot = (0, 255, 0)   # Verde
+        c_txt = (255, 255, 255)
+
+        bx, by, bw, bh = ball_box[:4]
+        bc = (bx + bw//2, by + bh//2)
+        try: bz = int(depth_map[bc[1], bc[0]])
+        except: bz = 128
+        
+        feet = [kpts[15], kpts[16]]
+        
+        # --- GRÁFICO 1: VISTA AÉREA (Top-Down XZ) ---
+        cv2.putText(panel, "VISTA AEREA (XZ)", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, c_txt, 1)
+        cv2.rectangle(panel, (20, 50), (300, 250), (20, 20, 20), -1) # Fondo campo
+        cv2.line(panel, (160, 50), (160, 250), (60, 60, 60), 1)      # Centro
+        
+        def map_top(pt_x, pt_z):
+            mx = 20 + int((pt_x / w) * 280)
+            mz = 50 + int((pt_z / 255.0) * 200)
+            return (mx, mz)
+
+        bp_top = map_top(bc[0], bz)
+        cv2.circle(panel, bp_top, 8, c_ball, -1)
+        
+        for f in feet:
+            if f['conf'] > 0.5:
+                try: fz = int(depth_map[f['y'], f['x']])
+                except: fz = 128
+                fp_top = map_top(f['x'], fz)
+                cv2.circle(panel, fp_top, 6, c_foot, -1)
+                cv2.line(panel, bp_top, fp_top, (80,80,80), 1)
+
+        # --- GRÁFICO 2: VISTA LATERAL (Side View ZY) ---
+        cv2.putText(panel, "VISTA LATERAL (ZY)", (10, 300), cv2.FONT_HERSHEY_SIMPLEX, 0.6, c_txt, 1)
+        cv2.rectangle(panel, (20, 320), (300, 520), (20, 20, 20), -1)
+        
+        def map_side(pt_z, pt_y):
+            mx = 20 + int((pt_z / 255.0) * 280)
+            my = 320 + int((pt_y / h) * 200)
+            return (mx, my)
+
+        bp_side = map_side(bz, bc[1])
+        cv2.circle(panel, bp_side, 8, c_ball, -1)
+        
+        for f in feet:
+            if f['conf'] > 0.5:
+                try: fz = int(depth_map[f['y'], f['x']])
+                except: fz = 128
+                fp_side = map_side(fz, f['y'])
+                cv2.circle(panel, fp_side, 6, c_foot, -1)
+                cv2.line(panel, (20, fp_side[1]), (300, fp_side[1]), (0,100,0), 1)
+
+        # --- ESTADÍSTICAS ---
+        cv2.rectangle(panel, (0, 530), (panel_w, h), (0,0,0), -1)
+        cv2.putText(panel, f"Juggles: {self.juggles_count}", (15, 560), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2)
+        cv2.putText(panel, f"Accion: {self.dribble_state}", (15, 590), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (200, 200, 200), 1)
+
+        return np.hstack((frame, panel))
+
+    def run_on_video(self, video_path, frame_stride=3, max_frames=300, hit_threshold=0.4, return_images=True):
+        cap = cv2.VideoCapture(video_path)
+        fps = cap.get(cv2.CAP_PROP_FPS)
         frame_idx = 0
         processed = 0
         images_b64 = []
-        debug_logs = []
         
         start_time = time.time()
         
@@ -271,80 +320,49 @@ class HitDetectionService:
                 continue
             
             h, w = frame.shape[:2]
+            current_video_time = frame_idx / fps if fps > 0 else 0
 
-            # 1. Detección (Blob compartido)
-            shared_blob = self.det_model.preprocess(frame)
-            balls = self.det_model.detect_ball(shared_blob, w, h)
-            people = self.pose_model.detect_pose(shared_blob, w, h)
+            det_blob = self.det_model.preprocess(frame)
+            pose_blob = self.pose_model.preprocess(frame) 
             
-            # 2. Análisis Lógico
-            events = []
-            depth_map = None
+            balls = self.det_model.detect_ball(det_blob, w, h)
+            people = self.pose_model.detect_pose(pose_blob, w, h)
+            
+            event = ""
+            vis_frame = frame.copy()
+            
             if len(balls) > 0 and len(people) > 0:
-                depth_map = self.get_depth_map(frame)
-                events = self.analyze_soccer_scene(balls, people, depth_map)
-
-            # Detectamos "Acción" si hay eventos (Toque, Control o Mano)
-            action_detected = len(events) > 0
-            
-            debug_logs.append({
-                "frame": frame_idx,
-                "balls": len(balls),
-                "people": len(people),
-                "action": action_detected,
-                "events": events
-            })
-
-            # Generar imagen si hay acción o para muestreo
-            if return_images and (action_detected or len(images_b64) < 5):
-                vis = frame.copy()
+                ball = sorted(balls, key=lambda x: x[4])[-1] 
+                person = sorted(people, key=lambda x: (x['box'][2]*x['box'][3]))[-1]
                 
-                # Pelota
-                for b in balls:
-                    cv2.rectangle(vis, (b[0], b[1]), (b[0]+b[2], b[1]+b[3]), (0,0,255), 2)
-                    # cv2.putText(vis, "Ball", (b[0], b[1]-5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0,0,255), 1)
+                depth_map = self.get_depth_map(frame)
+                
+                if depth_map is not None:
+                    event = self.analyze_football(ball, person['keypoints'], depth_map, current_video_time)
+                    if return_images:
+                        vis_frame = self.draw_3d_debug(vis_frame, person['keypoints'], ball, depth_map)
 
-                # Esqueleto Fútbol
-                for p in people:
-                    kpts = p['keypoints']
-                    # Pies (15, 16) - Verde
-                    for idx in [15, 16]: 
-                        kp = kpts[idx]
-                        if kp['conf']>0.5: cv2.circle(vis, (kp['x'], kp['y']), 6, (0,255,0), -1)
-                    # Manos (9, 10) - Rojo (Alerta)
-                    for idx in [9, 10]: 
-                        kp = kpts[idx]
-                        if kp['conf']>0.5: cv2.circle(vis, (kp['x'], kp['y']), 5, (0,0,255), 2)
+                if not return_images:
+                     cv2.rectangle(vis_frame, (ball[0], ball[1]), (ball[0]+ball[2], ball[1]+ball[3]), (0,0,255), 2)
 
-                if action_detected:
-                    # Texto del evento
-                    color = (0, 255, 0) # Verde por defecto
-                    if "FALTA" in events[0]: color = (0, 0, 255) # Rojo si es mano
-                    elif "Control" in events[0]: color = (0, 255, 255) # Amarillo si es control
-                    
-                    cv2.putText(vis, events[0], (30, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
+            if not return_images:
+                cv2.putText(vis_frame, f"Juggles: {self.juggles_count}", (30, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2)
 
-                _, buf = cv2.imencode('.jpg', vis)
+            if return_images and len(images_b64) < 60: 
+                _, buf = cv2.imencode('.jpg', vis_frame)
                 b64 = base64.b64encode(buf).decode('utf-8')
-                images_b64.append({"frame": frame_idx, "image": b64})
+                images_b64.append({"frame": frame_idx, "image": b64, "event": event})
 
             processed += 1
             frame_idx += 1
 
         cap.release()
         
-        end_time = time.time()
-        total_time = end_time - start_time
-        load_pct = (total_time / video_duration_s) * 100 if video_duration_s > 0 else 0
-
         return {
             "success": True,
-            "performance": {
-                "fps_analysis": round(processed/total_time, 2) if total_time > 0 else 0,
-                "total_time_s": round(total_time, 2),
-                "load_pct": round(load_pct, 2)
+            "stats": {
+                "total_juggles": self.juggles_count,
+                "final_state": self.dribble_state
             },
-            "actions_detected": sum(1 for l in debug_logs if l['action']),
-            "events_log": [l for l in debug_logs if l['action']], # Solo frames con acción
             "hit_images": images_b64
         }
