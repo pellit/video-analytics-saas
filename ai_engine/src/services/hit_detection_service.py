@@ -121,7 +121,7 @@ class HitDetectionService:
 
     def _load_models(self):
         # NanoDet
-        self.nanodet_net = cv2.dnn.readNet(self.yolov8_path)
+        self.nanodet_net = cv2.dnn.readNet(self.nanodet_path)
         self.nanodet_net.setPreferableBackend(cv2.dnn.DNN_BACKEND_CUDA)
         self.nanodet_net.setPreferableTarget(cv2.dnn.DNN_TARGET_CUDA)
         # Pose
