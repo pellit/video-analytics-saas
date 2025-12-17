@@ -119,8 +119,7 @@ class HitDetectionService:
         print(f"\n[FÚTBOL AI] Iniciando servicio...")
         self._check_and_download_models()
 
-        # Cargar Modelos
-        # Umbral bajo (0.25) para detectar pelotas rápidas
+        # Cargar Modelos (Umbral bajo para pelota para detectar movimientos rápidos)
         self.det_model = YoloDetWrapper(self.det_path, conf_thres=0.25) 
         self.det_model.load_model("BALL")
         
@@ -176,52 +175,44 @@ class HitDetectionService:
         Analiza si hay Juggling (Aire) o Dribbling (Piso)
         Retorna: Texto del evento detectado
         """
-        # 1. Datos Pelota
         bx, by, bw, bh = ball_box[:4]
         ball_center = np.array([bx + bw//2, by + bh//2])
         try: ball_z = depth_map[ball_center[1], ball_center[0]]
         except: return ""
 
-        # 2. Datos Jugador (Pies)
-        # 15: Tobillo Izq, 16: Tobillo Der
+        # Pies: 15 (Izq), 16 (Der)
         feet = [person_kpts[15], person_kpts[16]]
         valid_feet = [f for f in feet if f['conf'] > 0.5]
         
         if not valid_feet: return ""
 
-        # Definir "Nivel del Piso" dinámicamente (punto más bajo de los pies)
+        # Piso dinámico
         ground_y = max([f['y'] for f in valid_feet]) 
-        
-        # Calcular Altura Pelota respecto al piso (en pixeles)
-        ball_height_from_ground = ground_y - ball_center[1] 
+        ball_height = ground_y - ball_center[1] 
 
         event = ""
         
-        # --- CASO A: JUGGLING (Dominadas en el aire) ---
-        # Condición: Pelota levantada (> 30px del piso)
-        if ball_height_from_ground > 30:
+        # --- LÓGICA JUGGLING (>30px altura) ---
+        if ball_height > 30:
             for foot in valid_feet:
                 dist_x = abs(foot['x'] - ball_center[0])
                 try: foot_z = depth_map[foot['y'], foot['x']]
                 except: foot_z = 0
                 dist_z = abs(int(ball_z) - int(foot_z))
 
-                # Si está cerca del pie en X y Z
                 if dist_x < 70 and dist_z < 45:
                     if (frame_time - self.last_hit_time) > 0.4: 
                         self.juggles_count += 1
                         self.last_hit_time = frame_time
                         event = "JUGGLE HIT!"
         
-        # --- CASO B: DRIBBLE (Conducción en el piso) ---
-        # Condición: Pelota cerca del piso (<= 30px)
-        elif ball_height_from_ground <= 30:
+        # --- LÓGICA DRIBBLE (<=30px altura) ---
+        elif ball_height <= 30:
             closest_dist = 999
             for foot in valid_feet:
                 d = np.linalg.norm(np.array([foot['x'], foot['y']]) - ball_center)
                 if d < closest_dist: closest_dist = d
             
-            # Si la pelota está "pegada" al pie (< 80px)
             if closest_dist < 80:
                 center_feet_x = (feet[0]['x'] + feet[1]['x']) / 2
                 if ball_center[0] > center_feet_x + 20:
@@ -236,15 +227,15 @@ class HitDetectionService:
 
     def draw_3d_debug(self, frame, kpts, ball_box, depth_map):
         """
-        Crea un panel lateral con gráficos 3D simulados para debug.
+        Panel lateral de depuración 3D
         """
         h, w = frame.shape[:2]
         panel_w = 320
         panel = np.zeros((h, panel_w, 3), dtype=np.uint8) 
-        panel[:] = (40, 40, 40) # Gris oscuro
+        panel[:] = (40, 40, 40) 
         
-        c_ball = (0, 100, 255) # Naranja
-        c_foot = (0, 255, 0)   # Verde
+        c_ball = (0, 100, 255) 
+        c_foot = (0, 255, 0)   
         c_txt = (255, 255, 255)
 
         bx, by, bw, bh = ball_box[:4]
@@ -254,10 +245,10 @@ class HitDetectionService:
         
         feet = [kpts[15], kpts[16]]
         
-        # --- GRÁFICO 1: VISTA AÉREA (Top-Down XZ) ---
+        # --- VISTA AÉREA (XZ) ---
         cv2.putText(panel, "VISTA AEREA (XZ)", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, c_txt, 1)
-        cv2.rectangle(panel, (20, 50), (300, 250), (20, 20, 20), -1) # Fondo campo
-        cv2.line(panel, (160, 50), (160, 250), (60, 60, 60), 1)      # Centro
+        cv2.rectangle(panel, (20, 50), (300, 250), (20, 20, 20), -1)
+        cv2.line(panel, (160, 50), (160, 250), (60, 60, 60), 1)
         
         def map_top(pt_x, pt_z):
             mx = 20 + int((pt_x / w) * 280)
@@ -275,7 +266,7 @@ class HitDetectionService:
                 cv2.circle(panel, fp_top, 6, c_foot, -1)
                 cv2.line(panel, bp_top, fp_top, (80,80,80), 1)
 
-        # --- GRÁFICO 2: VISTA LATERAL (Side View ZY) ---
+        # --- VISTA LATERAL (ZY) ---
         cv2.putText(panel, "VISTA LATERAL (ZY)", (10, 300), cv2.FONT_HERSHEY_SIMPLEX, 0.6, c_txt, 1)
         cv2.rectangle(panel, (20, 320), (300, 520), (20, 20, 20), -1)
         
@@ -295,21 +286,26 @@ class HitDetectionService:
                 cv2.circle(panel, fp_side, 6, c_foot, -1)
                 cv2.line(panel, (20, fp_side[1]), (300, fp_side[1]), (0,100,0), 1)
 
-        # --- ESTADÍSTICAS ---
+        # --- ESTADÍSTICAS EN PANEL ---
         cv2.rectangle(panel, (0, 530), (panel_w, h), (0,0,0), -1)
         cv2.putText(panel, f"Juggles: {self.juggles_count}", (15, 560), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2)
-        cv2.putText(panel, f"Accion: {self.dribble_state}", (15, 590), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (200, 200, 200), 1)
+        cv2.putText(panel, f"Estado: {self.dribble_state}", (15, 590), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (200, 200, 200), 1)
 
         return np.hstack((frame, panel))
 
     def run_on_video(self, video_path, frame_stride=3, max_frames=300, hit_threshold=0.4, return_images=True):
         cap = cv2.VideoCapture(video_path)
-        fps = cap.get(cv2.CAP_PROP_FPS)
+        
+        # --- MÉTRICAS INICIALES ---
+        fps_video = cap.get(cv2.CAP_PROP_FPS)
+        total_frames_video = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        video_duration_s = total_frames_video / fps_video if fps_video > 0 else 0
+        
         frame_idx = 0
         processed = 0
-        images_b64 = []
+        images_output = [] # Lista para el JSON final
         
-        start_time = time.time()
+        start_time = time.time() # Inicio cronómetro
         
         while processed < max_frames:
             ret, frame = cap.read()
@@ -320,8 +316,9 @@ class HitDetectionService:
                 continue
             
             h, w = frame.shape[:2]
-            current_video_time = frame_idx / fps if fps > 0 else 0
+            current_video_time = frame_idx / fps_video if fps_video > 0 else 0
 
+            # 1. Inferencia
             det_blob = self.det_model.preprocess(frame)
             pose_blob = self.pose_model.preprocess(frame) 
             
@@ -331,6 +328,7 @@ class HitDetectionService:
             event = ""
             vis_frame = frame.copy()
             
+            # 2. Análisis
             if len(balls) > 0 and len(people) > 0:
                 ball = sorted(balls, key=lambda x: x[4])[-1] 
                 person = sorted(people, key=lambda x: (x['box'][2]*x['box'][3]))[-1]
@@ -340,29 +338,51 @@ class HitDetectionService:
                 if depth_map is not None:
                     event = self.analyze_football(ball, person['keypoints'], depth_map, current_video_time)
                     if return_images:
+                        # Dibuja el panel 3D a la derecha
                         vis_frame = self.draw_3d_debug(vis_frame, person['keypoints'], ball, depth_map)
 
                 if not return_images:
                      cv2.rectangle(vis_frame, (ball[0], ball[1]), (ball[0]+ball[2], ball[1]+ball[3]), (0,0,255), 2)
 
-            if not return_images:
-                cv2.putText(vis_frame, f"Juggles: {self.juggles_count}", (30, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2)
-
-            if return_images and len(images_b64) < 60: 
+            # 3. Guardar Frame (Limitado a 60 frames para no explotar el JSON)
+            if return_images and len(images_output) < 60: 
                 _, buf = cv2.imencode('.jpg', vis_frame)
-                b64 = base64.b64encode(buf).decode('utf-8')
-                images_b64.append({"frame": frame_idx, "image": b64, "event": event})
+                b64_str = base64.b64encode(buf).decode('utf-8')
+                
+                # ESTRUCTURA SOLICITADA PARA CADA IMAGEN
+                images_output.append({
+                    "image_id": str(frame_idx),
+                    "image_base64": f"data:image/jpeg;base64,{b64_str}"
+                })
 
             processed += 1
             frame_idx += 1
 
         cap.release()
         
+        # --- CÁLCULO DE MÉTRICAS FINALES ---
+        end_time = time.time()
+        total_proc_time = end_time - start_time
+        
+        fps_analysis = processed / total_proc_time if total_proc_time > 0 else 0
+        load_pct = (total_proc_time / video_duration_s * 100) if video_duration_s > 0 else 0
+
+        # --- CONSTRUCCIÓN DEL JSON FINAL SOLICITADO ---
         return {
-            "success": True,
-            "stats": {
-                "total_juggles": self.juggles_count,
-                "final_state": self.dribble_state
-            },
-            "hit_images": images_b64
+            "id": int(time.time()), # ID único basado en timestamp
+            "hit_images": images_output,
+            "meta": {
+                "note": "Analisis de Futbol Completado",
+                "performance": {
+                    "fps_analysis": round(fps_analysis, 2),
+                    "total_processing_time_s": round(total_proc_time, 2),
+                    "video_duration_s": round(video_duration_s, 2),
+                    "load_pct": round(load_pct, 2),
+                    "frames_processed": processed
+                },
+                "stats": {
+                    "total_juggles": self.juggles_count,
+                    "final_state": self.dribble_state
+                }
+            }
         }
