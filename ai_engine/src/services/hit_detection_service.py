@@ -2,59 +2,89 @@ import cv2
 import numpy as np
 import os
 import traceback
+import urllib.request
 from typing import Any, Dict, List
 from fastapi import HTTPException
 
 class HitDetectionService:
-    """
-    Servicio de detección usando NanoDet-Plus.
-    Reemplaza al modelo antiguo hit_detect.onnx que tenía errores de TopK.
-    """
-
     def __init__(self, default_model_dirs: List[str] = None):
-        # Buscamos el modelo NanoDet que descargamos en el Dockerfile
+        # Ruta del modelo
         self.model_path = os.getenv("NANODET_MODEL_PATH", "/app/ai_engine/models/nanodet-plus-m_416.onnx")
-        self.input_shape = (416, 416) # Tamaño nativo de NanoDet-Plus-m
-        
-        # Umbrales
-        self.prob_threshold = 0.40  # Confianza mínima para considerar detección
-        self.iou_threshold = 0.50   # Para eliminar cajas duplicadas
+        self.input_shape = (416, 416) 
+        self.prob_threshold = 0.40
+        self.iou_threshold = 0.50
 
+        # URL de respaldo por si el archivo está roto (Usamos un mirror confiable o el repo oficial)
+        self.model_url = "https://github.com/RangiLyu/nanodet/releases/download/v1.0.0-alpha/nanodet-plus-m_416.onnx"
+        
         self._net = None
+        self._check_and_download_model() # <--- VERIFICACIÓN AUTOMÁTICA
         self._load_model()
 
-    def _load_model(self):
-        print(f"[HitDetect] Cargando NanoDet-Plus desde: {self.model_path}")
+    def _check_and_download_model(self):
+        """
+        Verifica si el modelo existe y es un archivo ONNX válido (por tamaño).
+        Si es muy pequeño (<100KB), asume que es un error HTML y lo descarga de nuevo.
+        """
+        download_needed = False
+        
         if not os.path.exists(self.model_path):
-            raise RuntimeError(f"No se encuentra el modelo en {self.model_path}")
+            print(f"[HitDetect] ⚠️ Modelo no encontrado en {self.model_path}")
+            download_needed = True
+        else:
+            # Verificar tamaño (NanoDet-Plus-m pesa aprox 4.7 MB)
+            size_mb = os.path.getsize(self.model_path) / (1024 * 1024)
+            if size_mb < 1.0: # Si pesa menos de 1MB, seguro es basura HTML
+                print(f"[HitDetect] ⚠️ El archivo del modelo parece corrupto ({size_mb:.2f} MB). Eliminando...")
+                os.remove(self.model_path)
+                download_needed = True
+            else:
+                print(f"[HitDetect] ✅ Archivo de modelo válido detectado ({size_mb:.2f} MB).")
 
+        if download_needed:
+            print(f"[HitDetect] ⏳ Descargando NanoDet-Plus desde {self.model_url}...")
+            try:
+                # Asegurar que el directorio existe
+                os.makedirs(os.path.dirname(self.model_path), exist_ok=True)
+                
+                # Descarga usando urllib (más robusto que curl en algunos entornos)
+                urllib.request.urlretrieve(self.model_url, self.model_path)
+                
+                # Verificar de nuevo
+                if os.path.exists(self.model_path) and os.path.getsize(self.model_path) > 1000000:
+                     print(f"[HitDetect] ✅ Descarga completada exitosamente.")
+                else:
+                     raise RuntimeError("La descarga finalizó pero el archivo sigue siendo demasiado pequeño.")
+            except Exception as e:
+                print(f"[HitDetect] ❌ Error fatal descargando el modelo: {e}")
+                raise RuntimeError(f"No se pudo descargar el modelo. Verifica tu conexión a internet en el contenedor.")
+
+    def _load_model(self):
+        print(f"[HitDetect] Cargando red neuronal...")
         try:
             self._net = cv2.dnn.readNet(self.model_path)
-            # ACTIVAR CUDA (GPU)
             self._net.setPreferableBackend(cv2.dnn.DNN_BACKEND_CUDA)
             self._net.setPreferableTarget(cv2.dnn.DNN_TARGET_CUDA)
-            print("[HitDetect] Modelo cargado exitosamente en GPU (CUDA).")
+            print("[HitDetect] 🚀 Modelo cargado exitosamente en GPU (CUDA).")
         except Exception as e:
-            print(f"[HitDetect] Error cargando NanoDet: {e}")
-            traceback.print_exc()
+            print(f"[HitDetect] Error crítico en OpenCV: {e}")
+            # Si falla aquí, es posible que el archivo siga corrupto o incompatible
             raise e
 
     def _preprocess(self, image):
-        # NanoDet requiere normalización específica
-        # Mean: [103.53, 116.28, 123.675]
         blob = cv2.dnn.blobFromImage(
             image, 
             scalefactor=1.0, 
             size=self.input_shape,
             mean=(103.53, 116.28, 123.675),
-            swapRB=False, # El modelo espera BGR si usamos cv2.imread
+            swapRB=False,
             crop=False
         )
         return blob
 
     def _postprocess(self, outputs, img_w, img_h):
-        # Decodificar las salidas de NanoDet
-        # La salida suele ser [1, 8400, 80+5] o similar
+        # Adaptación para la salida de NanoDet-Plus
+        # Flattening simple para gestionar diferentes tipos de salida
         preds = outputs[0]
         if len(preds.shape) == 3:
             preds = preds[0]
@@ -66,12 +96,8 @@ class HitDetectionService:
         confidences = []
         boxes = []
 
-        # Estructura típica: [cx, cy, w, h, score_cls1, score_cls2...]
-        # O a veces: [cx, cy, w, h, obj_score, cls_scores...]
-        # Asumimos estructura directa de onnx simplificado:
-        
         for det in preds:
-            # Los primeros 4 son bbox, el resto son scores
+            # NanoDet format: [cx, cy, w, h, scores...]
             scores = det[4:]
             class_id = np.argmax(scores)
             confidence = scores[class_id]
@@ -79,7 +105,6 @@ class HitDetectionService:
             if confidence > self.prob_threshold:
                 cx, cy, w, h = det[0], det[1], det[2], det[3]
                 
-                # Restaurar coordenadas
                 x = int((cx - w/2) * scale_w)
                 y = int((cy - h/2) * scale_h)
                 width = int(w * scale_w)
@@ -89,14 +114,11 @@ class HitDetectionService:
                 confidences.append(float(confidence))
                 class_ids.append(class_id)
 
-        # NMS (Non-Maximum Suppression) usando OpenCV (Muy rápido en CPU)
         indices = cv2.dnn.NMSBoxes(boxes, confidences, self.prob_threshold, self.iou_threshold)
         
         results = []
         if len(indices) > 0:
             for i in indices.flatten():
-                # Si solo te interesa detectar "personas" (clase 0 en COCO)
-                # puedes filtrar aquí: if class_ids[i] == 0:
                 results.append({
                     "box": boxes[i],
                     "confidence": confidences[i],
@@ -136,17 +158,13 @@ class HitDetectionService:
 
             img_h, img_w = frame.shape[:2]
             
-            # 1. Inferencia
             blob = self._preprocess(frame)
             self._net.setInput(blob)
             outputs = self._net.forward(self._net.getUnconnectedOutLayersNames())
             
-            # 2. Interpretar resultados
             detections = self._postprocess(outputs, img_w, img_h)
             
-            # Lógica de "HIT":
-            # Si NanoDet encuentra algo con confianza > umbral, es un hit.
-            # Tomamos la confianza más alta encontrada en el frame
+            # Lógica de HIT: detección con confianza mayor al umbral
             max_conf = 0.0
             if detections:
                 max_conf = max([d['confidence'] for d in detections])
@@ -157,13 +175,11 @@ class HitDetectionService:
                 hits_detected += 1
                 hit_frames.append(frame_idx)
 
-            # Logs limitados para no saturar
-            if len(debug_logs) < 10:
+            if len(debug_logs) < 5:
                 debug_logs.append({
                     "frame": frame_idx,
-                    "hit_probability": round(max_conf, 4),
-                    "is_hit": is_hit,
-                    "detections_count": len(detections)
+                    "hit_conf": round(max_conf, 4),
+                    "is_hit": is_hit
                 })
 
             processed += 1
