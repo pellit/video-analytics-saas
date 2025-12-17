@@ -142,11 +142,11 @@ class HitDetectionService:
         os.makedirs(self.models_dir, exist_ok=True)
         # 1. YOLOv8n (Detection) - Fuente Oficial
         if not os.path.exists(self.det_path):
-            self._download("https://github.com/ultralytics/assets/releases/download/v8.2.0/yolov8n.onnx", self.det_path)
+            self._download("https://huggingface.co/SpotLab/YOLOv8Detection/resolve/3005c6751fb19cdeb6b10c066185908faf66a097/yolov8n.onnx?download=true", self.det_path)
         
         # 2. YOLOv8n-Pose - Fuente Oficial
         if not os.path.exists(self.pose_path):
-            self._download("https://github.com/ultralytics/assets/releases/download/v8.2.0/yolov8n-pose.onnx", self.pose_path)
+            self._download("https://huggingface.co/Xenova/yolov8-pose-onnx/resolve/main/yolov8n-pose.onnx?download=true", self.pose_path)
             
         # 3. MiDaS
         if not os.path.exists(self.midas_path):
