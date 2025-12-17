@@ -17,8 +17,6 @@ class YoloBaseWrapper:
 
     def load_model(self, name="YOLO"):
         print(f"[{name}] 📂 Cargando modelo: {os.path.basename(self.model_path)}...")
-        
-        # Validación de archivo
         if not os.path.exists(self.model_path) or os.path.getsize(self.model_path) < 1000:
             print(f"[{name}] ❌ Archivo no encontrado o corrupto: {self.model_path}")
             return False
@@ -50,15 +48,12 @@ class YoloDetWrapper(YoloBaseWrapper):
         self.net.setInput(blob)
         outputs = self.net.forward()
         
-        # [1, 84, 8400]
         preds = np.squeeze(outputs[0]).T
         
-        # Validación de dimensiones
         if preds.shape[1] > 36: 
-            # Clase 32 = Sports Ball (Score en índice 32+4)
+            # Clase 32 = Sports Ball
             ball_scores = preds[:, 32+4] 
             keep_idxs = ball_scores > self.conf_thres
-            
             preds = preds[keep_idxs]
             scores = ball_scores[keep_idxs]
         else:
@@ -128,12 +123,10 @@ class YoloPoseWrapper(YoloBaseWrapper):
             people.append({"keypoints": kpts_scaled})
         return people
 
-# --- SERVICIO PRINCIPAL ---
+# --- SERVICIO PRINCIPAL (FÚTBOL) ---
 class HitDetectionService:
     def __init__(self, default_model_dirs: List[str] = None):
         self.models_dir = "/app/ai_engine/models"
-        
-        # Rutas locales
         self.det_path = os.path.join(self.models_dir, "yolov8n.onnx")       
         self.pose_path = os.path.join(self.models_dir, "yolov8n-pose.onnx")  
         self.midas_path = os.path.join(self.models_dir, "midas_v21_small.onnx") 
@@ -144,12 +137,11 @@ class HitDetectionService:
         # MiDaS suele ser estable en Github
         self.midas_url = "https://github.com/isl-org/MiDaS/releases/download/v2_1/model-small.onnx"
 
-        print(f"\n[DEBUG] Iniciando HitDetectionService (Mirrors HF)...")
+        print(f"\n[DEBUG] Iniciando Servicio de Fútbol (YOLOv8n + Pose + MiDaS)...")
         
-        # 1. Descargar
         self._check_and_download_models()
 
-        # 2. Cargar Modelos
+        # Cargar Modelos
         self.det_model = YoloDetWrapper(self.det_path, conf_thres=0.30)
         self.det_model.load_model("YOLO-BALL")
         
@@ -159,21 +151,17 @@ class HitDetectionService:
         self.midas_net = None
         if os.path.exists(self.midas_path):
             try:
-                print(f"[MiDaS] Cargando {os.path.basename(self.midas_path)}...")
                 self.midas_net = cv2.dnn.readNet(self.midas_path)
                 self.midas_net.setPreferableBackend(cv2.dnn.DNN_BACKEND_CUDA)
                 self.midas_net.setPreferableTarget(cv2.dnn.DNN_TARGET_CUDA)
-                print("[MiDaS] ✅ Cargado en GPU.")
+                print("[MiDaS] ✅ Cargado.")
             except Exception as e:
                 print(f"[MiDaS] ❌ Error cargando: {e}")
 
     def _download_file(self, url, path):
-        """Función unificada para descargar archivos"""
-        # Si existe y tiene tamaño lógico (>100KB), asumimos que está bien
         if os.path.exists(path) and os.path.getsize(path) > 100000:
             return 
-            
-        print(f"⏳ Descargando {os.path.basename(path)} desde espejo...")
+        print(f"⏳ Descargando {os.path.basename(path)}...")
         try:
             opener = urllib.request.build_opener()
             opener.addheaders = [('User-Agent', 'Mozilla/5.0')]
@@ -199,11 +187,14 @@ class HitDetectionService:
         depth = cv2.resize(depth, (w, h))
         return cv2.normalize(depth, None, 0, 255, cv2.NORM_MINMAX, cv2.CV_8U)
 
-    def analyze_scene(self, balls, people, depth_map):
+    def analyze_soccer_scene(self, balls, people, depth_map):
+        """
+        Lógica de Fútbol: Pies (OK), Manos (Falta), Control (Proximidad).
+        """
         events = []
         if not balls or not people or depth_map is None: return events
 
-        # Pelota más probable
+        # Pelota principal
         balls.sort(key=lambda x: x[4], reverse=True)
         bx, by, bw, bh, _ = balls[0]
         ball_center = (bx + bw//2, by + bh//2)
@@ -213,34 +204,56 @@ class HitDetectionService:
 
         for p in people:
             kpts = p['keypoints']
-            # 9: Wrist L, 10: Wrist R
-            wrists = [("Izquierda", kpts[9]), ("Derecha", kpts[10])]
+            
+            # --- ZONA DE IMPACTO (Pies y Rodillas) ---
+            # 15: Tobillo Izq, 16: Tobillo Der
+            # 13: Rodilla Izq, 14: Rodilla Der
+            impact_points = [
+                ("Pie Izq", kpts[15]), ("Pie Der", kpts[16]),
+                ("Rodilla Izq", kpts[13]), ("Rodilla Der", kpts[14])
+            ]
 
-            for side, w in wrists:
-                if w['conf'] < 0.5: continue
+            # --- ZONA PROHIBIDA (Manos) ---
+            # 9: Muñeca Izq, 10: Muñeca Der
+            hands = [("MANO Izq", kpts[9]), ("MANO Der", kpts[10])]
+
+            # 1. Chequear PIES (Toque/Control)
+            for part_name, kp in impact_points:
+                if kp['conf'] < 0.5: continue
                 
-                dist_2d = np.linalg.norm(np.array([w['x'], w['y']]) - np.array(ball_center))
+                dist_2d = np.linalg.norm(np.array([kp['x'], kp['y']]) - np.array(ball_center))
                 try: 
-                    wrist_z = depth_map[w['y'], w['x']]
-                    dist_z = abs(int(ball_z) - int(wrist_z))
+                    kp_z = depth_map[kp['y'], kp['x']]
+                    dist_z = abs(int(ball_z) - int(kp_z))
                 except: continue
 
-                # LÓGICA DE GOLPE
-                if dist_2d < 120 and dist_z < 40:
-                    events.append(f"Golpe Mano {side}")
+                # Umbrales
+                if dist_2d < 80 and dist_z < 40:
+                    events.append(f"Toque {part_name}")
+                elif dist_2d < 150 and dist_z < 50:
+                    events.append(f"Control {part_name} (Cerca)")
+
+            # 2. Chequear MANOS (Faltas)
+            for part_name, kp in hands:
+                if kp['conf'] < 0.5: continue
+                dist_2d = np.linalg.norm(np.array([kp['x'], kp['y']]) - np.array(ball_center))
+                try: 
+                    kp_z = depth_map[kp['y'], kp['x']]
+                    dist_z = abs(int(ball_z) - int(kp_z))
+                except: continue
+
+                if dist_2d < 90 and dist_z < 40:
+                    events.append(f"⚠️ {part_name} (FALTA)")
 
         return events
 
     def run_on_video(self, video_path, frame_stride=3, max_frames=200, hit_threshold=0.4, return_images=True):
         cap = cv2.VideoCapture(video_path)
         
-        # --- NUEVO: Obtener duración del video para el cálculo de porcentaje ---
+        # Stats Video
         fps_video = cap.get(cv2.CAP_PROP_FPS)
-        total_frames_video = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        if fps_video > 0:
-            video_duration_s = total_frames_video / fps_video
-        else:
-            video_duration_s = 0
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        video_duration_s = total_frames / fps_video if fps_video > 0 else 0
             
         frame_idx = 0
         processed = 0
@@ -259,41 +272,57 @@ class HitDetectionService:
             
             h, w = frame.shape[:2]
 
-            # 1. BLOB compartido
+            # 1. Detección (Blob compartido)
             shared_blob = self.det_model.preprocess(frame)
-            
-            # 2. Inferencia (Con protección si los modelos no cargaron)
             balls = self.det_model.detect_ball(shared_blob, w, h)
             people = self.pose_model.detect_pose(shared_blob, w, h)
             
+            # 2. Análisis Lógico
             events = []
+            depth_map = None
             if len(balls) > 0 and len(people) > 0:
                 depth_map = self.get_depth_map(frame)
-                events = self.analyze_scene(balls, people, depth_map)
+                events = self.analyze_soccer_scene(balls, people, depth_map)
 
-            # Debug logs
-            hit_found = len(events) > 0
+            # Detectamos "Acción" si hay eventos (Toque, Control o Mano)
+            action_detected = len(events) > 0
+            
             debug_logs.append({
                 "frame": frame_idx,
                 "balls": len(balls),
                 "people": len(people),
-                "hit": hit_found,
+                "action": action_detected,
                 "events": events
             })
 
-            # Generar imagen si se pide
-            if return_images and (hit_found or len(images_b64) < 5):
+            # Generar imagen si hay acción o para muestreo
+            if return_images and (action_detected or len(images_b64) < 5):
                 vis = frame.copy()
+                
+                # Pelota
                 for b in balls:
                     cv2.rectangle(vis, (b[0], b[1]), (b[0]+b[2], b[1]+b[3]), (0,0,255), 2)
+                    # cv2.putText(vis, "Ball", (b[0], b[1]-5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0,0,255), 1)
+
+                # Esqueleto Fútbol
                 for p in people:
                     kpts = p['keypoints']
-                    rw, lw = kpts[10], kpts[9]
-                    if rw['conf']>0.5: cv2.circle(vis, (rw['x'], rw['y']), 5, (0,255,0), -1)
-                    if lw['conf']>0.5: cv2.circle(vis, (lw['x'], lw['y']), 5, (0,255,0), -1)
-                
-                if hit_found:
-                    cv2.putText(vis, events[0], (50, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0,255,255), 2)
+                    # Pies (15, 16) - Verde
+                    for idx in [15, 16]: 
+                        kp = kpts[idx]
+                        if kp['conf']>0.5: cv2.circle(vis, (kp['x'], kp['y']), 6, (0,255,0), -1)
+                    # Manos (9, 10) - Rojo (Alerta)
+                    for idx in [9, 10]: 
+                        kp = kpts[idx]
+                        if kp['conf']>0.5: cv2.circle(vis, (kp['x'], kp['y']), 5, (0,0,255), 2)
+
+                if action_detected:
+                    # Texto del evento
+                    color = (0, 255, 0) # Verde por defecto
+                    if "FALTA" in events[0]: color = (0, 0, 255) # Rojo si es mano
+                    elif "Control" in events[0]: color = (0, 255, 255) # Amarillo si es control
+                    
+                    cv2.putText(vis, events[0], (30, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
 
                 _, buf = cv2.imencode('.jpg', vis)
                 b64 = base64.b64encode(buf).decode('utf-8')
@@ -304,26 +333,18 @@ class HitDetectionService:
 
         cap.release()
         
-        # --- CÁLCULOS FINALES ---
         end_time = time.time()
-        total_processing_time = end_time - start_time
-        
-        # Calculo del porcentaje solicitado
-        # (Tiempo Proceso / Duración Video) * 100
-        # Ejemplo: Video 10s, Proceso 60s -> 600%
-        processing_load_percent = 0
-        if video_duration_s > 0:
-            processing_load_percent = (total_processing_time / video_duration_s) * 100
+        total_time = end_time - start_time
+        load_pct = (total_time / video_duration_s) * 100 if video_duration_s > 0 else 0
 
         return {
             "success": True,
             "performance": {
-                "fps_analysis": round(processed/total_processing_time, 2) if total_processing_time > 0 else 0,
-                "total_processing_time_s": round(total_processing_time, 2),
-                "video_duration_s": round(video_duration_s, 2),
-                "processing_load_percent": round(processing_load_percent, 2) # <--- TU NUEVO PARAMETRO
+                "fps_analysis": round(processed/total_time, 2) if total_time > 0 else 0,
+                "total_time_s": round(total_time, 2),
+                "load_pct": round(load_pct, 2)
             },
-            "hits_detected": sum(1 for l in debug_logs if l['hit']),
-            "hit_images": images_b64,
-            "logs": debug_logs[:20]
+            "actions_detected": sum(1 for l in debug_logs if l['action']),
+            "events_log": [l for l in debug_logs if l['action']], # Solo frames con acción
+            "hit_images": images_b64
         }
