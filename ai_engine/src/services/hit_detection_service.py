@@ -139,7 +139,7 @@ class HitDetectionService:
         self.midas_path = os.path.join(self.models_dir, "midas_v21_small.onnx") 
 
         # --- URLs NUEVAS (HuggingFace Mirrors - Mucho más estables) ---
-        self.det_url = "https://github.com/pellit/video-analytics-saas/raw/dfeb33e7087851c51c8996a95aaec6de03e04e4c/ai_engine/yolov8s.onnx"
+        self.det_url = "https://github.com/pellit/video-analytics-saas/raw/796d243e692b5b18f0344b033a152dcdd6326f36/ai_engine/yolov8n.onnx"
         self.pose_url = "https://huggingface.co/Xenova/yolov8-pose-onnx/resolve/main/yolov8n-pose.onnx?download=true"
         # MiDaS suele ser estable en Github
         self.midas_url = "https://github.com/isl-org/MiDaS/releases/download/v2_1/model-small.onnx"
