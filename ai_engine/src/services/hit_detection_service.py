@@ -6,7 +6,7 @@ import time
 import base64
 from typing import Any, Dict, List
 
-# --- CLASE BASE PARA YOLOV8 (Compartida) ---
+# --- CLASE BASE YOLOV8 (Compartida) ---
 class YoloBaseWrapper:
     def __init__(self, model_path, conf_thres=0.4, iou_thres=0.5):
         self.model_path = model_path
@@ -18,16 +18,9 @@ class YoloBaseWrapper:
     def load_model(self, name="YOLO"):
         print(f"[{name}] 📂 Cargando modelo: {os.path.basename(self.model_path)}...")
         
-        # 1. Autocuración: Verificar si el archivo es basura (muy pequeño)
-        if os.path.exists(self.model_path):
-            size = os.path.getsize(self.model_path)
-            if size < 100000: # Menos de 100KB es sospechoso
-                print(f"[{name}] ⚠️ Archivo corrupto detectado ({size} bytes). Borrando para re-descargar...")
-                os.remove(self.model_path)
-                return False # Forzará re-descarga si está implementado fuera
-        
-        if not os.path.exists(self.model_path):
-            print(f"[{name}] ❌ El archivo no existe: {self.model_path}")
+        # Validación de archivo
+        if not os.path.exists(self.model_path) or os.path.getsize(self.model_path) < 1000:
+            print(f"[{name}] ❌ Archivo no encontrado o corrupto: {self.model_path}")
             return False
 
         try:
@@ -35,45 +28,45 @@ class YoloBaseWrapper:
             self.net.setPreferableBackend(cv2.dnn.DNN_BACKEND_CUDA)
             self.net.setPreferableTarget(cv2.dnn.DNN_TARGET_CUDA)
             
-            # Warmup (Prueba de fuego para ver si funciona la GPU)
+            # Warmup
             dummy = np.zeros((1, 3, 640, 640), dtype=np.float32)
             self.net.setInput(dummy)
             self.net.forward()
-            print(f"[{name}] ✅ Modelo cargado y probado en GPU.")
+            print(f"[{name}] ✅ Modelo cargado en GPU.")
             return True
         except Exception as e:
             print(f"[{name}] ❌ Error crítico cargando modelo: {e}")
-            self.net = None # Aseguramos que sea None
+            self.net = None
             return False
 
     def preprocess(self, img):
-        # Normalización estándar YOLO
         return cv2.dnn.blobFromImage(img, 1/255.0, self.input_size, swapRB=True, crop=False)
 
 # --- WRAPPER DETECCIÓN (Pelota) ---
 class YoloDetWrapper(YoloBaseWrapper):
     def detect_ball(self, blob, img_w, img_h):
-        # 🛡️ GUARDIA: Si el modelo falló al cargar, devolvemos lista vacía y no crasheamos
-        if self.net is None: 
-            return []
+        if self.net is None: return []
 
         self.net.setInput(blob)
         outputs = self.net.forward()
         
-        # Salida YOLOv8 Det: [1, 84, 8400]
+        # [1, 84, 8400]
         preds = np.squeeze(outputs[0]).T
         
-        # Clase 32 = Sports Ball
-        ball_scores = preds[:, 32+4] 
-        keep_idxs = ball_scores > self.conf_thres
-        
-        preds = preds[keep_idxs]
-        scores = ball_scores[keep_idxs]
+        # Validación de dimensiones
+        if preds.shape[1] > 36: 
+            # Clase 32 = Sports Ball (Score en índice 32+4)
+            ball_scores = preds[:, 32+4] 
+            keep_idxs = ball_scores > self.conf_thres
+            
+            preds = preds[keep_idxs]
+            scores = ball_scores[keep_idxs]
+        else:
+            return []
         
         if len(scores) == 0: return []
 
         boxes = preds[:, :4]
-        # xywh -> xyxy
         boxes_xywh = boxes.copy()
         boxes_xywh[:, 0] = boxes[:, 0] - boxes[:, 2] / 2
         boxes_xywh[:, 1] = boxes[:, 1] - boxes[:, 3] / 2
@@ -97,14 +90,11 @@ class YoloDetWrapper(YoloBaseWrapper):
 # --- WRAPPER POSE (Persona) ---
 class YoloPoseWrapper(YoloBaseWrapper):
     def detect_pose(self, blob, img_w, img_h):
-        # 🛡️ GUARDIA
-        if self.net is None: 
-            return []
+        if self.net is None: return []
 
         self.net.setInput(blob)
         outputs = self.net.forward()
         
-        # Salida YOLOv8 Pose: [1, 56, 8400]
         preds = np.squeeze(outputs[0]).T
         scores = preds[:, 4]
         keep_idxs = scores > self.conf_thres
@@ -142,24 +132,25 @@ class YoloPoseWrapper(YoloBaseWrapper):
 class HitDetectionService:
     def __init__(self, default_model_dirs: List[str] = None):
         self.models_dir = "/app/ai_engine/models"
+        
+        # Rutas locales
         self.det_path = os.path.join(self.models_dir, "yolov8n.onnx")       
         self.pose_path = os.path.join(self.models_dir, "yolov8n-pose.onnx")  
         self.midas_path = os.path.join(self.models_dir, "midas_v21_small.onnx") 
 
-        # URLs
-        self.det_url = "https://github.com/ultralytics/assets/releases/download/v8.2.0/yolov8n.onnx"
-        self.pose_url = "https://github.com/ultralytics/assets/releases/download/v8.2.0/yolov8n-pose.onnx"
+        # --- URLs NUEVAS (HuggingFace Mirrors - Mucho más estables) ---
+        self.det_url = "https://huggingface.co/Akram06/YOLOv8/resolve/main/yolov8n.onnx"
+        self.pose_url = "https://huggingface.co/Xenova/yolov8-pose-onnx/resolve/main/yolov8n-pose.onnx?download=true"
+        # MiDaS suele ser estable en Github
         self.midas_url = "https://github.com/isl-org/MiDaS/releases/download/v2_1/model-small.onnx"
 
-        print(f"\n[DEBUG] Iniciando HitDetectionService (Versión Robusta)...")
+        print(f"\n[DEBUG] Iniciando HitDetectionService (Mirrors HF)...")
         
-        # 1. Descargar (con reintentos)
-        self._ensure_model(self.det_url, self.det_path)
-        self._ensure_model(self.pose_url, self.pose_path)
-        self._ensure_model(self.midas_url, self.midas_path)
+        # 1. Descargar
+        self._check_and_download_models()
 
         # 2. Cargar Modelos
-        self.det_model = YoloDetWrapper(self.det_path, conf_thres=0.30) # Umbral más permisivo
+        self.det_model = YoloDetWrapper(self.det_path, conf_thres=0.30)
         self.det_model.load_model("YOLO-BALL")
         
         self.pose_model = YoloPoseWrapper(self.pose_path, conf_thres=0.5)
@@ -168,22 +159,21 @@ class HitDetectionService:
         self.midas_net = None
         if os.path.exists(self.midas_path):
             try:
+                print(f"[MiDaS] Cargando {os.path.basename(self.midas_path)}...")
                 self.midas_net = cv2.dnn.readNet(self.midas_path)
                 self.midas_net.setPreferableBackend(cv2.dnn.DNN_BACKEND_CUDA)
                 self.midas_net.setPreferableTarget(cv2.dnn.DNN_TARGET_CUDA)
-                print("[MiDaS] ✅ Cargado.")
-            except:
-                print("[MiDaS] ❌ Falló carga.")
+                print("[MiDaS] ✅ Cargado en GPU.")
+            except Exception as e:
+                print(f"[MiDaS] ❌ Error cargando: {e}")
 
-    def _ensure_model(self, url, path):
-        """Descarga inteligente: verifica tamaño y reintenta."""
-        if os.path.exists(path):
-            if os.path.getsize(path) > 100000: return # OK
-            else: 
-                print(f"[Descarga] 🗑️ Eliminando archivo corrupto: {path}")
-                os.remove(path)
-        
-        print(f"⏳ Descargando {os.path.basename(path)}...")
+    def _download_file(self, url, path):
+        """Función unificada para descargar archivos"""
+        # Si existe y tiene tamaño lógico (>100KB), asumimos que está bien
+        if os.path.exists(path) and os.path.getsize(path) > 100000:
+            return 
+            
+        print(f"⏳ Descargando {os.path.basename(path)} desde espejo...")
         try:
             opener = urllib.request.build_opener()
             opener.addheaders = [('User-Agent', 'Mozilla/5.0')]
@@ -191,7 +181,13 @@ class HitDetectionService:
             urllib.request.urlretrieve(url, path)
             print("✅ Descarga OK.")
         except Exception as e:
-            print(f"❌ Error descarga: {e}")
+            print(f"❌ Error descargando {url}: {e}")
+
+    def _check_and_download_models(self):
+        os.makedirs(self.models_dir, exist_ok=True)
+        self._download_file(self.det_url, self.det_path)
+        self._download_file(self.pose_url, self.pose_path)
+        self._download_file(self.midas_url, self.midas_path)
 
     def get_depth_map(self, frame):
         if self.midas_net is None: return None
@@ -237,6 +233,15 @@ class HitDetectionService:
 
     def run_on_video(self, video_path, frame_stride=3, max_frames=200, hit_threshold=0.4, return_images=True):
         cap = cv2.VideoCapture(video_path)
+        
+        # --- NUEVO: Obtener duración del video para el cálculo de porcentaje ---
+        fps_video = cap.get(cv2.CAP_PROP_FPS)
+        total_frames_video = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        if fps_video > 0:
+            video_duration_s = total_frames_video / fps_video
+        else:
+            video_duration_s = 0
+            
         frame_idx = 0
         processed = 0
         images_b64 = []
@@ -277,7 +282,7 @@ class HitDetectionService:
             })
 
             # Generar imagen si se pide
-            if return_images and (hit_found or len(images_b64) < 10):
+            if return_images and (hit_found or len(images_b64) < 5):
                 vis = frame.copy()
                 for b in balls:
                     cv2.rectangle(vis, (b[0], b[1]), (b[0]+b[2], b[1]+b[3]), (0,0,255), 2)
@@ -298,12 +303,27 @@ class HitDetectionService:
             frame_idx += 1
 
         cap.release()
-        total_time = time.time() - start_time
         
+        # --- CÁLCULOS FINALES ---
+        end_time = time.time()
+        total_processing_time = end_time - start_time
+        
+        # Calculo del porcentaje solicitado
+        # (Tiempo Proceso / Duración Video) * 100
+        # Ejemplo: Video 10s, Proceso 60s -> 600%
+        processing_load_percent = 0
+        if video_duration_s > 0:
+            processing_load_percent = (total_processing_time / video_duration_s) * 100
+
         return {
             "success": True,
-            "performance": {"fps": round(processed/total_time, 2) if total_time > 0 else 0},
+            "performance": {
+                "fps_analysis": round(processed/total_processing_time, 2) if total_processing_time > 0 else 0,
+                "total_processing_time_s": round(total_processing_time, 2),
+                "video_duration_s": round(video_duration_s, 2),
+                "processing_load_percent": round(processing_load_percent, 2) # <--- TU NUEVO PARAMETRO
+            },
             "hits_detected": sum(1 for l in debug_logs if l['hit']),
             "hit_images": images_b64,
-            "logs": debug_logs[:20] # Limitamos logs para no saturar
+            "logs": debug_logs[:20]
         }
