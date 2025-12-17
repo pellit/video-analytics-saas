@@ -548,7 +548,6 @@ def face_video_summary(
     if not indices:
         raise HTTPException(400, "No hay frames para muestrear en este video")
 
-    distinct_embeddings: List[List[float]] = []
     distinct_faces: List[Dict[str, Any]] = []
     samples: List[Dict[str, Any]] = []
 
@@ -578,9 +577,9 @@ def face_video_summary(
             bbox = detected.get("bbox")
             score = float(detected.get("score", 0.0))
             matched_idx = None
-            for di, de in enumerate(distinct_embeddings):
+            for di, distinct in enumerate(distinct_faces):
                 try:
-                    similarity = face_service.compare_embeddings(de, embedding)
+                    similarity = face_service.compare_embeddings(distinct["embedding"], embedding)
                 except Exception:
                     similarity = 0.0
                 if similarity >= match_threshold:
@@ -595,16 +594,16 @@ def face_video_summary(
                 crop = frame[y1:y2, x1:x2]
                 if crop is None or crop.size == 0:
                     crop = frame
-                matched_idx = len(distinct_embeddings)
-                distinct_embeddings.append(embedding)
+                matched_idx = len(distinct_faces)
                 distinct_faces.append({
-                    "face_id": matched_idx,
+                    "face_id": matched_idx + 1,
+                    "embedding": embedding,
                     "image": _encode_image_to_base64(crop),
                     "first_frame": idx,
                     "occurrences": 1
                 })
             sample_entry["faces"].append({
-                "face_id": matched_idx,
+                "face_id": distinct_faces[matched_idx]["face_id"],
                 "score": score,
                 "bbox": bbox
             })
