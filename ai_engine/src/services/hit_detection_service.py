@@ -12,7 +12,7 @@ from typing import Any, Dict, List
 # 0. WRAPPER PARA API LOCAL (NUEVO)
 # ==========================================
 class ExternalApiWrapper:
-    def __init__(self, base_url="http://localhost:5050"):
+    def __init__(self, base_url="http://192.168.0.37:5050"):
         self.base_url = base_url
 
     def segment_image(self, image_b64):
@@ -150,7 +150,7 @@ class HitDetectionService:
         self.midas_path = os.path.join(self.models_dir, "midas_v21_small.onnx") 
 
         # Configuración API Local
-        self.api = ExternalApiWrapper(base_url="http://localhost:5050")
+        self.api = ExternalApiWrapper(base_url="http://192.168.0.37:5050")
 
         self.det_url = "https://github.com/pellit/video-analytics-saas/raw/796d243e692b5b18f0344b033a152dcdd6326f36/ai_engine/yolov8n.onnx"
         self.pose_url = "https://huggingface.co/Xenova/yolov8-pose-onnx/resolve/main/yolov8n-pose.onnx?download=true"
