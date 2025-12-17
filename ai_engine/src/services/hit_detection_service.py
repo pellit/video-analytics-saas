@@ -25,12 +25,20 @@ class HitDetectionService:
         self.base_url = "https://raw.githubusercontent.com/xlite-dev/nanodet-toolkit/main/examples/hub/onnx/cv/"
         
         self.files_to_download = [
-            "nanodet-plus-m_320.onnx",
-            "nanodet-plus-m_416.onnx",
+            "nanodet-EfficientNet-Lite1_416.onnx",
+            "nanodet-EfficientNet-Lite2_512.onnx",
+            "nanodet-RepVGG-A0_416.onnx",
             "nanodet-plus-m-1.5x_320.onnx",
             "nanodet-plus-m-1.5x_416.onnx",
-            "nanodet-plus-shufflenet_v2_320.onnx",
-            "nanodet-plus-shufflenet_v2_416.onnx"
+            "nanodet-plus-m_320.onnx",
+            "nanodet-plus-m_416.onnx",
+            "nanodet_g.onnx",
+            "nanodet_m.onnx",
+            "nanodet_m_0.5x.onnx",
+            "nanodet_m_1.5x.onnx",
+            "nanodet_m_1.5x_416.onnx",
+            "nanodet_m_416.onnx",
+            "nanodet_t.onnx
         ]
         
         self._net = None
@@ -80,21 +88,20 @@ class HitDetectionService:
                 pass
 
     def _load_model(self):
-        if not os.path.exists(self.model_path):
-            # Si el modelo target falló al descargar, intentamos fallback a cualquiera que exista
-            print(f"[HitDetect] 🛑 El modelo objetivo {self.model_path} no existe. Buscando alternativa...")
-            found = False
-            for f in self.files_to_download:
-                p = os.path.join(self.models_dir, f)
-                if os.path.exists(p) and os.path.getsize(p) > 1000000:
-                    self.model_path = p
-                    if "320" in f: self.input_shape = (320, 320)
-                    else: self.input_shape = (416, 416)
-                    print(f"[HitDetect] ⚠️ Usando fallback: {self.model_path}")
-                    found = True
-                    break
-            if not found:
-                raise RuntimeError("No se pudo descargar ningún modelo válido. Verifica tu conexión.")
+            print(f"[HitDetect] Cargando red en CUDA...")
+            try:
+                self._net = cv2.dnn.readNet(self.model_path)
+                self._net.setPreferableBackend(cv2.dnn.DNN_BACKEND_CUDA)
+                self._net.setPreferableTarget(cv2.dnn.DNN_TARGET_CUDA)
+                
+                # Calentamiento (Warm-up) para que el primer frame real no sea lento
+                dummy = np.zeros((1, 3, 416, 416), dtype=np.float32)
+                self._net.setInput(dummy)
+                self._net.forward(self._net.getUnconnectedOutLayersNames())
+                print("[HitDetect] 🚀 Modelo listo y calentado en GPU.")
+            except Exception as e:
+                print(f"[HitDetect] Error fatal cargando modelo: {e}")
+                raise e
 
         try:
             print(f"[HitDetect] Cargando red neuronal: {os.path.basename(self.model_path)}...")
@@ -107,57 +114,65 @@ class HitDetectionService:
             raise e
 
     def _preprocess(self, image):
-        blob = cv2.dnn.blobFromImage(
-            image, 
-            scalefactor=1.0, 
-            size=self.input_shape,
-            mean=(103.53, 116.28, 123.675),
-            swapRB=False,
-            crop=False
-        )
-        return blob
+            # --- CORRECCIÓN CRÍTICA ---
+            # NanoDet-Plus requiere: (Input - Mean) / Std
+            # Mean = [103.53, 116.28, 123.675]
+            # Std  = [57.375, 57.12, 58.395]
+            # Por tanto, scalefactor debe ser 1 / 57.375 ≈ 0.017429
+            
+            blob = cv2.dnn.blobFromImage(
+                image, 
+                scalefactor=0.017429,  # <--- AQUÍ ESTABA EL ERROR (Antes era 1.0)
+                size=self.input_shape,
+                mean=(103.53, 116.28, 123.675),
+                swapRB=False, # NanoDet espera BGR si se usa cv2
+                crop=False
+            )
+            return blob
 
     def _postprocess(self, outputs, img_w, img_h):
-        preds = outputs[0]
-        if len(preds.shape) == 3:
-            preds = preds[0]
-        
-        scale_w = img_w / self.input_shape[0]
-        scale_h = img_h / self.input_shape[1]
+            # Manejo robusto de la salida
+            preds = outputs[0]
+            if len(preds.shape) == 3:
+                preds = preds[0]
+            
+            scale_w = img_w / self.input_shape[0]
+            scale_h = img_h / self.input_shape[1]
 
-        class_ids = []
-        confidences = []
-        boxes = []
+            class_ids = []
+            confidences = []
+            boxes = []
 
-        for det in preds:
-            # NanoDet format: [cx, cy, w, h, scores...]
-            scores = det[4:]
-            class_id = np.argmax(scores)
-            confidence = scores[class_id]
+            for det in preds:
+                # Formato: [cx, cy, w, h, score_cls1, score_cls2...]
+                scores = det[4:]
+                class_id = np.argmax(scores)
+                confidence = scores[class_id]
 
-            if confidence > self.prob_threshold:
-                cx, cy, w, h = det[0], det[1], det[2], det[3]
-                
-                x = int((cx - w/2) * scale_w)
-                y = int((cy - h/2) * scale_h)
-                width = int(w * scale_w)
-                height = int(h * scale_h)
+                if confidence > self.prob_threshold:
+                    cx, cy, w, h = det[0], det[1], det[2], det[3]
+                    
+                    # Coordenadas
+                    x = int((cx - w/2) * scale_w)
+                    y = int((cy - h/2) * scale_h)
+                    width = int(w * scale_w)
+                    height = int(h * scale_h)
 
-                boxes.append([x, y, width, height])
-                confidences.append(float(confidence))
-                class_ids.append(class_id)
+                    boxes.append([x, y, width, height])
+                    confidences.append(float(confidence))
+                    class_ids.append(class_id)
 
-        indices = cv2.dnn.NMSBoxes(boxes, confidences, self.prob_threshold, self.iou_threshold)
-        
-        results = []
-        if len(indices) > 0:
-            for i in indices.flatten():
-                results.append({
-                    "box": boxes[i],
-                    "confidence": confidences[i],
-                    "class_id": class_ids[i]
-                })
-        return results
+            indices = cv2.dnn.NMSBoxes(boxes, confidences, self.prob_threshold, self.iou_threshold)
+            
+            results = []
+            if len(indices) > 0:
+                for i in indices.flatten():
+                    results.append({
+                        "box": boxes[i],
+                        "confidence": confidences[i],
+                        "class_id": class_ids[i]
+                    })
+            return results
 
     def run_on_video(
         self,
