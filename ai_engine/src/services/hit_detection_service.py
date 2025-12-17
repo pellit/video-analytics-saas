@@ -1,287 +1,128 @@
+import cv2
+import numpy as np
 import os
 import traceback
 from typing import Any, Dict, List
-
-import cv2
-import numpy as np
 from fastapi import HTTPException
 
-
-_TOPK_REGISTERED = False
-
-
-def _register_topk_layer():
-    """
-    OpenCV 4.10 en Jetson no implementa TopK en el módulo DNN.
-    Registramos una versión en Python para que readNetFromONNX no falle.
-    """
-    global _TOPK_REGISTERED
-    if _TOPK_REGISTERED:
-        return
-
-    class TopKLayer(cv2.dnn.Layer):
-        def __init__(self, params=None, blobs=None):
-            super().__init__(params, blobs)
-            params = params or {}
-            self.axis = int(params.get('axis', -1))
-            self.sorted = bool(params.get('sorted', 1))
-            self.k = None
-            if blobs:
-                # Algunos grafos guardan K en blobs (constante)
-                flat = blobs[0].flatten()
-                if flat.size > 0:
-                    self.k = int(flat[0])
-
-        def forward(self, inputs, outputs, internals=None):
-            if not inputs:
-                raise RuntimeError("TopK layer requires at least one input tensor")
-
-            data = inputs[0]
-            if data.size == 0:
-                outputs[0][...] = data
-                outputs[1][...] = np.zeros_like(data, dtype=np.int64)
-                return
-
-            k = self.k or 1
-            if len(inputs) > 1 and inputs[1].size > 0:
-                k = int(inputs[1].flatten()[0])
-
-            axis = self.axis
-            if axis < 0:
-                axis += data.ndim
-
-            k = max(1, min(k, data.shape[axis]))
-
-            # Seleccionamos los K índices con mayores valores en el eje indicado
-            partial = np.argpartition(-data, k - 1, axis=axis)
-            take_idx = np.take(partial, np.arange(k), axis=axis)
-            values = np.take_along_axis(data, take_idx, axis=axis)
-
-            if self.sorted:
-                order = np.argsort(-values, axis=axis)
-                take_idx = np.take_along_axis(take_idx, order, axis=axis)
-                values = np.take_along_axis(values, order, axis=axis)
-
-            outputs[0][...] = values
-            outputs[1][...] = take_idx.astype(outputs[1].dtype, copy=False)
-
-    cv2.dnn_registerLayer("TopK", TopKLayer)
-    _TOPK_REGISTERED = True
-
-
-class TensorRTHitRunner:
-    """TensorRT fallback para ejecutar hit_detect.onnx cuando OpenCV falla."""
-
-    def __init__(self, model_path: str):
-        try:
-            import tensorrt as trt  # type: ignore
-            import pycuda.driver as cuda  # type: ignore
-            import pycuda.autoinit  # type: ignore  # noqa: F401
-        except ImportError as exc:
-            raise RuntimeError(f"TensorRT no disponible en este entorno: {exc}")
-
-        self.np = np
-        self.trt = trt
-        self.cuda = cuda
-        self.logger = trt.Logger(trt.Logger.WARNING)
-        self.model_path = model_path
-        self.stream = cuda.Stream()
-
-        explicit_batch = 1 << int(trt.NetworkDefinitionCreationFlag.EXPLICIT_BATCH)
-        builder = trt.Builder(self.logger)
-        network = builder.create_network(explicit_batch)
-        parser = trt.OnnxParser(network, self.logger)
-        with open(model_path, 'rb') as f:
-            if not parser.parse(f.read()):
-                errors = []
-                for idx in range(parser.num_errors):
-                    errors.append(str(parser.get_error(idx)))
-                raise RuntimeError("Errores al parsear hit_detect.onnx:\n" + "\n".join(errors))
-        for out_idx in range(network.num_outputs - 1, -1, -1):
-            tensor = network.get_output(out_idx)
-            if tensor.name != 'output0':
-                network.unmark_output(tensor)
-
-        config = builder.create_builder_config()
-        config.max_workspace_size = 1 << 29
-        profile = builder.create_optimization_profile()
-        input_tensor = network.get_input(0)
-        min_shape = tuple(1 if dim == -1 else dim for dim in input_tensor.shape)
-        profile.set_shape(input_tensor.name, min_shape, min_shape, min_shape)
-        config.add_optimization_profile(profile)
-
-        serialized = builder.build_serialized_network(network, config)
-        if not serialized:
-            raise RuntimeError('TensorRT no pudo construir el engine para hit_detect.onnx')
-        runtime = trt.Runtime(self.logger)
-        self.engine = runtime.deserialize_cuda_engine(serialized)
-        self.context = self.engine.create_execution_context()
-
-        self.bindings = [0] * self.engine.num_bindings
-        self.host_mem = {}
-        self.device_mem = {}
-        self.input_binding_idx = None
-        self.output_binding_idx = None
-        for binding_idx in range(self.engine.num_bindings):
-            name = self.engine.get_binding_name(binding_idx)
-            dtype = trt.nptype(self.engine.get_binding_dtype(binding_idx))
-            shape = tuple(self.engine.get_binding_shape(binding_idx))
-            shape = tuple(1 if dim == -1 else dim for dim in shape)
-            shape = tuple(max(1, dim) for dim in shape)
-            size = int(trt.volume(shape))
-            host_mem = np.empty(size, dtype=dtype)
-            device_mem = cuda.mem_alloc(host_mem.nbytes)
-            self.host_mem[name] = host_mem
-            self.device_mem[name] = device_mem
-            self.bindings[binding_idx] = int(device_mem)
-            if self.engine.binding_is_input(binding_idx):
-                self.input_binding_idx = binding_idx
-                self.input_name = name
-                self.input_shape = shape
-                height = shape[2] if len(shape) > 2 else 224
-                width = shape[3] if len(shape) > 3 else height
-                self.input_hw = (width, height)
-                self.input_dtype = dtype
-            else:
-                self.output_binding_idx = binding_idx
-                self.output_name = name
-                self.output_shape = shape
-                self.output_dtype = dtype
-
-        if self.input_binding_idx is None or self.output_binding_idx is None:
-            raise RuntimeError('TensorRT engine inválido para hit_detect.onnx')
-
-    def run(self, blob: np.ndarray) -> np.ndarray:
-        arr = np.ascontiguousarray(blob.astype(self.input_dtype))
-        self.cuda.memcpy_htod_async(self.device_mem[self.input_name], arr, self.stream)
-        self.context.set_binding_shape(self.input_binding_idx, arr.shape)
-        self.context.execute_async_v2(bindings=self.bindings, stream_handle=self.stream.handle)
-        self.cuda.memcpy_dtoh_async(
-            self.host_mem[self.output_name],
-            self.device_mem[self.output_name],
-            self.stream,
-        )
-        self.stream.synchronize()
-        output = self.host_mem[self.output_name].copy()
-        return output.reshape(self.output_shape)
-
-
 class HitDetectionService:
-    """Encapsula la ejecución del modelo hit_detect.onnx."""
+    """
+    Servicio de detección usando NanoDet-Plus.
+    Reemplaza al modelo antiguo hit_detect.onnx que tenía errores de TopK.
+    """
 
-    def __init__(self, default_model_dirs: List[str]):
-        self.default_model_dirs = default_model_dirs
-        self._model_override = os.environ.get('HIT_DETECT_MODEL_PATH')
-        self._resolved_model_path = None
+    def __init__(self, default_model_dirs: List[str] = None):
+        # Buscamos el modelo NanoDet que descargamos en el Dockerfile
+        self.model_path = os.getenv("NANODET_MODEL_PATH", "/app/ai_engine/models/nanodet-plus-m_416.onnx")
+        self.input_shape = (416, 416) # Tamaño nativo de NanoDet-Plus-m
+        
+        # Umbrales
+        self.prob_threshold = 0.40  # Confianza mínima para considerar detección
+        self.iou_threshold = 0.50   # Para eliminar cajas duplicadas
+
         self._net = None
-        self._backend = None
-        self._trt_runner = None
-        self._input_hw = (640, 640)
-
-    def _resolve_model_path(self) -> str:
-        if self._resolved_model_path:
-            return self._resolved_model_path
-        candidates = []
-        if self._model_override:
-            candidates.append(self._model_override)
-        candidates.extend(self.default_model_dirs)
-        for candidate in candidates:
-            if candidate and os.path.exists(candidate):
-                self._resolved_model_path = os.path.abspath(candidate)
-                return self._resolved_model_path
-        raise HTTPException(
-            503,
-            "hit_detect.onnx no está disponible en el dispositivo. "
-            "Configura HIT_DETECT_MODEL_PATH o copia el archivo a ai_engine/models/."
-        )
-
-    def _init_trt_runner(self):
-        if self._trt_runner:
-            self._backend = 'tensorrt'
-            return
-        model_path = self._resolve_model_path()
-        try:
-            self._trt_runner = TensorRTHitRunner(model_path)
-            self._backend = 'tensorrt'
-            self._input_hw = self._trt_runner.input_hw
-            print("[HitDetect] TensorRT fallback activo.")
-            return True
-        except ImportError as exc_trt:
-            # TensorRT Python bindings no están disponibles en este entorno (p. ej. Python 3.11 en Jetson)
-            print(f"⚠️ TensorRT no disponible: {exc_trt}. Se omitirá el fallback TensorRT.")
-            traceback.print_exc()
-            self._trt_runner = None
-            self._backend = None
-            return False
-        except Exception as exc_trt:
-            # Otros errores al inicializar TensorRT: registramos y continuamos sin TensorRT
-            print(f"⚠️ Error inicializando TensorRT: {exc_trt}. Se omitirá el fallback TensorRT.")
-            traceback.print_exc()
-            self._trt_runner = None
-            self._backend = None
-            return False
+        self._load_model()
 
     def _load_model(self):
-        if self._backend in ('opencv', 'tensorrt'):
-            return
-        model_path = self._resolve_model_path()
-        print(f"[HitDetect] Loading ONNX model from {model_path}")
-        _register_topk_layer()
-        try:
-            net = cv2.dnn.readNetFromONNX(model_path)
-            net.setPreferableBackend(cv2.dnn.DNN_BACKEND_CUDA)
-            net.setPreferableTarget(cv2.dnn.DNN_TARGET_CUDA)
-            self._net = net
-            self._backend = 'opencv'
-            return
-        except Exception as exc_gpu:
-            print(f"[HitDetect] CUDA backend failed: {exc_gpu}. Falling back to CPU.")
-            traceback.print_exc()
-        try:
-            net = cv2.dnn.readNetFromONNX(model_path)
-            net.setPreferableBackend(cv2.dnn.DNN_BACKEND_DEFAULT)
-            net.setPreferableTarget(cv2.dnn.DNN_TARGET_CPU)
-            self._net = net
-            self._backend = 'opencv'
-            return
-        except Exception as exc_cpu:
-            print(f"[HitDetect] CPU backend failed: {exc_cpu}")
-            traceback.print_exc()
-            self._net = None
-            self._backend = None
-        self._init_trt_runner()
+        print(f"[HitDetect] Cargando NanoDet-Plus desde: {self.model_path}")
+        if not os.path.exists(self.model_path):
+            raise RuntimeError(f"No se encuentra el modelo en {self.model_path}")
 
-    def _forward(self, blob: np.ndarray) -> np.ndarray:
-        if self._backend == 'opencv' and self._net is not None:
-            self._net.setInput(blob)
-            try:
-                return self._net.forward()
-            except Exception as exc_forward:
-                print(f"[HitDetect] OpenCV forward failed: {exc_forward}. Switching to TensorRT.")
-                traceback.print_exc()
-                self._net = None
-                self._backend = None
-                self._init_trt_runner()
-        if self._backend == 'tensorrt' and self._trt_runner is not None:
-            return self._trt_runner.run(blob)
-        raise HTTPException(503, "No se pudo inicializar hit_detect.onnx.")
+        try:
+            self._net = cv2.dnn.readNet(self.model_path)
+            # ACTIVAR CUDA (GPU)
+            self._net.setPreferableBackend(cv2.dnn.DNN_BACKEND_CUDA)
+            self._net.setPreferableTarget(cv2.dnn.DNN_TARGET_CUDA)
+            print("[HitDetect] Modelo cargado exitosamente en GPU (CUDA).")
+        except Exception as e:
+            print(f"[HitDetect] Error cargando NanoDet: {e}")
+            traceback.print_exc()
+            raise e
+
+    def _preprocess(self, image):
+        # NanoDet requiere normalización específica
+        # Mean: [103.53, 116.28, 123.675]
+        blob = cv2.dnn.blobFromImage(
+            image, 
+            scalefactor=1.0, 
+            size=self.input_shape,
+            mean=(103.53, 116.28, 123.675),
+            swapRB=False, # El modelo espera BGR si usamos cv2.imread
+            crop=False
+        )
+        return blob
+
+    def _postprocess(self, outputs, img_w, img_h):
+        # Decodificar las salidas de NanoDet
+        # La salida suele ser [1, 8400, 80+5] o similar
+        preds = outputs[0]
+        if len(preds.shape) == 3:
+            preds = preds[0]
+        
+        scale_w = img_w / self.input_shape[0]
+        scale_h = img_h / self.input_shape[1]
+
+        class_ids = []
+        confidences = []
+        boxes = []
+
+        # Estructura típica: [cx, cy, w, h, score_cls1, score_cls2...]
+        # O a veces: [cx, cy, w, h, obj_score, cls_scores...]
+        # Asumimos estructura directa de onnx simplificado:
+        
+        for det in preds:
+            # Los primeros 4 son bbox, el resto son scores
+            scores = det[4:]
+            class_id = np.argmax(scores)
+            confidence = scores[class_id]
+
+            if confidence > self.prob_threshold:
+                cx, cy, w, h = det[0], det[1], det[2], det[3]
+                
+                # Restaurar coordenadas
+                x = int((cx - w/2) * scale_w)
+                y = int((cy - h/2) * scale_h)
+                width = int(w * scale_w)
+                height = int(h * scale_h)
+
+                boxes.append([x, y, width, height])
+                confidences.append(float(confidence))
+                class_ids.append(class_id)
+
+        # NMS (Non-Maximum Suppression) usando OpenCV (Muy rápido en CPU)
+        indices = cv2.dnn.NMSBoxes(boxes, confidences, self.prob_threshold, self.iou_threshold)
+        
+        results = []
+        if len(indices) > 0:
+            for i in indices.flatten():
+                # Si solo te interesa detectar "personas" (clase 0 en COCO)
+                # puedes filtrar aquí: if class_ids[i] == 0:
+                results.append({
+                    "box": boxes[i],
+                    "confidence": confidences[i],
+                    "class_id": class_ids[i]
+                })
+        return results
 
     def run_on_video(
         self,
         video_path: str,
         frame_stride: int,
         max_frames: int,
-        hit_threshold: float
+        hit_threshold: float 
     ) -> Dict[str, Any]:
-        self._load_model()
-        target_size = self._input_hw
+        
+        if self._net is None:
+            self._load_model()
+
         cap = cv2.VideoCapture(video_path)
         if not cap.isOpened():
             raise HTTPException(400, "Unable to open uploaded video")
 
         frame_idx = 0
         processed = 0
-        detections = []
+        hits_detected = 0
+        hit_frames = []
         debug_logs = []
 
         while processed < max_frames:
@@ -293,35 +134,36 @@ class HitDetectionService:
                 frame_idx += 1
                 continue
 
-            resized = cv2.resize(frame, target_size)
-            blob = cv2.dnn.blobFromImage(
-                resized,
-                scalefactor=1 / 255.0,
-                size=target_size,
-                swapRB=True,
-                crop=False,
-            )
-            output = self._forward(blob)
+            img_h, img_w = frame.shape[:2]
+            
+            # 1. Inferencia
+            blob = self._preprocess(frame)
+            self._net.setInput(blob)
+            outputs = self._net.forward(self._net.getUnconnectedOutLayersNames())
+            
+            # 2. Interpretar resultados
+            detections = self._postprocess(outputs, img_w, img_h)
+            
+            # Lógica de "HIT":
+            # Si NanoDet encuentra algo con confianza > umbral, es un hit.
+            # Tomamos la confianza más alta encontrada en el frame
+            max_conf = 0.0
+            if detections:
+                max_conf = max([d['confidence'] for d in detections])
 
-            flat = output.flatten().tolist()
-            if not flat:
-                probability = 0.0
-            elif len(flat) == 1:
-                probability = float(flat[0])
-            else:
-                probability = float(flat[-1])
+            is_hit = max_conf >= hit_threshold
+            
+            if is_hit:
+                hits_detected += 1
+                hit_frames.append(frame_idx)
 
-            detections.append({
-                "frame": frame_idx,
-                "hit_probability": round(probability, 4),
-                "raw_output": flat
-            })
+            # Logs limitados para no saturar
             if len(debug_logs) < 10:
                 debug_logs.append({
                     "frame": frame_idx,
-                    "blob_shape": list(blob.shape),
-                    "output_shape": list(output.shape) if hasattr(output, "shape") else None,
-                    "hit_probability": round(probability, 4)
+                    "hit_probability": round(max_conf, 4),
+                    "is_hit": is_hit,
+                    "detections_count": len(detections)
                 })
 
             processed += 1
@@ -329,13 +171,10 @@ class HitDetectionService:
 
         cap.release()
 
-        hits = [det for det in detections if det["hit_probability"] >= hit_threshold]
-
         return {
             "frames_analyzed": processed,
-            "detections": detections,
-            "hits_detected": len(hits),
+            "hits_detected": hits_detected,
             "hit_threshold": hit_threshold,
-            "hit_frames": [det["frame"] for det in hits],
+            "hit_frames": hit_frames,
             "debug_logs": debug_logs
         }
