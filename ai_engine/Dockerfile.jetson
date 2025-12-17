@@ -137,13 +137,12 @@ RUN if [ "$BUILD_OPENCV" = "1" ]; then \
     fi
 
 # ------------------------------------------------------------------------------
-# 5. Dependencias y Modelos del Proyecto (CON AUTO-REPARACIÓN ONNXSLIM)
+# 5. Dependencias y Modelos del Proyecto (CON NANODET + MIDAS)
 # ------------------------------------------------------------------------------
 WORKDIR /app
 COPY requirements.jetson.txt /app/requirements.txt
 
-# 1. Instalamos las dependencias + onnxslim
-# NOTA: Agregamos 'onnxslim' aquí. Es más ligero y compatible que onnx-simplifier.
+# 1. Instalamos dependencias + onnxslim (por si acaso necesites arreglar otros modelos)
 RUN ${PYTHON_BIN} -m pip install --no-cache-dir --upgrade pip setuptools wheel && \
     ${PYTHON_BIN} -m pip install --no-cache-dir Cython && \
     ${PYTHON_BIN} -m pip install --no-cache-dir "httptools>=0.6.0" "uvloop>=0.17.0" "websockets>=11.0" && \
@@ -155,33 +154,37 @@ RUN ${PYTHON_BIN} -m pip install --no-cache-dir --upgrade pip setuptools wheel &
         cd /opt/jetson-inference/python/training/classification && ./download-models.sh; \
     fi
 
-# 2. Descargamos modelos extra (Face / SuperRes)
+# 2. DESCARGA DE MODELOS (Face, SuperRes, NanoDet, MiDaS)
 RUN mkdir -p /app/models && \
+    # A. Modelos Faciales
     curl -L -o /app/models/face_detection_yunet_2023mar.onnx https://github.com/opencv/opencv_zoo/raw/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx && \
     curl -L -o /app/models/face_recognition_sface_2021dec.onnx https://github.com/opencv/opencv_zoo/raw/main/models/face_recognition_sface/face_recognition_sface_2021dec.onnx && \
+    # B. Modelos Super Resolución
     curl -L -o /app/models/ESPCN_x4.pb https://github.com/Saafke/EDSR_Tensorflow/raw/master/models/ESPCN_x4.pb && \
-    curl -L -o /app/models/FSRCNN_x4.pb https://github.com/Saafke/FSRCNN_Tensorflow/raw/master/models/FSRCNN_x4.pb
+    curl -L -o /app/models/FSRCNN_x4.pb https://github.com/Saafke/FSRCNN_Tensorflow/raw/master/models/FSRCNN_x4.pb && \
+    # C. NanoDet-Plus (Detección de Objetos Rápida - Reemplazo de YOLO)
+    curl -L -o /app/models/nanodet-plus-m_416.onnx https://github.com/RangiLyu/nanodet/releases/download/v1.0.0-alpha/nanodet-plus-m_416.onnx && \
+    # D. MiDaS v2.1 Small (Profundidad Monocular - Compatible con OpenCV)
+    curl -L -o /app/models/midas_v21_small.onnx https://github.com/isl-org/MiDaS/releases/download/v2_1/model-small.onnx
 
-# 3. Copiamos el código fuente (Incluyendo tu hit_detect.onnx MALO)
+# 3. Copiamos el código fuente
 COPY . /app
 
-# 4. >>> LA MAGIA: AUTO-REPARACIÓN DEL MODELO <<<
-# Buscamos el modelo y le pasamos onnxslim para quitar la capa TopK
+# 4. Auto-reparación de modelos viejos (Si todavía usas hit_detect.onnx)
 RUN if [ -f /app/src/services/hit_detect.onnx ]; then \
-        echo "🔧 Encontrado hit_detect.onnx - Ejecutando onnxslim para arreglar capas TopK..."; \
-        # Simplificamos y guardamos en un temporal
+        echo "🔧 Ejecutando onnxslim en hit_detect.onnx..."; \
         onnxslim /app/src/services/hit_detect.onnx /app/src/services/hit_detect_fixed.onnx && \
-        # Sobrescribimos el original con el arreglado
         mv /app/src/services/hit_detect_fixed.onnx /app/src/services/hit_detect.onnx && \
-        echo "✅ Modelo reparado exitosamente."; \
-    else \
-        echo "⚠️ No se encontró hit_detect.onnx en la ruta esperada durante el build."; \
+        echo "✅ hit_detect.onnx reparado."; \
     fi
 
-# Aseguramos que los modelos estén en su lugar final
+# 5. Mover modelos a la carpeta de ejecución
 RUN mkdir -p /app/ai_engine/models && \
     cp /app/models/* /app/ai_engine/models/
 
-ENV SUPERRES_MODEL_PATH=/app/models/ESPCN_x4.pb
+# 6. Variables de Entorno para encontrar los modelos fácil desde Python
+ENV SUPERRES_MODEL_PATH=/app/ai_engine/models/ESPCN_x4.pb
+ENV NANODET_MODEL_PATH=/app/ai_engine/models/nanodet-plus-m_416.onnx
+ENV MIDAS_MODEL_PATH=/app/ai_engine/models/midas_v21_small.onnx
 
 CMD ["uvicorn", "src.inference_api:app", "--host", "0.0.0.0", "--port", "5050", "--workers", "1"]
