@@ -16,7 +16,7 @@ class HitDetectionService:
         self.iou_threshold = 0.50
 
         # URL del modelo (Mirror estable)
-        self.model_url = "https://github.com/hpc203/nanodet-plus-opencv/raw/main/nanodet-plus-m_416.onnx"
+        self.model_url = "https://github.com/RangiLyu/nanodet/releases/download/v1.0.0-alpha-1/nanodet-plus-m_416.onnx"
         
         self._net = None
         self._check_and_download_model()
