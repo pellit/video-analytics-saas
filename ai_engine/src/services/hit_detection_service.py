@@ -1,8 +1,8 @@
-import base64
 import cv2
 import numpy as np
 import os
 import urllib.request
+import time  # <--- IMPORTANTE: Necesario para medir el tiempo
 from typing import Any, Dict, List
 from fastapi import HTTPException
 
@@ -12,7 +12,7 @@ class HitDetectionService:
         self.model_path = os.getenv("NANODET_MODEL_PATH", "/app/ai_engine/models/nanodet-plus-m_416.onnx")
         self.input_shape = (416, 416)
         
-        # Bajamos un poco el umbral para asegurar que detecte al inicio
+        # Umbrales
         self.prob_threshold = 0.35
         self.iou_threshold = 0.50
 
@@ -43,7 +43,7 @@ class HitDetectionService:
             self._net.setPreferableBackend(cv2.dnn.DNN_BACKEND_CUDA)
             self._net.setPreferableTarget(cv2.dnn.DNN_TARGET_CUDA)
             
-            # Calentamiento (Warm-up) para que el primer frame real no sea lento
+            # Calentamiento (Warm-up)
             dummy = np.zeros((1, 3, 416, 416), dtype=np.float32)
             self._net.setInput(dummy)
             self._net.forward(self._net.getUnconnectedOutLayersNames())
@@ -53,24 +53,19 @@ class HitDetectionService:
             raise e
 
     def _preprocess(self, image):
-        # --- CORRECCIÓN CRÍTICA ---
         # NanoDet-Plus requiere: (Input - Mean) / Std
-        # Mean = [103.53, 116.28, 123.675]
-        # Std  = [57.375, 57.12, 58.395]
-        # Por tanto, scalefactor debe ser 1 / 57.375 ≈ 0.017429
-        
+        # scalefactor = 1 / 57.375 ≈ 0.017429
         blob = cv2.dnn.blobFromImage(
             image, 
-            scalefactor=0.017429,  # <--- AQUÍ ESTABA EL ERROR (Antes era 1.0)
+            scalefactor=0.017429, 
             size=self.input_shape,
             mean=(103.53, 116.28, 123.675),
-            swapRB=False, # NanoDet espera BGR si se usa cv2
+            swapRB=False,
             crop=False
         )
         return blob
 
     def _postprocess(self, outputs, img_w, img_h):
-        # Manejo robusto de la salida
         preds = outputs[0]
         if len(preds.shape) == 3:
             preds = preds[0]
@@ -83,15 +78,12 @@ class HitDetectionService:
         boxes = []
 
         for det in preds:
-            # Formato: [cx, cy, w, h, score_cls1, score_cls2...]
             scores = det[4:]
             class_id = np.argmax(scores)
             confidence = scores[class_id]
 
             if confidence > self.prob_threshold:
                 cx, cy, w, h = det[0], det[1], det[2], det[3]
-                
-                # Coordenadas
                 x = int((cx - w/2) * scale_w)
                 y = int((cy - h/2) * scale_h)
                 width = int(w * scale_w)
@@ -113,72 +105,46 @@ class HitDetectionService:
                 })
         return results
 
-    def run_on_video(
-        self,
-        video_path: str,
-        frame_stride: int,
-        max_frames: int,
-        hit_threshold: float,
-        return_images: bool = False,
-        max_preview_images: int = 3
-    ) -> Dict[str, Any]:
+    def run_on_video(self, video_path: str, frame_stride: int, max_frames: int, hit_threshold: float) -> Dict[str, Any]:
         if self._net is None: self._load_model()
         cap = cv2.VideoCapture(video_path)
         
-        # OPTIMIZACIÓN: Si frame_stride viene en 1, forzamos al menos 3 para velocidad
         actual_stride = max(3, frame_stride) 
 
         frame_idx = 0
         processed = 0
         hits_detected = 0
         debug_logs = []
-        preview_images: List[Dict[str, Any]] = []
+        
+        # --- MÉTRICAS DE RENDIMIENTO ---
+        start_time = time.time()  # Hora de inicio global
+        inference_times = []      # Lista para guardar tiempos individuales por frame
 
         while processed < max_frames:
             ret, frame = cap.read()
             if not ret: break
 
-            # Saltar frames para velocidad
             if frame_idx % actual_stride != 0:
                 frame_idx += 1
                 continue
 
-            # Inferencia
+            # Cronometrar inferencia (Preproceso + IA + Postproceso)
+            t0 = time.time()
+            
             blob = self._preprocess(frame)
             self._net.setInput(blob)
             outputs = self._net.forward(self._net.getUnconnectedOutLayersNames())
             detections = self._postprocess(outputs, frame.shape[1], frame.shape[0])
+            
+            t1 = time.time()
+            inference_times.append(t1 - t0) # Guardamos cuánto tardó este frame
 
             # Detectar Hit
             max_conf = max([d['confidence'] for d in detections]) if detections else 0.0
             is_hit = max_conf >= hit_threshold
             
-            if is_hit:
-                hits_detected += 1
-                if return_images and len(preview_images) < max_preview_images:
-                    annotated = frame.copy()
-                    for det in detections:
-                        x, y, w, h = det['box']
-                        cv2.rectangle(annotated, (x, y), (x + w, y + h), (0, 255, 255), 2)
-                        label = f"{det['confidence']:.2f}"
-                        cv2.putText(
-                            annotated,
-                            label,
-                            (x, max(0, y - 5)),
-                            cv2.FONT_HERSHEY_SIMPLEX,
-                            0.5,
-                            (0, 255, 255),
-                            1,
-                            cv2.LINE_AA
-                        )
-                    _, buffer = cv2.imencode('.jpg', annotated, [cv2.IMWRITE_JPEG_QUALITY, 85])
-                    preview_images.append({
-                        "frame": int(frame_idx),
-                        "confidence": float(max_conf),
-                        "image_base64": "data:image/jpeg;base64," + base64.b64encode(buffer).decode('ascii')
-                    })
+            if is_hit: hits_detected += 1
             
-            # Guardar logs de los primeros frames para depurar
             if len(debug_logs) < 10: 
                 debug_logs.append({"frame": frame_idx, "max_conf": float(max_conf), "detections": len(detections)})
 
@@ -186,7 +152,26 @@ class HitDetectionService:
             frame_idx += 1
 
         cap.release()
-        result = {"hits_detected": hits_detected, "debug_logs": debug_logs}
-        if return_images:
-            result["preview_images"] = preview_images
-        return result
+        
+        # --- CÁLCULO DE RESULTADOS FINALES ---
+        end_time = time.time()
+        total_duration = end_time - start_time
+        
+        # Evitar división por cero si no se procesó nada
+        if processed > 0:
+            avg_fps = processed / total_duration
+            avg_inference_ms = (sum(inference_times) / len(inference_times)) * 1000
+        else:
+            avg_fps = 0
+            avg_inference_ms = 0
+
+        return {
+            "hits_detected": hits_detected,
+            "debug_logs": debug_logs,
+            "performance": {
+                "total_time_sec": round(total_duration, 2),
+                "frames_processed": processed,
+                "fps": round(avg_fps, 2),
+                "avg_inference_time_ms": round(avg_inference_ms, 2)
+            }
+        }
