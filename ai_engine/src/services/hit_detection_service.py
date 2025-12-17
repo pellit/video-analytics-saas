@@ -81,6 +81,7 @@ class HitDetectionService:
         self.nanodet_path = os.path.join(self.models_dir, "nanodet-plus-m_416.onnx")
         self.pose_path = os.path.join(self.models_dir, "yolov8n-pose.onnx")
         self.midas_path = os.path.join(self.models_dir, "midas_v21_small.onnx")
+        self.yolov8_path = os.path.join(self.models_dir, "yolov8n.onnx")
 
         # 1. VERIFICACIÓN DE CUDA AL INICIO
         cuda_count = cv2.cuda.getCudaEnabledDeviceCount()
