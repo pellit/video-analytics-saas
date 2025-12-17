@@ -43,7 +43,7 @@ class ExternalApiController extends Controller
 
             // Options for analysis
             $options = [
-                'model' => $request->input('model', 'yolov8n'),
+                'model' => $request->input('model', 'nanodet'),
                 'detection_classes' => $request->input('classes', []),
                 'confidence_threshold' => $request->input('confidence', 0.5),
                 'return_annotated' => $request->boolean('return_annotated', false),
@@ -132,7 +132,7 @@ class ExternalApiController extends Controller
             'url' => $request->input('url'),
             'duration' => $request->input('duration', 60),
             'options' => [
-                'model' => $request->input('model', 'yolov8n'),
+                'model' => $request->input('model', 'nanodet'),
                 'detection_classes' => $request->input('classes', []),
                 'callback_url' => $request->input('callback_url'),
                 'sample_rate' => $request->input('sample_rate', 1), // Analyze every Nth frame
@@ -275,7 +275,7 @@ class ExternalApiController extends Controller
                 'api_key_id' => $apiKey->id,
                 'image' => $frame,
                 'options' => [
-                    'model' => $request->input('model', 'yolov8n'),
+                    'model' => $request->input('model', 'nanodet'),
                     'detection_classes' => $request->input('classes', []),
                 ],
             ]));

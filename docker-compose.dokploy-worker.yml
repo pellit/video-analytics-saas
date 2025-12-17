@@ -36,7 +36,7 @@ services:
       - DEVICE_NAME=${DEVICE_NAME:-dokploy-worker}
       
       # Modelo de detección
-      - DETECTION_MODEL=${DETECTION_MODEL:-yolov8n}
+      - DETECTION_MODEL=${DETECTION_MODEL:-nanodet}
       - DETECTION_RESOLUTION=${DETECTION_RESOLUTION:-medium}
       
       # CPU mode (sin GPU por defecto en servidores estándar)
@@ -87,7 +87,7 @@ volumes:
 # BACKEND_URL      - URL del backend Laravel
 #
 # OPCIONALES:
-# DETECTION_MODEL  - Modelo a usar (default: yolov8n)
+# DETECTION_MODEL  - Modelo a usar (default: nanodet)
 # ENABLE_CUDA      - Habilitar GPU (default: false)
 #
 # =============================================================

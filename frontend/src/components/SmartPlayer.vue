@@ -23,7 +23,8 @@ const props = defineProps({
   showOverlay: { type: Boolean, default: true },
   showControls: { type: Boolean, default: true },
   // WebSocket para detecciones
-  wsUrl: { type: String, default: '' }
+  wsUrl: { type: String, default: '' },
+  sseEndpoint: { type: String, default: '/stream/events/{camera_id}' }
 })
 
 const emit = defineEmits(['error', 'connected', 'detection', 'streamChange'])
@@ -95,6 +96,7 @@ watch(() => props.cameraId, async () => {
   cleanup()
   await detectBestProtocol()
   startDetectionStream()
+  startRenderLoop()
 })
 
 /**
@@ -272,18 +274,51 @@ async function initHLS() {
  * Inicia conexión para recibir detecciones
  */
 function startDetectionStream() {
-  // In production, AI worker is behind /worker/ proxy path
-  let workerUrl = props.wsUrl
-  if (!workerUrl) {
-    if (window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1') {
-      workerUrl = `${window.location.origin}/worker`
-    } else {
-      workerUrl = (import.meta.env.VITE_STREAM_URL || 'http://localhost:5000').replace('/video_feed', '')
-    }
+  if (props.cameraId === null || props.cameraId === undefined || props.cameraId === '') {
+    return
   }
-  
-  // Usar SSE endpoint correcto del AI worker
-  const sseUrl = `${workerUrl}/stream/events/${props.cameraId}`
+  if (eventSource) {
+    try { eventSource.close() } catch (e) {}
+    eventSource = null
+  }
+  if (reconnectTimer) {
+    clearTimeout(reconnectTimer)
+    reconnectTimer = null
+  }
+
+  const resolveWorkerBase = () => {
+    if (props.wsUrl) return props.wsUrl.replace(/\/$/, '')
+    if (window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1') {
+      return `${window.location.origin}/worker`
+    }
+    const streamUrl = import.meta.env.VITE_STREAM_URL || 'http://localhost:5000/video_feed'
+    return streamUrl.replace('/video_feed', '')
+  }
+
+  const buildSseUrl = () => {
+    const legacy = (props.wsUrl || '').trim()
+    if (legacy && legacy.includes('/stream/') && !props.sseEndpoint) {
+      return legacy.includes('{camera_id}')
+        ? legacy.replace('{camera_id}', props.cameraId)
+        : `${legacy.replace(/\/$/, '')}/${props.cameraId}`
+    }
+
+    let endpoint = (props.sseEndpoint || '/stream/events/{camera_id}').trim()
+    if (endpoint.includes('{camera_id}')) {
+      endpoint = endpoint.replace('{camera_id}', props.cameraId)
+    } else if (!endpoint.endsWith(`/${props.cameraId}`)) {
+      endpoint = `${endpoint.replace(/\/$/, '')}/${props.cameraId}`
+    }
+
+    if (endpoint.startsWith('http')) {
+      return endpoint
+    }
+
+    const base = resolveWorkerBase().replace(/\/$/, '')
+    return `${base}${endpoint.startsWith('/') ? '' : '/'}${endpoint}`
+  }
+
+  const sseUrl = buildSseUrl()
   console.log('[SmartPlayer] Connecting SSE:', sseUrl)
   
   eventSource = new EventSource(sseUrl)
@@ -291,8 +326,8 @@ function startDetectionStream() {
   eventSource.onmessage = (event) => {
     try {
       const data = JSON.parse(event.data)
-      if (data.detections) {
-        detections.value = data.detections
+      if (Array.isArray(data?.detections)) {
+        detections.value = normalizeDetections(data.detections)
         lastDetectionTime.value = Date.now()
         emit('detection', data)
       }
@@ -303,9 +338,44 @@ function startDetectionStream() {
   
   eventSource.onerror = () => {
     console.warn('SSE connection lost, reconnecting...')
-    eventSource.close()
+    if (eventSource) {
+      try { eventSource.close() } catch (e) {}
+      eventSource = null
+    }
     reconnectTimer = setTimeout(startDetectionStream, 3000)
   }
+}
+
+function normalizeDetections(rawDetections = []) {
+  return rawDetections
+    .map(det => {
+      const bbox = det.bbox || {}
+      const width = Number(bbox.w ?? bbox.width ?? det.w ?? det.width ?? 0) || 0
+      const height = Number(bbox.h ?? bbox.height ?? det.h ?? det.height ?? 0) || 0
+      const centerX = bbox.cx ?? bbox.center?.x ?? det.center?.x ?? det.cx
+      const centerY = bbox.cy ?? bbox.center?.y ?? det.center?.y ?? det.cy
+      let x = Number(centerX)
+      let y = Number(centerY)
+      const hasCenter = Number.isFinite(x) && Number.isFinite(y)
+      if (!hasCenter) {
+        x = Number(bbox.x ?? det.x ?? 0) || 0
+        y = Number(bbox.y ?? det.y ?? 0) || 0
+        if (width || height) {
+          x = x + width / 2
+          y = y + height / 2
+        }
+      }
+      return {
+        class: det.class || det.label || 'object',
+        conf: Number(det.confidence ?? det.conf ?? det.score ?? 0) || 0,
+        x,
+        y,
+        w: width,
+        h: height,
+        track_id: det.track_id ?? det.trackId ?? det.id
+      }
+    })
+    .filter(det => Number.isFinite(det.x) && Number.isFinite(det.y))
 }
 
 /**

@@ -44,11 +44,11 @@ class DatabaseSeeder extends Seeder
         if ($testUser) {
             $testUser->cameras()->updateOrCreate(
                 ['name' => 'Demo - Times Square NYC'],
-                ['url' => 'https://www.youtube.com/watch?v=aISKK1ex5zU', 'status' => 'offline', 'detection_enabled' => true, 'detection_model' => 'yolov8n']
+                ['url' => 'https://www.youtube.com/watch?v=aISKK1ex5zU', 'status' => 'offline', 'detection_enabled' => true, 'detection_model' => 'nanodet']
             );
             $testUser->cameras()->updateOrCreate(
                 ['name' => 'Demo - Tokyo Street'],
-                ['url' => 'https://www.youtube.com/watch?v=gFRtAAmiFbE', 'status' => 'offline', 'detection_enabled' => true, 'detection_model' => 'yolov8n']
+                ['url' => 'https://www.youtube.com/watch?v=gFRtAAmiFbE', 'status' => 'offline', 'detection_enabled' => true, 'detection_model' => 'nanodet']
             );
         }
 
@@ -59,25 +59,24 @@ class DatabaseSeeder extends Seeder
             // estén presentes y mantengan la URL solicitada.
             $admin->cameras()->updateOrCreate(
                 ['name' => 'Cámara YouTube 1'],
-                ['url' => 'https://www.youtube.com/watch?v=aISKK1ex5zU', 'status' => 'offline', 'detection_enabled' => true, 'detection_model' => 'yolov8n']
+                ['url' => 'https://www.youtube.com/watch?v=aISKK1ex5zU', 'status' => 'offline', 'detection_enabled' => true, 'detection_model' => 'nanodet']
             );
             $admin->cameras()->updateOrCreate(
                 ['name' => 'Cámara YouTube 2'],
-                ['url' => 'https://www.youtube.com/watch?v=fa8iGVeri_I', 'status' => 'offline', 'detection_enabled' => true, 'detection_model' => 'yolov8n']
+                ['url' => 'https://www.youtube.com/watch?v=fa8iGVeri_I', 'status' => 'offline', 'detection_enabled' => true, 'detection_model' => 'nanodet']
             );
             $admin->cameras()->updateOrCreate(
                 ['name' => 'Cámara YouTube 3'],
-                ['url' => 'https://www.youtube.com/watch?v=qMYlpMsWsBE', 'status' => 'offline', 'detection_enabled' => true, 'detection_model' => 'yolov8n']
+                ['url' => 'https://www.youtube.com/watch?v=qMYlpMsWsBE', 'status' => 'offline', 'detection_enabled' => true, 'detection_model' => 'nanodet']
             );
             $admin->cameras()->updateOrCreate(
                 ['name' => 'Inside Living ROOM'],
-                ['url' => 'https://www.youtube.com/watch?v=BJ7fql5fKsU', 'status' => 'offline', 'detection_enabled' => true, 'detection_model' => 'yolov8n']
+                ['url' => 'https://www.youtube.com/watch?v=BJ7fql5fKsU', 'status' => 'offline', 'detection_enabled' => true, 'detection_model' => 'nanodet']
             );
             $admin->cameras()->updateOrCreate(
                 ['name' => 'Traffic Cam Fresno'],
-                ['url' => 'https://www.youtube.com/watch?v=HiOvVp-wMj0', 'status' => 'offline', 'detection_enabled' => true, 'detection_model' => 'yolov8n']
+                ['url' => 'https://www.youtube.com/watch?v=HiOvVp-wMj0', 'status' => 'offline', 'detection_enabled' => true, 'detection_model' => 'nanodet']
             );
         }
     }
 }
-

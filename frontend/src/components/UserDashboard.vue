@@ -73,7 +73,7 @@ const cameras = ref([])
 const activeCamera = ref(null)
 const isProcessing = ref(false)
 const showAdd = ref(false)
-const newCam = ref({ name: '', url: '' })
+const newCam = ref({ name: '', url: '', detection_model: 'nanodet' })
 const showFacePanel = ref(false) // Face recognition panel visibility
 const activeView = ref('cameras-live') // 'cameras-live' | 'cameras-monitoring' | 'satellite-config' | 'satellite-reports' | 'blueprints-viewer' | 'blueprints-projects'
 
@@ -223,6 +223,7 @@ const initializeCameraDefaults = (camera) => {
   if (!camera.detection_classes || camera.detection_classes.length === 0) {
     camera.detection_classes = [...availableClasses]
   }
+  camera.detection_model = camera.detection_model || 'nanodet'
   // Ensure boolean fields have proper defaults
   camera.detection_enabled = camera.detection_enabled ?? false
   camera.face_recognition_enabled = camera.face_recognition_enabled ?? false
@@ -285,9 +286,8 @@ const getYoutubeEmbedUrl = (url) => {
 
 const addCamera = async () => {
   try {
-    // Default detection_enabled to true for new cameras so they are analyzed immediately
-    // Using YOLO-Fastest as default model - best balance of speed/accuracy on CPU
-    const payload = { ...newCam.value, detection_enabled: true, detection_model: 'yolo_fastest' }
+    // Default detection_enabled to true for new cameras so they are analyzed inmediatamente con NanoDet-Plus ONNX
+    const payload = { ...newCam.value, detection_enabled: true, detection_model: 'nanodet' }
     const res = await fetch(`${API_URL}/cameras`, {
       method: 'POST', headers: { 'Authorization': `Bearer ${props.token}`, 'Content-Type': 'application/json' }, body: JSON.stringify(payload)
     })
@@ -298,7 +298,7 @@ const addCamera = async () => {
       return
     }
     showToast('Cámara creada correctamente', 'success')
-    showAdd.value = false; newCam.value = { name: '', url: '' }; fetchCameras()
+    showAdd.value = false; newCam.value = { name: '', url: '', detection_model: 'nanodet' }; fetchCameras()
   } catch (e) {
     console.error(e)
     showToast('Error de red al crear la cámara', 'error')
@@ -732,7 +732,9 @@ const useMediaMTX = ref(false)
 const mediamtxConfig = ref({
   webrtcUrl: '',
   hlsUrl: '',
-  sseUrl: ''
+  workerUrl: WORKER_URL,
+  sseEndpoint: '/stream/events/{camera_id}',
+  mjpegUrl: STREAM_URL
 })
 
 // Check if MediaMTX architecture is available
@@ -745,11 +747,14 @@ const checkArchitectureMode = async () => {
       if (useMediaMTX.value) {
         console.log('🚀 MediaMTX mode detected - using SmartPlayer')
         // Configure MediaMTX URLs based on worker response
-        const host = new URL(WORKER_URL).hostname
+        const workerBase = WORKER_URL.replace(/\/$/, '')
+        const host = new URL(workerBase).hostname
         mediamtxConfig.value = {
           webrtcUrl: `http://${host}:8889`,
           hlsUrl: `http://${host}:8888`,
-          sseUrl: `${WORKER_URL}/stream/events`
+          workerUrl: workerBase,
+          sseEndpoint: data?.sse_endpoint || '/stream/events/{camera_id}',
+          mjpegUrl: STREAM_URL
         }
       } else {
         console.log('📺 MJPEG mode - using traditional img stream')
@@ -1444,9 +1449,11 @@ const saveProfile = async () => {
             <SmartPlayer 
               v-else-if="isProcessing && showVideo && useMediaMTX"
               :camera-id="String(activeCamera?.id)"
-              :webrtc-url="mediamtxConfig.webrtcUrl"
-              :hls-url="mediamtxConfig.hlsUrl"
-              :sse-url="mediamtxConfig.sseUrl"
+              :mediamtx-webrtc-url="mediamtxConfig.webrtcUrl"
+              :mediamtx-hls-url="mediamtxConfig.hlsUrl"
+              :ws-url="mediamtxConfig.workerUrl"
+              :sse-endpoint="mediamtxConfig.sseEndpoint"
+              :mjpeg-fallback-url="mediamtxConfig.mjpegUrl"
               :show-stats="true"
               class="stream"
               @dblclick.stop="toggleFullscreen"
@@ -1521,7 +1528,7 @@ const saveProfile = async () => {
                       <optgroup label="🎯 Rápidos (5-10 FPS)">
                         <option value="mediapipe">📱 MediaPipe (~9 FPS)</option>
                         <option value="yolov4_tiny">🎯 YOLOv4-tiny (~7 FPS)</option>
-                        <option value="nanodet">🔬 NanoDet-Plus (~6 FPS)</option>
+                        <option value="nanodet">🔬 NanoDet-Plus ONNX (~6 FPS)</option>
                       </optgroup>
                       <optgroup label="🏆 Alta precisión (<5 FPS) - Para GPU">
                         <option value="onnx">🎖️ YOLO-NAS ONNX (~1 FPS)</option>
@@ -1706,7 +1713,7 @@ const saveProfile = async () => {
                     <input type="checkbox" v-model="activeCamera.depth_enabled">
                     <span class="toggle-slider"></span>
                   </label>
-                  <span class="setting-label">Profundidad (Depth)</span>
+                  <span class="setting-label">Profundidad MiDaS (ONNX)</span>
                 </div>
                 
                 <div class="setting-row" v-if="activeCamera.depth_enabled">

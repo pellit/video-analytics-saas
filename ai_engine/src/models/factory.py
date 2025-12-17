@@ -56,8 +56,8 @@ class Resolution(str, Enum):
     HIGH = "high"      # 640x640 - Best accuracy
 
 
-# Default model - YOLO-Fastest for best balance of speed/accuracy
-DEFAULT_MODEL = ModelType.YOLO_FASTEST
+# Default model - NanoDet-Plus (ONNX) optimized for edge/CPU
+DEFAULT_MODEL = ModelType.NANODET
 DEFAULT_RESOLUTION = Resolution.MEDIUM
 
 
@@ -66,7 +66,7 @@ class ModelFactory:
     Factory class for creating detection model instances.
     
     Usage:
-        # Get default model (YOLO-NAS)
+        # Get default model (NanoDet-Plus ONNX)
         detector = ModelFactory.create()
         
         # Get specific model

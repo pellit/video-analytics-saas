@@ -15,7 +15,7 @@ services:
     environment:
       - DEVICE_NAME=jetson-nano
       - PYTHONUNBUFFERED=1
-      - DETECTION_MODEL=yolo_fastest
+      - DETECTION_MODEL=nanodet
       - ACTIONNET_MODEL=resnet18
       - DEPTHNET_MODEL=resnet18
       - ENABLE_CUDA=true

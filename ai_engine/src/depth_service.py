@@ -1,74 +1,69 @@
+import os
+
 import cv2
 import numpy as np
-from PIL import Image
-
-# Lazy imports for torch/transformers (optional dependencies)
-torch = None
-pipeline = None
-
-def _load_torch_deps():
-    """Load torch and transformers on demand."""
-    global torch, pipeline
-    if torch is None:
-        try:
-            import torch as _torch
-            from transformers import pipeline as _pipeline
-            torch = _torch
-            pipeline = _pipeline
-            return True
-        except ImportError as e:
-            print(f"⚠️ Depth estimation requires torch and transformers: {e}")
-            print("   Install with: pip install torch torchvision transformers")
-            return False
-    return True
 
 
 class DepthService:
     def __init__(self):
-        self.pipe = None
-        self.device = -1  # Will be set when model loads
-        self._available = None  # Will check on first use
-        print(f"DepthService initialized (lazy loading)")
+        base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "models"))
+        self.model_path = os.environ.get("MIDAS_MODEL_PATH", os.path.join(base_dir, "midas_v21_small.onnx"))
+        self.input_size = (256, 256)
+        self.net = None
+        self._available = None
+        print("DepthService (MiDaS ONNX) initialized - lazy loading")
     
     def is_available(self) -> bool:
-        """Check if depth estimation is available (torch installed)."""
+        """Check if depth estimation is available."""
         if self._available is None:
-            self._available = _load_torch_deps()
-            if self._available and torch is not None:
-                self.device = 0 if torch.cuda.is_available() else -1
+            self._available = self.load_model()
         return self._available
 
     def load_model(self):
-        if self.pipe is None:
-            if not self.is_available():
-                print("❌ Cannot load depth model - torch/transformers not installed")
-                return False
-            print("⏳ Loading Depth Anything V2 model...")
-            # Using the small version for performance
-            self.pipe = pipeline(task="depth-estimation", model="depth-anything/Depth-Anything-V2-Small-hf", device=self.device)
-            print("✅ Depth model loaded.")
+        if self.net is not None:
+            return True
+        if not os.path.exists(self.model_path):
+            print(f"⚠️ MiDaS model not found at {self.model_path}")
+            self._available = False
+            return False
+        try:
+            self.net = cv2.dnn.readNet(self.model_path)
+            try:
+                if cv2.cuda.getCudaEnabledDeviceCount() > 0:
+                    self.net.setPreferableBackend(cv2.dnn.DNN_BACKEND_CUDA)
+                    self.net.setPreferableTarget(cv2.dnn.DNN_TARGET_CUDA)
+                else:
+                    self.net.setPreferableBackend(cv2.dnn.DNN_BACKEND_OPENCV)
+                    self.net.setPreferableTarget(cv2.dnn.DNN_TARGET_CPU)
+            except Exception:
+                self.net.setPreferableBackend(cv2.dnn.DNN_BACKEND_OPENCV)
+                self.net.setPreferableTarget(cv2.dnn.DNN_TARGET_CPU)
+            self._available = True
+            print(f"✅ MiDaS depth model loaded ({self.model_path})")
+        except Exception as e:
+            self.net = None
+            self._available = False
+            print(f"❌ Failed to load MiDaS depth model: {e}")
+            return False
         return True
 
     def estimate_depth(self, frame):
-        if self.pipe is None:
-            if not self.load_model():
-                # Return a dummy depth map if not available
-                return np.zeros((frame.shape[0], frame.shape[1]), dtype=np.uint8)
-        
-        # Convert cv2 frame (BGR) to PIL Image (RGB)
-        image = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-        
-        # Inference
-        depth = self.pipe(image)["depth"]
-        
-        # Convert to numpy array (it returns a PIL image of depth)
-        depth_map = np.array(depth)
-        
-        # Resize depth map to match frame size if needed (pipeline usually handles it but returns original size)
-        if depth_map.shape[:2] != frame.shape[:2]:
-            depth_map = cv2.resize(depth_map, (frame.shape[1], frame.shape[0]))
-            
-        return depth_map
+        if self.net is None and not self.load_model():
+            return np.zeros((frame.shape[0], frame.shape[1]), dtype=np.float32)
+
+        blob = cv2.dnn.blobFromImage(
+            frame,
+            scalefactor=1 / 255.0,
+            size=self.input_size,
+            mean=(123.675, 116.28, 103.53),
+            swapRB=True,
+            crop=False
+        )
+        self.net.setInput(blob)
+        depth = self.net.forward()
+        depth = np.squeeze(depth)
+        depth = cv2.resize(depth, (frame.shape[1], frame.shape[0]), interpolation=cv2.INTER_CUBIC)
+        return depth.astype(np.float32)
 
     def process_3d_view(self, frame, detections, enable_bev=False):
         """

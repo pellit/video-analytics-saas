@@ -71,7 +71,7 @@ class CameraController extends Controller
         // Verificar que la cámara pertenezca al usuario autenticado
         $camera = Auth::user()->cameras()->findOrFail($request->id);
         
-        $model = $camera->detection_model ?? 'yolov8n';
+        $model = $camera->detection_model ?? 'nanodet';
         
         // Si es modelo Go, enviar al worker Go via HTTP
         if ($this->isGoModel($model)) {
@@ -135,7 +135,7 @@ class CameraController extends Controller
         $request->validate(['id' => 'required|integer']);
         $camera = Auth::user()->cameras()->findOrFail($request->id);
         
-        $model = $camera->detection_model ?? 'yolov8n';
+        $model = $camera->detection_model ?? 'nanodet';
 
         // Si es modelo Go, detener en worker Go
         if ($this->isGoModel($model)) {
@@ -190,7 +190,7 @@ class CameraController extends Controller
         $camera = Auth::user()->cameras()->findOrFail($id);
         
         // Primero detener el stream si está corriendo
-        $model = $camera->detection_model ?? 'yolov8n';
+        $model = $camera->detection_model ?? 'nanodet';
         
         if ($this->isGoModel($model)) {
             // Intentar detener en Go worker

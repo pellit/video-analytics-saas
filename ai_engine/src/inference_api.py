@@ -107,7 +107,11 @@ SFACE_TEMPLATE = np.array([
     [70.7299, 92.2041]
 ], dtype=np.float32)
 SUPERRES_MODEL_PATH = os.environ.get('SUPERRES_MODEL_PATH')
+ESPCN_MODEL_PATH = os.environ.get('ESPCN_MODEL_PATH', os.path.join(MODELS_DIR, 'ESPCN_x4.pb'))
+FSRCNN_MODEL_PATH = os.environ.get('FSRCNN_MODEL_PATH', os.path.join(MODELS_DIR, 'FSRCNN_x4.pb'))
+SUPERRES_MODELS_DIR_ENV = os.environ.get('SUPERRES_MODELS_DIR', os.path.dirname(ESPCN_MODEL_PATH))
 _default_superres_dirs = [
+    SUPERRES_MODELS_DIR_ENV,
     os.environ.get('SUPERRES_MODEL_DIR'),
     os.path.abspath(os.path.join(os.getcwd(), "data/networks/Super-Resolution-BSD500")),
     os.path.abspath(os.path.join(os.getcwd(), "data/networks/Super-Resolution--BSD500")),
@@ -211,6 +215,10 @@ class FaceCompareRequest(BaseModel):
 
 class DepthRequest(BaseModel):
     image_base64: str
+
+class SuperResRequest(BaseModel):
+    image_base64: str
+    model: Optional[str] = None  # path override or keywords 'espcn'/'fsrcnn'
 
 @app.get("/health")
 def health():
@@ -530,7 +538,61 @@ def _depth_to_base64(depth_norm: np.ndarray) -> str:
     return _encode_image_to_base64(depth_color)
 
 
+def _resolve_superres_model_path(model_hint: Optional[str]) -> Optional[str]:
+    if not model_hint:
+        return None
+    hint = model_hint.strip().lower()
+    if hint in ("espcn", "espcn_x4", "espcn4"):
+        return ESPCN_MODEL_PATH
+    if hint in ("fsrcnn", "fsrcnn_x4", "fsrcnn4"):
+        return FSRCNN_MODEL_PATH
+    if os.path.exists(model_hint):
+        return model_hint
+    candidate = os.path.join(SUPERRES_MODELS_DIR_ENV, model_hint)
+    if os.path.exists(candidate):
+        return candidate
+    return model_hint
 
+
+def _run_super_resolution(frame: np.ndarray, model_hint: Optional[str] = None) -> Tuple[np.ndarray, int]:
+    """Upscale frame using cv2.dnn_superres via SuperResolutionService."""
+    model_path = _resolve_superres_model_path(model_hint)
+    engine, scale = superres_service.load_engine(model_path)
+    upscaled = engine.upsample(frame)
+    return upscaled, scale
+
+
+def _superres_response_from_base64(image_base64: str, model_hint: Optional[str] = None) -> Dict[str, Any]:
+    img = _decode_base64_image(image_base64)
+    upscaled, scale = _run_super_resolution(img, model_hint)
+    return {
+        "success": True,
+        "scale": scale,
+        "original_size": {"width": int(img.shape[1]), "height": int(img.shape[0])},
+        "upscaled_size": {"width": int(upscaled.shape[1]), "height": int(upscaled.shape[0])},
+        "image_base64": _encode_image_to_base64(upscaled)
+    }
+
+
+def _superres_endpoint_response(req: SuperResRequest, model_hint: Optional[str]) -> Dict[str, Any]:
+    start_time = time.perf_counter()
+    payload = _superres_response_from_base64(req.image_base64, model_hint or req.model)
+    return _add_perf_metadata(payload, start_time, frames_processed=1)
+@app.post("/superres/espcn")
+def superres_espcn(req: SuperResRequest):
+    return _superres_endpoint_response(req, "espcn")
+
+
+@app.post("/superres/fsrcnn")
+def superres_fsrcnn(req: SuperResRequest):
+    return _superres_endpoint_response(req, "fsrcnn")
+
+
+@app.post("/superres/apply")
+def superres_apply(req: SuperResRequest):
+    if not req.model:
+        raise HTTPException(400, "Debes enviar el campo 'model' (ej: 'espcn' o 'fsrcnn').")
+    return _superres_endpoint_response(req, req.model)
 
 @app.post("/detect")
 def detect(req: DetectionRequest):
@@ -1599,14 +1661,17 @@ async def depthnet_video(
 
 
 @app.post("/superres/image")
-async def superres_image(file: UploadFile = File(...)):
+async def superres_image(
+    file: UploadFile = File(...),
+    model: Optional[str] = Form(None)
+):
     content = await file.read()
     data = np.frombuffer(content, dtype=np.uint8)
     img = cv2.imdecode(data, cv2.IMREAD_COLOR)
     if img is None:
         raise HTTPException(400, "No se pudo decodificar la imagen subida")
 
-    sr, scale = superres_service.load_engine()
+    sr, scale = superres_service.load_engine(_resolve_superres_model_path(model))
     try:
         upscaled = sr.upsample(img)
     except Exception as exc:
@@ -1626,7 +1691,8 @@ async def superres_image(file: UploadFile = File(...)):
 @app.post("/superres/video")
 async def superres_video(
     file: UploadFile = File(...),
-    frame_stride: int = Form(1)
+    frame_stride: int = Form(1),
+    model: Optional[str] = Form(None)
 ):
     if frame_stride <= 0:
         raise HTTPException(400, "frame_stride debe ser > 0")
@@ -1635,7 +1701,7 @@ async def superres_video(
     output_tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
     output_tmp.close()
 
-    sr, scale = superres_service.load_engine()
+    sr, scale = superres_service.load_engine(_resolve_superres_model_path(model))
     cap = cv2.VideoCapture(tmp_path)
     if not cap.isOpened():
         os.remove(tmp_path)
