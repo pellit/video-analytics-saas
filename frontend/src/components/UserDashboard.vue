@@ -820,9 +820,10 @@ const analyzeWithVLM = async () => {
     }
 }
 
+let workerStatusInterval = null
 const fetchWorkerStatus = async () => {
     try {
-        const res = await fetch(`${WORKER_URL}/health`)
+        const res = await fetch(`${WORKER_URL}/health`, { cache: 'no-store' })
         if (res.ok) {
             const data = await res.json()
             activeWorkerStreams.value = data.active_streams || []
@@ -832,12 +833,38 @@ const fetchWorkerStatus = async () => {
     }
 }
 
-// Poll worker status every 5 seconds
-setInterval(fetchWorkerStatus, 5000)
+const startWorkerStatusPolling = () => {
+    if (workerStatusInterval) return
+    workerStatusInterval = setInterval(fetchWorkerStatus, 5000)
+}
+
+const stopWorkerStatusPolling = () => {
+    if (workerStatusInterval) {
+        clearInterval(workerStatusInterval)
+        workerStatusInterval = null
+    }
+}
+
+const handleVisibilityChange = () => {
+    if (document.hidden) {
+        stopWorkerStatusPolling()
+    } else {
+        fetchWorkerStatus()
+        startWorkerStatusPolling()
+    }
+}
+
 onMounted(() => {
     fetchWorkerStatus()
+    startWorkerStatusPolling()
+    document.addEventListener('visibilitychange', handleVisibilityChange)
     checkVLMStatus()
     checkArchitectureMode() // Check if MediaMTX is available
+})
+
+onUnmounted(() => {
+    stopWorkerStatusPolling()
+    document.removeEventListener('visibilitychange', handleVisibilityChange)
 })
 
 const isCameraRunning = (id) => activeWorkerStreams.value.includes(String(id))
