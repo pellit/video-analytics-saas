@@ -1,6 +1,6 @@
 """
 Inference-only API for Edge Devices (Jetson Nano)
-UPDATED: Uses YOLOv4-Tiny (Reliable & DNN Compatible)
+UPDATED: Uses NanoDet-Plus (NanoDet-Plus-m 416x416 recommended)
 """
 
 import os
@@ -23,6 +23,7 @@ from .services.video_io import (
     save_upload_to_temp,
     ensure_video_duration,
     get_video_metadata,
+    read_frame_at,
 )
 from .services.face_service import FaceEmbeddingService
 from .services.activity_analysis import ActivityAnalyzer, SOCCER_BALL_LABELS, GYM_EQUIPMENT_LABELS
@@ -34,8 +35,10 @@ from .services.jetson_env import ensure_jetson_models
 JETSON_INFERENCE_AVAILABLE = ACTIONNET_AVAILABLE
 
 # --- Configuration ---
-# CAMBIO: Usamos yolov4-tiny por defecto porque es 100% compatible con OpenCV DNN
-DETECTION_MODEL = os.environ.get('DETECTION_MODEL', 'yolov4-tiny')
+# Default detector: NanoDet-Plus (recommended: NanoDet-Plus-m, 416x416)
+# NanoDet es ultra-ligero y muy adecuado para Jetson Nano. Se mantiene
+# la compatibilidad con el ModelFactory que mapea 'nanodet' a NanoDet-Plus.
+DETECTION_MODEL = os.environ.get('DETECTION_MODEL', 'nanodet')
 DETECTION_RESOLUTION = os.environ.get('DETECTION_RESOLUTION', 'medium')
 DEVICE_NAME = os.environ.get('DEVICE_NAME', 'jetson-nano')
 MAX_VIDEO_DURATION_S = 60
@@ -225,6 +228,28 @@ def _get_video_metadata(path: str) -> Dict[str, float]:
     return get_video_metadata(path)
 
 
+def _build_sample_indices(frame_count: int, sample_interval_pct: int) -> List[int]:
+    """Return sorted frame indices sampled every `sample_interval_pct` percent."""
+    if frame_count <= 0:
+        return []
+    interval = max(1, min(sample_interval_pct, 100))
+    percents = list(range(0, 101, interval))
+    if percents[-1] != 100:
+        percents.append(100)
+    indices: List[int] = []
+    last_idx = None
+    for pct in percents:
+        idx = int(round((frame_count - 1) * (pct / 100.0)))
+        if idx < 0:
+            idx = 0
+        if idx >= frame_count:
+            idx = frame_count - 1
+        if last_idx is None or idx != last_idx:
+            indices.append(idx)
+            last_idx = idx
+    return indices
+
+
 def _log_environment_status():
     """Muestra info útil al iniciar: CUDA y rutas de modelos."""
     try:
@@ -412,15 +437,9 @@ def face_consistency_video(
     if frame_count <= 0:
         raise HTTPException(400, "No se pudieron leer frames del video")
 
-    # Build sample indices (include 0 and last). sample_interval_pct e.g. 20 -> [0,20,40,60,80,100]
     if sample_interval_pct <= 0 or sample_interval_pct > 100:
         raise HTTPException(400, "sample_interval_pct debe estar entre 1 y 100")
-    percents = list(range(0, 101, sample_interval_pct))
-    indices = []
-    for p in percents:
-        idx = min(frame_count - 1, max(0, int(round(frame_count * p / 100.0))))
-        if not indices or idx != indices[-1]:
-            indices.append(idx)
+    indices = _build_sample_indices(frame_count, sample_interval_pct)
 
     distinct_faces_embeddings: List[List[float]] = []
     distinct_faces_images: List[str] = []
@@ -502,6 +521,112 @@ def face_consistency_video(
     }
 
     return result
+
+
+@app.post("/face/video-summary")
+def face_video_summary(
+    file: UploadFile = File(...),
+    confidence: float = Form(0.6),
+    match_threshold: float = Form(0.7),
+    sample_interval_pct: int = Form(20),
+):
+    """
+    Extrae capturas aproximadamente cada `sample_interval_pct`% del video y
+    reporta si se trata de la misma persona. Devuelve un resumen y un recorte
+    (base64) por cada rostro distinto detectado.
+    """
+    video_path = _save_upload_to_temp(file)
+    _ensure_video_duration(video_path, MAX_VIDEO_DURATION_S)
+    metadata = _get_video_metadata(video_path)
+    frame_count = int(metadata.get("frame_count", 0))
+    if frame_count <= 0:
+        raise HTTPException(400, "No se pudieron leer frames del video")
+    if sample_interval_pct <= 0 or sample_interval_pct > 100:
+        raise HTTPException(400, "sample_interval_pct debe estar entre 1 y 100")
+
+    indices = _build_sample_indices(frame_count, sample_interval_pct)
+    if not indices:
+        raise HTTPException(400, "No hay frames para muestrear en este video")
+
+    distinct_embeddings: List[List[float]] = []
+    distinct_faces: List[Dict[str, Any]] = []
+    samples: List[Dict[str, Any]] = []
+
+    for idx in indices:
+        frame = read_frame_at(video_path, idx)
+        sample_pct = round((idx / max(frame_count - 1, 1)) * 100.0, 2)
+        sample_entry = {
+            "frame": idx,
+            "percent": sample_pct,
+            "faces": [],
+            "success": False
+        }
+        if frame is None:
+            sample_entry["error"] = "frame_unavailable"
+            samples.append(sample_entry)
+            continue
+
+        faces = face_service.detect_with_embeddings(frame, confidence)
+        if not faces:
+            sample_entry["error"] = "no_faces"
+            samples.append(sample_entry)
+            continue
+
+        sample_entry["success"] = True
+        for detected in faces:
+            embedding = detected.get("embedding")
+            bbox = detected.get("bbox")
+            score = float(detected.get("score", 0.0))
+            matched_idx = None
+            for di, de in enumerate(distinct_embeddings):
+                try:
+                    similarity = face_service.compare_embeddings(de, embedding)
+                except Exception:
+                    similarity = 0.0
+                if similarity >= match_threshold:
+                    matched_idx = di
+                    distinct_faces[di]["occurrences"] += 1
+                    break
+            if matched_idx is None:
+                x1, y1, x2, y2 = [int(v) for v in bbox]
+                h, w = frame.shape[:2]
+                x1, x2 = max(0, min(x1, w - 1)), max(0, min(x2, w - 1))
+                y1, y2 = max(0, min(y1, h - 1)), max(0, min(y2, h - 1))
+                crop = frame[y1:y2, x1:x2]
+                if crop is None or crop.size == 0:
+                    crop = frame
+                matched_idx = len(distinct_embeddings)
+                distinct_embeddings.append(embedding)
+                distinct_faces.append({
+                    "face_id": matched_idx,
+                    "image": _encode_image_to_base64(crop),
+                    "first_frame": idx,
+                    "occurrences": 1
+                })
+            sample_entry["faces"].append({
+                "face_id": matched_idx,
+                "score": score,
+                "bbox": bbox
+            })
+        samples.append(sample_entry)
+
+    consistent = len(distinct_faces) == 1
+    if not distinct_faces:
+        summary = "No se detectaron rostros en las capturas del video."
+    elif consistent:
+        summary = "Se observó a la misma persona en todas las muestras analizadas."
+    else:
+        summary = f"Se detectaron {len(distinct_faces)} personas distintas en las muestras."
+
+    return {
+        "consistent": consistent,
+        "summary": summary,
+        "sample_interval_pct": sample_interval_pct,
+        "frame_count": frame_count,
+        "video_duration_s": metadata.get("duration"),
+        "distinct_faces": distinct_faces,
+        "samples": samples
+    }
 
 
 @app.post("/detect/batch")
