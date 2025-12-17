@@ -6,45 +6,65 @@ import time
 import base64
 from typing import Any, Dict, List
 
-# --- CLASE BASE PARA YOLOV8 (Compartida para optimizar) ---
+# --- CLASE BASE PARA YOLOV8 (Compartida) ---
 class YoloBaseWrapper:
     def __init__(self, model_path, conf_thres=0.4, iou_thres=0.5):
         self.model_path = model_path
         self.conf_thres = conf_thres
         self.iou_thres = iou_thres
         self.net = None
-        self.input_size = (640, 640) # YOLOv8 estándar
+        self.input_size = (640, 640)
 
     def load_model(self, name="YOLO"):
-        print(f"[{name}] Cargando modelo: {os.path.basename(self.model_path)}...")
+        print(f"[{name}] 📂 Cargando modelo: {os.path.basename(self.model_path)}...")
+        
+        # 1. Autocuración: Verificar si el archivo es basura (muy pequeño)
+        if os.path.exists(self.model_path):
+            size = os.path.getsize(self.model_path)
+            if size < 100000: # Menos de 100KB es sospechoso
+                print(f"[{name}] ⚠️ Archivo corrupto detectado ({size} bytes). Borrando para re-descargar...")
+                os.remove(self.model_path)
+                return False # Forzará re-descarga si está implementado fuera
+        
+        if not os.path.exists(self.model_path):
+            print(f"[{name}] ❌ El archivo no existe: {self.model_path}")
+            return False
+
         try:
             self.net = cv2.dnn.readNet(self.model_path)
             self.net.setPreferableBackend(cv2.dnn.DNN_BACKEND_CUDA)
             self.net.setPreferableTarget(cv2.dnn.DNN_TARGET_CUDA)
-            # Warmup
+            
+            # Warmup (Prueba de fuego para ver si funciona la GPU)
             dummy = np.zeros((1, 3, 640, 640), dtype=np.float32)
             self.net.setInput(dummy)
             self.net.forward()
-            print(f"[{name}] ✅ Modelo cargado en GPU.")
+            print(f"[{name}] ✅ Modelo cargado y probado en GPU.")
+            return True
         except Exception as e:
-            print(f"[{name}] ❌ Error fatal: {e}")
+            print(f"[{name}] ❌ Error crítico cargando modelo: {e}")
+            self.net = None # Aseguramos que sea None
+            return False
 
     def preprocess(self, img):
-        # YOLOv8: RGB, 1/255.0, 640x640, Centrado
+        # Normalización estándar YOLO
         return cv2.dnn.blobFromImage(img, 1/255.0, self.input_size, swapRB=True, crop=False)
 
-# --- WRAPPER DETECCIÓN (Solo para la Pelota) ---
+# --- WRAPPER DETECCIÓN (Pelota) ---
 class YoloDetWrapper(YoloBaseWrapper):
     def detect_ball(self, blob, img_w, img_h):
+        # 🛡️ GUARDIA: Si el modelo falló al cargar, devolvemos lista vacía y no crasheamos
+        if self.net is None: 
+            return []
+
         self.net.setInput(blob)
         outputs = self.net.forward()
         
-        # Salida: [1, 84, 8400] -> (cx,cy,w,h + 80 clases)
+        # Salida YOLOv8 Det: [1, 84, 8400]
         preds = np.squeeze(outputs[0]).T
         
-        # Clase 32 es "sports ball" en COCO
-        # Filtramos solo detecciones con alta confianza en clase 32
-        ball_scores = preds[:, 32+4] # +4 porque los primeros 4 son bbox
+        # Clase 32 = Sports Ball
+        ball_scores = preds[:, 32+4] 
         keep_idxs = ball_scores > self.conf_thres
         
         preds = preds[keep_idxs]
@@ -52,12 +72,11 @@ class YoloDetWrapper(YoloBaseWrapper):
         
         if len(scores) == 0: return []
 
-        # Cajas
         boxes = preds[:, :4]
-        # xywh -> xyxy para NMS
+        # xywh -> xyxy
         boxes_xywh = boxes.copy()
-        boxes_xywh[:, 0] = boxes[:, 0] - boxes[:, 2] / 2 # x
-        boxes_xywh[:, 1] = boxes[:, 1] - boxes[:, 3] / 2 # y
+        boxes_xywh[:, 0] = boxes[:, 0] - boxes[:, 2] / 2
+        boxes_xywh[:, 1] = boxes[:, 1] - boxes[:, 3] / 2
         
         indices = cv2.dnn.NMSBoxes(boxes_xywh.tolist(), scores.tolist(), self.conf_thres, self.iou_thres)
         
@@ -75,13 +94,17 @@ class YoloDetWrapper(YoloBaseWrapper):
             
         return balls
 
-# --- WRAPPER POSE (Para la Persona) ---
+# --- WRAPPER POSE (Persona) ---
 class YoloPoseWrapper(YoloBaseWrapper):
     def detect_pose(self, blob, img_w, img_h):
+        # 🛡️ GUARDIA
+        if self.net is None: 
+            return []
+
         self.net.setInput(blob)
         outputs = self.net.forward()
         
-        # Salida: [1, 56, 8400]
+        # Salida YOLOv8 Pose: [1, 56, 8400]
         preds = np.squeeze(outputs[0]).T
         scores = preds[:, 4]
         keep_idxs = scores > self.conf_thres
@@ -119,52 +142,59 @@ class YoloPoseWrapper(YoloBaseWrapper):
 class HitDetectionService:
     def __init__(self, default_model_dirs: List[str] = None):
         self.models_dir = "/app/ai_engine/models"
-        self.det_path = os.path.join(self.models_dir, "yolov8n.onnx")       # Detección (Pelota)
-        self.pose_path = os.path.join(self.models_dir, "yolov8n-pose.onnx")  # Pose (Persona)
-        self.midas_path = os.path.join(self.models_dir, "midas_v21_small.onnx") # Profundidad
+        self.det_path = os.path.join(self.models_dir, "yolov8n.onnx")       
+        self.pose_path = os.path.join(self.models_dir, "yolov8n-pose.onnx")  
+        self.midas_path = os.path.join(self.models_dir, "midas_v21_small.onnx") 
 
-        print(f"\n[DEBUG SISTEMA] Iniciando servicio con YOLOv8 (Pelota) + YOLOv8-Pose (Persona)...")
-        self._check_and_download_models()
+        # URLs
+        self.det_url = "https://github.com/ultralytics/assets/releases/download/v8.2.0/yolov8n.onnx"
+        self.pose_url = "https://github.com/ultralytics/assets/releases/download/v8.2.0/yolov8n-pose.onnx"
+        self.midas_url = "https://github.com/isl-org/MiDaS/releases/download/v2_1/model-small.onnx"
 
-        # Inicializar Modelos
-        self.det_model = YoloDetWrapper(self.det_path, conf_thres=0.35) # Umbral bajo para pelota
+        print(f"\n[DEBUG] Iniciando HitDetectionService (Versión Robusta)...")
+        
+        # 1. Descargar (con reintentos)
+        self._ensure_model(self.det_url, self.det_path)
+        self._ensure_model(self.pose_url, self.pose_path)
+        self._ensure_model(self.midas_url, self.midas_path)
+
+        # 2. Cargar Modelos
+        self.det_model = YoloDetWrapper(self.det_path, conf_thres=0.30) # Umbral más permisivo
         self.det_model.load_model("YOLO-BALL")
         
         self.pose_model = YoloPoseWrapper(self.pose_path, conf_thres=0.5)
         self.pose_model.load_model("YOLO-POSE")
         
-        print("[MiDaS] Cargando modelo de profundidad...")
-        self.midas_net = cv2.dnn.readNet(self.midas_path)
-        self.midas_net.setPreferableBackend(cv2.dnn.DNN_BACKEND_CUDA)
-        self.midas_net.setPreferableTarget(cv2.dnn.DNN_TARGET_CUDA)
+        self.midas_net = None
+        if os.path.exists(self.midas_path):
+            try:
+                self.midas_net = cv2.dnn.readNet(self.midas_path)
+                self.midas_net.setPreferableBackend(cv2.dnn.DNN_BACKEND_CUDA)
+                self.midas_net.setPreferableTarget(cv2.dnn.DNN_TARGET_CUDA)
+                print("[MiDaS] ✅ Cargado.")
+            except:
+                print("[MiDaS] ❌ Falló carga.")
 
-    def _check_and_download_models(self):
-        os.makedirs(self.models_dir, exist_ok=True)
-        # 1. YOLOv8n (Detection) - Fuente Oficial
-        if not os.path.exists(self.det_path):
-            self._download("https://github.com/jahongir7174/YOLOv8-onnx/blob/10626c4e55a35918c75c5c32ebadd952d053bc73/weights/v8_n.onnx", self.det_path)
+    def _ensure_model(self, url, path):
+        """Descarga inteligente: verifica tamaño y reintenta."""
+        if os.path.exists(path):
+            if os.path.getsize(path) > 100000: return # OK
+            else: 
+                print(f"[Descarga] 🗑️ Eliminando archivo corrupto: {path}")
+                os.remove(path)
         
-        # 2. YOLOv8n-Pose - Fuente Oficial
-        if not os.path.exists(self.pose_path):
-            self._download("https://huggingface.co/Xenova/yolov8-pose-onnx/resolve/main/yolov8n-pose.onnx?download=true", self.pose_path)
-            
-        # 3. MiDaS
-        if not os.path.exists(self.midas_path):
-            self._download("https://github.com/isl-org/MiDaS/releases/download/v2_1/model-small.onnx", self.midas_path)
-
-    def _download(self, url, path):
         print(f"⏳ Descargando {os.path.basename(path)}...")
         try:
             opener = urllib.request.build_opener()
             opener.addheaders = [('User-Agent', 'Mozilla/5.0')]
             urllib.request.install_opener(opener)
             urllib.request.urlretrieve(url, path)
-            print("✅ OK.")
+            print("✅ Descarga OK.")
         except Exception as e:
             print(f"❌ Error descarga: {e}")
 
     def get_depth_map(self, frame):
-        # MiDaS v2.1 Small requiere 256x256
+        if self.midas_net is None: return None
         h, w = frame.shape[:2]
         blob = cv2.dnn.blobFromImage(frame, 1/255.0, (256, 256), (123.675, 116.28, 103.53), True, False)
         self.midas_net.setInput(blob)
@@ -174,47 +204,34 @@ class HitDetectionService:
         return cv2.normalize(depth, None, 0, 255, cv2.NORM_MINMAX, cv2.CV_8U)
 
     def analyze_scene(self, balls, people, depth_map):
-        """
-        Lógica:
-        1. Tomar la pelota.
-        2. Comparar distancia con muñecas (Wrists).
-        3. Comparar profundidad (Z).
-        """
         events = []
-        if not balls or not people or depth_map is None:
-            return events
+        if not balls or not people or depth_map is None: return events
 
-        # Tomamos la pelota con mayor confianza
+        # Pelota más probable
         balls.sort(key=lambda x: x[4], reverse=True)
-        bx, by, bw, bh, bconf = balls[0]
+        bx, by, bw, bh, _ = balls[0]
         ball_center = (bx + bw//2, by + bh//2)
         
-        # Profundidad de la pelota
         try: ball_z = depth_map[ball_center[1], ball_center[0]]
         except: return events
 
         for p in people:
             kpts = p['keypoints']
-            # 9: Left Wrist, 10: Right Wrist
+            # 9: Wrist L, 10: Wrist R
             wrists = [("Izquierda", kpts[9]), ("Derecha", kpts[10])]
 
             for side, w in wrists:
                 if w['conf'] < 0.5: continue
                 
-                # Distancia 2D (Pixeles)
                 dist_2d = np.linalg.norm(np.array([w['x'], w['y']]) - np.array(ball_center))
-                
-                # Distancia Z (Profundidad 0-255)
                 try: 
                     wrist_z = depth_map[w['y'], w['x']]
                     dist_z = abs(int(ball_z) - int(wrist_z))
                 except: continue
 
-                # UMBRALES DE GOLPE
-                # 2D: < 120px (aumentado porque YOLO es preciso)
-                # Z: < 40 unidades (cercanía en profundidad)
+                # LÓGICA DE GOLPE
                 if dist_2d < 120 and dist_z < 40:
-                    events.append(f"Golpe Mano {side} (D2D:{dist_2d:.0f}, DZ:{dist_z})")
+                    events.append(f"Golpe Mano {side}")
 
         return events
 
@@ -227,8 +244,6 @@ class HitDetectionService:
         
         start_time = time.time()
         
-        # Buffer de blobs para optimización (opcional, aquí lo hacemos secuencial por seguridad)
-        
         while processed < max_frames:
             ret, frame = cap.read()
             if not ret: break
@@ -239,68 +254,45 @@ class HitDetectionService:
             
             h, w = frame.shape[:2]
 
-            # 1. Preparar BLOB compartido (YOLO usa el mismo preproceso para Det y Pose)
-            # Esto ahorra tiempo de CPU
+            # 1. BLOB compartido
             shared_blob = self.det_model.preprocess(frame)
             
-            # 2. Detectar Pelota
+            # 2. Inferencia (Con protección si los modelos no cargaron)
             balls = self.det_model.detect_ball(shared_blob, w, h)
-            
-            # 3. Detectar Personas (Usamos el mismo blob!)
             people = self.pose_model.detect_pose(shared_blob, w, h)
             
-            # 4. Profundidad (Solo si hay pelota y persona, es muy pesado)
-            depth_map = None
             events = []
-            
             if len(balls) > 0 and len(people) > 0:
                 depth_map = self.get_depth_map(frame)
                 events = self.analyze_scene(balls, people, depth_map)
 
-            # --- VISUALIZACIÓN / DEBUG ---
-            frame_log = {
+            # Debug logs
+            hit_found = len(events) > 0
+            debug_logs.append({
                 "frame": frame_idx,
                 "balls": len(balls),
                 "people": len(people),
-                "hit": len(events) > 0,
+                "hit": hit_found,
                 "events": events
-            }
-            debug_logs.append(frame_log)
+            })
 
-            # Generar imagen si se pide O si hay HIT (para ver el resultado)
-            if return_images or len(events) > 0:
+            # Generar imagen si se pide
+            if return_images and (hit_found or len(images_b64) < 10):
                 vis = frame.copy()
-                
-                # Dibujar pelotas
                 for b in balls:
                     cv2.rectangle(vis, (b[0], b[1]), (b[0]+b[2], b[1]+b[3]), (0,0,255), 2)
-                    cv2.putText(vis, f"Ball {b[4]:.2f}", (b[0], b[1]-5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0,0,255), 1)
-
-                # Dibujar esqueleto (básico)
                 for p in people:
                     kpts = p['keypoints']
-                    # Línea Muñeca-Codo-Hombro
-                    arm_l = [9, 7, 5]
-                    arm_r = [10, 8, 6]
-                    for arm in [arm_l, arm_r]:
-                        for i in range(len(arm)-1):
-                            kp1, kp2 = kpts[arm[i]], kpts[arm[i+1]]
-                            if kp1['conf']>0.5 and kp2['conf']>0.5:
-                                cv2.line(vis, (kp1['x'], kp1['y']), (kp2['x'], kp2['y']), (0,255,0), 2)
-                    # Marcar muñecas
                     rw, lw = kpts[10], kpts[9]
-                    if rw['conf']>0.5: cv2.circle(vis, (rw['x'], rw['y']), 5, (255,255,0), -1)
-                    if lw['conf']>0.5: cv2.circle(vis, (lw['x'], lw['y']), 5, (255,255,0), -1)
+                    if rw['conf']>0.5: cv2.circle(vis, (rw['x'], rw['y']), 5, (0,255,0), -1)
+                    if lw['conf']>0.5: cv2.circle(vis, (lw['x'], lw['y']), 5, (0,255,0), -1)
+                
+                if hit_found:
+                    cv2.putText(vis, events[0], (50, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0,255,255), 2)
 
-                # Si hay HIT, escribirlo grande
-                if len(events) > 0:
-                    cv2.putText(vis, events[0], (50, 100), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 255), 3)
-
-                # Guardar imagen (limitado a 30 frames de muestra para no saturar respuesta)
-                if len(images_b64) < 30 or len(events) > 0:
-                    _, buf = cv2.imencode('.jpg', vis)
-                    b64 = base64.b64encode(buf).decode('utf-8')
-                    images_b64.append({"frame": frame_idx, "hit": len(events)>0, "image": b64})
+                _, buf = cv2.imencode('.jpg', vis)
+                b64 = base64.b64encode(buf).decode('utf-8')
+                images_b64.append({"frame": frame_idx, "image": b64})
 
             processed += 1
             frame_idx += 1
@@ -310,11 +302,8 @@ class HitDetectionService:
         
         return {
             "success": True,
-            "performance": {
-                "fps": round(processed/total_time, 2),
-                "total_time": total_time
-            },
+            "performance": {"fps": round(processed/total_time, 2) if total_time > 0 else 0},
             "hits_detected": sum(1 for l in debug_logs if l['hit']),
-            "logs": debug_logs, # Resumen
-            "hit_images": images_b64
+            "hit_images": images_b64,
+            "logs": debug_logs[:20] # Limitamos logs para no saturar
         }
