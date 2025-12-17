@@ -9,7 +9,7 @@ import base64
 import numpy as np
 import cv2
 import tempfile
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Tuple
 
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
@@ -159,8 +159,10 @@ hit_detection_service = HitDetectionService([
 
 superres_service = SuperResolutionService(SUPERRES_MODEL_DIR, SUPERRES_MODEL_PATH)
 
-# Optional NanoDet-Plus detector for CPU fallback when jetson-inference is unavailable
+# Optional NanoDet-Plus detector and MiDaS ONNX depth model
 _nanodet_detector: Optional[NanoDetPlusDetector] = None
+_midas_net = None
+_midas_input_size = (256, 256)  # default for MiDaS small
 
 # --- FastAPI App ---
 app = FastAPI(title="Jetson Inference API")
@@ -206,6 +208,9 @@ class FaceCompareRequest(BaseModel):
     image_a_base64: str
     image_b_base64: str
     score_threshold: float = 0.6
+
+class DepthRequest(BaseModel):
+    image_base64: str
 
 @app.get("/health")
 def health():
@@ -473,6 +478,58 @@ def _crop_face(frame: np.ndarray, bbox: List[int]) -> np.ndarray:
     return crop if crop is not None and crop.size > 0 else frame
 
 
+def _ensure_midas_net():
+    """Load MiDaS ONNX model defined in MIDAS_MODEL_PATH."""
+    global _midas_net
+    if _midas_net is not None:
+        return _midas_net
+    model_path = os.environ.get('MIDAS_MODEL_PATH', os.path.join(MODELS_DIR, 'midas_v21_small.onnx'))
+    if not os.path.exists(model_path):
+        raise HTTPException(503, f"MiDaS no encontrado en {model_path}")
+    net = cv2.dnn.readNet(model_path)
+    try:
+        if cv2.cuda.getCudaEnabledDeviceCount() > 0:
+            net.setPreferableBackend(cv2.dnn.DNN_BACKEND_CUDA)
+            net.setPreferableTarget(cv2.dnn.DNN_TARGET_CUDA)
+        else:
+            net.setPreferableBackend(cv2.dnn.DNN_BACKEND_OPENCV)
+            net.setPreferableTarget(cv2.dnn.DNN_TARGET_CPU)
+    except Exception:
+        net.setPreferableBackend(cv2.dnn.DNN_BACKEND_OPENCV)
+        net.setPreferableTarget(cv2.dnn.DNN_TARGET_CPU)
+    _midas_net = net
+    print("✅ MiDaS ONNX cargado para estimación de profundidad")
+    return _midas_net
+
+
+def _run_midas_depth(frame: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+    """Return MiDaS raw depth map and normalized map (0-1)."""
+    net = _ensure_midas_net()
+    blob = cv2.dnn.blobFromImage(
+        frame,
+        scalefactor=1 / 255.0,
+        size=_midas_input_size,
+        mean=(123.675, 116.28, 103.53),
+        swapRB=True,
+        crop=False
+    )
+    net.setInput(blob)
+    depth = net.forward()
+    depth = np.squeeze(depth)
+    depth = cv2.resize(depth, (frame.shape[1], frame.shape[0]))
+    depth_min = float(depth.min())
+    depth_max = float(depth.max())
+    depth_norm = (depth - depth_min) / (depth_max - depth_min + 1e-6)
+    depth_norm = np.clip(depth_norm, 0.0, 1.0)
+    return depth, depth_norm
+
+
+def _depth_to_base64(depth_norm: np.ndarray) -> str:
+    depth_img = (depth_norm * 255).astype(np.uint8)
+    depth_color = cv2.applyColorMap(depth_img, cv2.COLORMAP_INFERNO)
+    return _encode_image_to_base64(depth_color)
+
+
 
 
 @app.post("/detect")
@@ -480,6 +537,15 @@ def detect(req: DetectionRequest):
     start_time = time.perf_counter()
     img = _decode_base64_image(req.image_base64)
     result = _run_inference(img, req.confidence, req.nms_threshold)
+    return _add_perf_metadata(result, start_time, frames_processed=1)
+
+
+@app.post("/detect/nanodet")
+def detect_nanodet(req: DetectionRequest):
+    """Ejecuta NanoDet-Plus directamente sin pasar por detectNet."""
+    start_time = time.perf_counter()
+    img = _decode_base64_image(req.image_base64)
+    result = _run_nanodet_fallback(img, req.confidence)
     return _add_perf_metadata(result, start_time, frames_processed=1)
 
 
@@ -876,6 +942,54 @@ async def detect_video(
             os.remove(tmp_path)
 
 
+@app.post("/detect/nanodet/video")
+async def detect_nanodet_video(
+    file: UploadFile = File(...),
+    confidence: float = Form(0.5),
+    frame_stride: int = Form(5),
+    max_frames: int = Form(200),
+):
+    """Analiza un video usando NanoDet-Plus directamente."""
+    if frame_stride <= 0:
+        raise HTTPException(400, "frame_stride must be > 0")
+    if max_frames <= 0:
+        raise HTTPException(400, "max_frames must be > 0")
+
+    start_time = time.perf_counter()
+    tmp_path = _save_upload_to_temp(file)
+    try:
+        cap = cv2.VideoCapture(tmp_path)
+        if not cap.isOpened():
+            raise HTTPException(400, "Unable to open uploaded video")
+
+        frames = []
+        frame_idx = 0
+        processed = 0
+        while processed < max_frames:
+            ret, frame = cap.read()
+            if not ret:
+                break
+            if frame_idx % frame_stride != 0:
+                frame_idx += 1
+                continue
+            inference = _run_nanodet_fallback(frame, confidence)
+            inference["frame_number"] = frame_idx
+            frames.append(inference)
+            processed += 1
+            frame_idx += 1
+        cap.release()
+        payload = {
+            "success": True,
+            "frames_analyzed": processed,
+            "frame_stride": frame_stride,
+            "results": frames,
+        }
+        return _add_perf_metadata(payload, start_time, frames_processed=processed)
+    finally:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+
+
 @app.post("/face/detect")
 def face_detect(req: FaceDetectionRequest):
     start_time = time.perf_counter()
@@ -911,6 +1025,75 @@ def face_compare(req: FaceCompareRequest):
         "threshold": req.score_threshold,
         "face_a": {"face_id": face_a["face_id"], "score": face_a["score"]},
         "face_b": {"face_id": face_b["face_id"], "score": face_b["score"]}
+    }
+
+
+@app.post("/depth/midas")
+def depth_midas(req: DepthRequest):
+    """Ejecuta MiDaS v2.1 Small para estimar profundidad en una imagen."""
+    start_time = time.perf_counter()
+    img = _decode_base64_image(req.image_base64)
+    depth_raw, depth_norm = _run_midas_depth(img)
+    payload = {
+        "success": True,
+        "depth_min": float(depth_raw.min()),
+        "depth_max": float(depth_raw.max()),
+        "depth_map_base64": _depth_to_base64(depth_norm),
+    }
+    return _add_perf_metadata(payload, start_time, frames_processed=1)
+
+
+@app.post("/depth/midas/video")
+def depth_midas_video(
+    file: UploadFile = File(...),
+    frame_stride: int = Form(5),
+    max_frames: int = Form(100),
+):
+    """Procesa un video completo con MiDaS (saltando frame_stride)."""
+    if frame_stride <= 0:
+        raise HTTPException(400, "frame_stride must be > 0")
+    if max_frames <= 0:
+        raise HTTPException(400, "max_frames must be > 0")
+
+    video_path = _save_upload_to_temp(file)
+    _ensure_video_duration(video_path, MAX_VIDEO_DURATION_S)
+    meta = _get_video_metadata(video_path)
+    fps = float(meta.get("fps") or 0)
+
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        raise HTTPException(400, "Unable to open uploaded video")
+
+    frames = []
+    frame_idx = 0
+    processed = 0
+    try:
+        while processed < max_frames:
+            ret, frame = cap.read()
+            if not ret:
+                break
+            if frame_idx % frame_stride != 0:
+                frame_idx += 1
+                continue
+            _, depth_norm = _run_midas_depth(frame)
+            frames.append({
+                "frame": frame_idx,
+                "timestamp_s": round(frame_idx / fps, 2) if fps > 0 else None,
+                "depth_map_base64": _depth_to_base64(depth_norm)
+            })
+            processed += 1
+            frame_idx += 1
+    finally:
+        cap.release()
+        if os.path.exists(video_path):
+            os.remove(video_path)
+
+    return {
+        "success": True,
+        "frames_processed": processed,
+        "frame_stride": frame_stride,
+        "video_duration_s": meta.get("duration"),
+        "depth_frames": frames
     }
 
 

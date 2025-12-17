@@ -170,12 +170,23 @@ RUN mkdir -p /app/models && \
 # 3. Copiamos el código fuente
 COPY . /app
 
-# 4. Auto-reparación de modelos viejos (Si todavía usas hit_detect.onnx)
-RUN if [ -f /app/src/services/hit_detect.onnx ]; then \
-        echo "🔧 Ejecutando onnxslim en hit_detect.onnx..."; \
+# 4. >>> LA MAGIA CORREGIDA: AUTO-REPARACIÓN DEL MODELO <<<
+# Buscamos el modelo en la raíz /app (donde dice tu log que está)
+RUN echo "🔍 Buscando hit_detect.onnx para repararlo..." && \
+    if [ -f /app/hit_detect.onnx ]; then \
+        echo "🔧 Encontrado en /app/hit_detect.onnx - Ejecutando onnxslim..."; \
+        onnxslim /app/hit_detect.onnx /app/hit_detect_fixed.onnx && \
+        mv /app/hit_detect_fixed.onnx /app/hit_detect.onnx && \
+        echo "✅ Modelo raíz reparado."; \
+    elif [ -f /app/src/services/hit_detect.onnx ]; then \
+        echo "🔧 Encontrado en /app/src/services/hit_detect.onnx - Ejecutando onnxslim..."; \
         onnxslim /app/src/services/hit_detect.onnx /app/src/services/hit_detect_fixed.onnx && \
         mv /app/src/services/hit_detect_fixed.onnx /app/src/services/hit_detect.onnx && \
-        echo "✅ hit_detect.onnx reparado."; \
+        echo "✅ Modelo en subcarpeta reparado."; \
+    else \
+        echo "⚠️ ADVERTENCIA: No se encontró hit_detect.onnx para reparar. Si este archivo existe, verifica la ruta."; \
+        # Listamos archivos para que veas dónde cayó al construir
+        ls -R /app; \
     fi
 
 # 5. Mover modelos a la carpeta de ejecución
