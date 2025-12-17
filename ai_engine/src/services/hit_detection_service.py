@@ -2,13 +2,14 @@ import cv2
 import numpy as np
 import os
 import urllib.request
-import time  # <--- IMPORTANTE: Necesario para medir el tiempo
+import time
+import base64
 from typing import Any, Dict, List
 from fastapi import HTTPException
 
 class HitDetectionService:
     def __init__(self, default_model_dirs: List[str] = None):
-        # Usamos el modelo 416x416 (Mejor balance para Jetson Nano)
+        # Configuración del modelo (416x416 balanceado)
         self.model_path = os.getenv("NANODET_MODEL_PATH", "/app/ai_engine/models/nanodet-plus-m_416.onnx")
         self.input_shape = (416, 416)
         
@@ -17,7 +18,7 @@ class HitDetectionService:
         self.iou_threshold = 0.50
 
         # URL del modelo (Mirror estable)
-        self.model_url = "https://github.com/RangiLyu/nanodet/releases/download/v1.0.0-alpha-1/nanodet-plus-m_416.onnx"
+        self.model_url = "https://github.com/hpc203/nanodet-plus-opencv/raw/main/nanodet-plus-m_416.onnx"
         
         self._net = None
         self._check_and_download_model()
@@ -25,7 +26,7 @@ class HitDetectionService:
 
     def _check_and_download_model(self):
         if not os.path.exists(self.model_path) or os.path.getsize(self.model_path) < 1000000:
-            print(f"[HitDetect] ⏳ Descargando modelo NanoDet-Plus desde mirror...")
+            print(f"[HitDetect] ⏳ Descargando modelo NanoDet-Plus...")
             try:
                 os.makedirs(os.path.dirname(self.model_path), exist_ok=True)
                 opener = urllib.request.build_opener()
@@ -43,7 +44,7 @@ class HitDetectionService:
             self._net.setPreferableBackend(cv2.dnn.DNN_BACKEND_CUDA)
             self._net.setPreferableTarget(cv2.dnn.DNN_TARGET_CUDA)
             
-            # Calentamiento (Warm-up)
+            # Warm-up
             dummy = np.zeros((1, 3, 416, 416), dtype=np.float32)
             self._net.setInput(dummy)
             self._net.forward(self._net.getUnconnectedOutLayersNames())
@@ -53,7 +54,7 @@ class HitDetectionService:
             raise e
 
     def _preprocess(self, image):
-        # NanoDet-Plus requiere: (Input - Mean) / Std
+        # NanoDet-Plus: (Input - Mean) / Std
         # scalefactor = 1 / 57.375 ≈ 0.017429
         blob = cv2.dnn.blobFromImage(
             image, 
@@ -105,7 +106,30 @@ class HitDetectionService:
                 })
         return results
 
-    def run_on_video(self, video_path: str, frame_stride: int, max_frames: int, hit_threshold: float) -> Dict[str, Any]:
+    def _draw_detections(self, frame, detections):
+        """Dibuja cajas simples en el frame para visualización"""
+        for det in detections:
+            box = det['box']
+            x, y, w, h = box[0], box[1], box[2], box[3]
+            conf = det['confidence']
+            
+            # Caja Verde
+            cv2.rectangle(frame, (x, y), (x+w, y+h), (0, 255, 0), 2)
+            
+            # Etiqueta
+            label = f"{conf:.2f}"
+            cv2.putText(frame, label, (x, y - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+        return frame
+
+    def run_on_video(
+        self, 
+        video_path: str, 
+        frame_stride: int, 
+        max_frames: int, 
+        hit_threshold: float,
+        return_images: bool = False  # <--- NUEVO PARÁMETRO QUE FALTABA
+    ) -> Dict[str, Any]:
+        
         if self._net is None: self._load_model()
         cap = cv2.VideoCapture(video_path)
         
@@ -115,10 +139,11 @@ class HitDetectionService:
         processed = 0
         hits_detected = 0
         debug_logs = []
+        hit_images_b64 = [] # Lista para guardar imágenes si se solicitan
         
-        # --- MÉTRICAS DE RENDIMIENTO ---
-        start_time = time.time()  # Hora de inicio global
-        inference_times = []      # Lista para guardar tiempos individuales por frame
+        # Métricas
+        start_time = time.time()
+        inference_times = []
 
         while processed < max_frames:
             ret, frame = cap.read()
@@ -128,22 +153,36 @@ class HitDetectionService:
                 frame_idx += 1
                 continue
 
-            # Cronometrar inferencia (Preproceso + IA + Postproceso)
+            # Inferencia
             t0 = time.time()
-            
             blob = self._preprocess(frame)
             self._net.setInput(blob)
             outputs = self._net.forward(self._net.getUnconnectedOutLayersNames())
             detections = self._postprocess(outputs, frame.shape[1], frame.shape[0])
-            
             t1 = time.time()
-            inference_times.append(t1 - t0) # Guardamos cuánto tardó este frame
+            inference_times.append(t1 - t0)
 
-            # Detectar Hit
+            # Lógica de Hit
             max_conf = max([d['confidence'] for d in detections]) if detections else 0.0
             is_hit = max_conf >= hit_threshold
             
-            if is_hit: hits_detected += 1
+            if is_hit: 
+                hits_detected += 1
+                
+                # Si se solicitan imágenes, las dibujamos y codificamos
+                if return_images:
+                    # Dibujar detección sobre una copia para no afectar (si quisieras seguir usando el original)
+                    visual_frame = self._draw_detections(frame.copy(), detections)
+                    
+                    # Codificar a JPG -> Base64
+                    _, buffer = cv2.imencode('.jpg', visual_frame)
+                    img_base64 = base64.b64encode(buffer).decode('utf-8')
+                    
+                    hit_images_b64.append({
+                        "frame": frame_idx,
+                        "hit_score": float(max_conf),
+                        "image_base64": img_base64
+                    })
             
             if len(debug_logs) < 10: 
                 debug_logs.append({"frame": frame_idx, "max_conf": float(max_conf), "detections": len(detections)})
@@ -153,19 +192,13 @@ class HitDetectionService:
 
         cap.release()
         
-        # --- CÁLCULO DE RESULTADOS FINALES ---
         end_time = time.time()
         total_duration = end_time - start_time
         
-        # Evitar división por cero si no se procesó nada
-        if processed > 0:
-            avg_fps = processed / total_duration
-            avg_inference_ms = (sum(inference_times) / len(inference_times)) * 1000
-        else:
-            avg_fps = 0
-            avg_inference_ms = 0
+        avg_fps = processed / total_duration if processed > 0 else 0
+        avg_inference_ms = (sum(inference_times) / len(inference_times)) * 1000 if inference_times else 0
 
-        return {
+        result = {
             "hits_detected": hits_detected,
             "debug_logs": debug_logs,
             "performance": {
@@ -175,3 +208,9 @@ class HitDetectionService:
                 "avg_inference_time_ms": round(avg_inference_ms, 2)
             }
         }
+
+        # Solo adjuntamos las imágenes si se pidieron
+        if return_images:
+            result["hit_images"] = hit_images_b64
+
+        return result
