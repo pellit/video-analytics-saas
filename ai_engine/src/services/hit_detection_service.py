@@ -151,14 +151,6 @@ class HitDetectionService:
         # 3. MiDaS
         if not os.path.exists(self.midas_path):
             self._download_file("https://github.com/isl-org/MiDaS/releases/download/v2_1/model-small.onnx", self.midas_path)
-            
-        # def _check_and_download_models(self):
-        #     os.makedirs(self.models_dir, exist_ok=True)
-        #         self._download_file("https://github.com/RangiLyu/nanodet/releases/download/v1.0.0-alpha-1/nanodet-plus-m_416.onnx", self.nanodet_path)
-        #         self._download_file("https://huggingface.co/Xenova/yolov8-pose-onnx/resolve/main/yolov8n-pose.onnx?download=true", self.pose_path)
-        #         self._download_file("https://github.com/isl-org/MiDaS/releases/download/v2_1/model-small.onnx", self.midas_path)
-        #         self._download_file("https://huggingface.co/SpotLab/YOLOv8Detection/resolve/3005c6751fb19cdeb6b10c066185908faf66a097/yolov8n.onnx?download=true", self.yolov8_path)
-
 
     def _download(self, url, path):
         print(f"⏳ Descargando {os.path.basename(path)}...")
