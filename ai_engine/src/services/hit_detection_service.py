@@ -110,15 +110,14 @@ class HitDetectionService:
         
         # 1. NanoDet Mirror
         self._download_file(
-            "https://github.com/hpc203/nanodet-plus-opencv/raw/main/nanodet-plus-m_416.onnx", 
+            "https://github.com/RangiLyu/nanodet/releases/download/v1.0.0-alpha-1/nanodet-plus-m_416.onnx", 
             self.nanodet_path
         )
 
         # 2. YOLO Pose Mirrors (Try multiple)
         if not os.path.exists(self.pose_path):
             mirrors = [
-                "https://github.com/ultralytics/assets/releases/download/v8.2.0/yolov8n-pose.onnx",
-                "https://github.com/akanametov/yolo-face-detection/releases/download/v0.0.1/yolov8n-pose.onnx"
+                "https://huggingface.co/Xenova/yolov8-pose-onnx/resolve/main/yolov8n-pose.onnx?download=true"
             ]
             for url in mirrors:
                 self._download_file(url, self.pose_path)
