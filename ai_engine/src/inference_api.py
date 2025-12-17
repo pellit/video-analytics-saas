@@ -25,6 +25,7 @@ from .services.video_io import (
     get_video_metadata,
     read_frame_at,
 )
+from .models.nanodet_plus import NanoDetPlusDetector
 from .services.face_service import FaceEmbeddingService
 from .services.activity_analysis import ActivityAnalyzer, SOCCER_BALL_LABELS, GYM_EQUIPMENT_LABELS
 from .services.actionnet_service import ActionNetService, JETSON_INFERENCE_AVAILABLE as ACTIONNET_AVAILABLE
@@ -158,6 +159,9 @@ hit_detection_service = HitDetectionService([
 
 superres_service = SuperResolutionService(SUPERRES_MODEL_DIR, SUPERRES_MODEL_PATH)
 
+# Optional NanoDet-Plus detector for CPU fallback when jetson-inference is unavailable
+_nanodet_detector: Optional[NanoDetPlusDetector] = None
+
 # --- FastAPI App ---
 app = FastAPI(title="Jetson Inference API")
 
@@ -228,6 +232,47 @@ def _get_video_metadata(path: str) -> Dict[str, float]:
     return get_video_metadata(path)
 
 
+def _ensure_nanodet_detector() -> NanoDetPlusDetector:
+    """Lazy-load NanoDet-Plus for CPU fallback."""
+    global _nanodet_detector
+    if _nanodet_detector is None:
+        try:
+            detector = NanoDetPlusDetector(device='cpu')
+            detector.load_model()
+            _nanodet_detector = detector
+            print("✅ NanoDet-Plus cargado como fallback de detección")
+        except Exception as exc:
+            raise HTTPException(503, f"NanoDet-Plus no disponible: {exc}")
+    return _nanodet_detector
+
+
+def _run_nanodet_fallback(img: np.ndarray, confidence: float) -> Dict[str, Any]:
+    """Execute NanoDet-Plus and format detections like detectNet."""
+    detector = _ensure_nanodet_detector()
+    start = time.perf_counter()
+    detections, _ = detector.detect(img, confidence_threshold=confidence)
+    formatted = []
+    for det in detections:
+        bbox = list(map(int, det.bbox))
+        formatted.append({
+            "class_name": det.class_name,
+            "class_id": int(det.class_id),
+            "confidence": round(float(det.confidence), 3),
+            "bbox": bbox,
+            "track_id": det.track_id,
+            "area": (bbox[2] - bbox[0]) * (bbox[3] - bbox[1]),
+            "status": None,
+            "source": "nanodet",
+            "engine": "nanodet-plus-m_416"
+        })
+    return {
+        "success": True,
+        "detections": formatted,
+        "time_ms": round((time.perf_counter() - start) * 1000, 2),
+        "engine": "nanodet-plus"
+    }
+
+
 def _build_sample_indices(frame_count: int, sample_interval_pct: int) -> List[int]:
     """Return sorted frame indices sampled every `sample_interval_pct` percent."""
     if frame_count <= 0:
@@ -277,7 +322,15 @@ def _log_environment_status():
 
 def _run_inference(img: np.ndarray, confidence: float, nms_threshold: float) -> dict:
     """Wrapper around detectNet inference service with optional YOLO fallback for the ball."""
-    return activity_analyzer.run_inference(img, confidence, nms_threshold)
+    try:
+        return activity_analyzer.run_inference(img, confidence, nms_threshold)
+    except HTTPException as exc:
+        detail = str(exc.detail)
+        if 'jetson-inference' in detail.lower() or 'detectnet' in detail.lower():
+            fallback = _run_nanodet_fallback(img, confidence)
+            fallback["warning"] = detail
+            return fallback
+        raise
 
 
 def _compute_player_motion_metrics(timeline: List[Dict[str, Any]], fps: float) -> Dict[str, Any]:
@@ -405,6 +458,19 @@ def _get_primary_face_embedding(image: np.ndarray, min_score: float = 0.6) -> Op
 def _encode_image_to_base64(img: np.ndarray) -> str:
     _, buf = cv2.imencode('.jpg', img)
     return 'data:image/jpeg;base64,' + base64.b64encode(buf.tobytes()).decode('ascii')
+
+
+def _crop_face(frame: np.ndarray, bbox: List[int]) -> np.ndarray:
+    x1, y1, x2, y2 = [int(v) for v in bbox]
+    h, w = frame.shape[:2]
+    x1 = max(0, min(x1, w - 1))
+    x2 = max(0, min(x2, w))
+    y1 = max(0, min(y1, h - 1))
+    y2 = max(0, min(y2, h))
+    if x2 <= x1 or y2 <= y1:
+        return frame
+    crop = frame[y1:y2, x1:x2]
+    return crop if crop is not None and crop.size > 0 else frame
 
 
 
@@ -626,6 +692,114 @@ def face_video_summary(
         "distinct_faces": distinct_faces,
         "samples": samples
     }
+
+
+@app.post("/face/video-total-summary")
+def face_video_total_summary(
+    file: UploadFile = File(...),
+    confidence: float = Form(0.6),
+    match_threshold: float = Form(0.7),
+    frame_stride: int = Form(5),
+    max_frames: int = Form(500),
+):
+    """
+    Analiza todo el video (saltando `frame_stride` frames) para detectar y agrupar
+    todas las caras. Devuelve una lista de rostros únicos con su mejor captura,
+    embedding y el momento en el que aparecieron por primera vez.
+    """
+    if frame_stride <= 0:
+        raise HTTPException(400, "frame_stride debe ser mayor a 0")
+    if max_frames <= 0:
+        raise HTTPException(400, "max_frames debe ser mayor a 0")
+
+    video_path = _save_upload_to_temp(file)
+    _ensure_video_duration(video_path, MAX_VIDEO_DURATION_S)
+    metadata = _get_video_metadata(video_path)
+    fps = float(metadata.get("fps") or 0)
+
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        raise HTTPException(400, "No se pudo abrir el video")
+
+    distinct_faces: List[Dict[str, Any]] = []
+    samples: List[Dict[str, Any]] = []
+
+    frame_idx = 0
+    processed = 0
+    try:
+        while processed < max_frames:
+            ret, frame = cap.read()
+            if not ret:
+                break
+            if frame_idx % frame_stride != 0:
+                frame_idx += 1
+                continue
+
+            faces = face_service.detect_with_embeddings(frame, confidence)
+            frame_entry = {
+                "frame": frame_idx,
+                "timestamp_s": round(frame_idx / fps, 2) if fps > 0 else None,
+                "faces": []
+            }
+            for detected in faces:
+                embedding = detected.get("embedding")
+                bbox = detected.get("bbox")
+                score = float(detected.get("score", 0.0))
+                face_id = None
+                for existing in distinct_faces:
+                    try:
+                        similarity = face_service.compare_embeddings(existing["embedding"], embedding)
+                    except Exception:
+                        similarity = 0.0
+                    if similarity >= match_threshold:
+                        face_id = existing["face_id"]
+                        existing["occurrences"] += 1
+                        existing["last_frame"] = frame_idx
+                        if fps > 0:
+                            existing["last_timestamp_s"] = round(frame_idx / fps, 2)
+                        if score > existing["best_score"]:
+                            existing["best_score"] = score
+                            existing["best_image"] = _encode_image_to_base64(_crop_face(frame, bbox))
+                        break
+                if face_id is None:
+                    face_id = len(distinct_faces) + 1
+                    first_ts = round(frame_idx / fps, 2) if fps > 0 else None
+                    distinct_faces.append({
+                        "face_id": face_id,
+                        "embedding": embedding,
+                        "best_score": score,
+                        "best_image": _encode_image_to_base64(_crop_face(frame, bbox)),
+                        "occurrences": 1,
+                        "first_frame": frame_idx,
+                        "first_timestamp_s": first_ts,
+                        "last_frame": frame_idx,
+                        "last_timestamp_s": first_ts
+                    })
+                frame_entry["faces"].append({
+                    "face_id": face_id,
+                    "score": score,
+                    "bbox": bbox
+                })
+
+            samples.append(frame_entry)
+            processed += 1
+            frame_idx += 1
+    finally:
+        cap.release()
+        if os.path.exists(video_path):
+            os.remove(video_path)
+
+    summary = {
+        "distinct_faces_count": len(distinct_faces),
+        "distinct_faces": distinct_faces,
+        "frames_processed": processed,
+        "frame_stride": frame_stride,
+        "match_threshold": match_threshold,
+        "confidence": confidence,
+        "video_duration_s": metadata.get("duration"),
+        "samples": samples
+    }
+    return summary
 
 
 @app.post("/detect/batch")
