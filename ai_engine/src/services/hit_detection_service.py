@@ -142,7 +142,7 @@ class HitDetectionService:
         os.makedirs(self.models_dir, exist_ok=True)
         # 1. YOLOv8n (Detection) - Fuente Oficial
         if not os.path.exists(self.det_path):
-            self._download("https://huggingface.co/SpotLab/YOLOv8Detection/resolve/3005c6751fb19cdeb6b10c066185908faf66a097/yolov8n.onnx?download=true", self.det_path)
+            self._download("https://github.com/jahongir7174/YOLOv8-onnx/blob/10626c4e55a35918c75c5c32ebadd952d053bc73/weights/v8_n.onnx", self.det_path)
         
         # 2. YOLOv8n-Pose - Fuente Oficial
         if not os.path.exists(self.pose_path):
