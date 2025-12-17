@@ -136,28 +136,49 @@ RUN if [ "$BUILD_OPENCV" = "1" ]; then \
         echo "⏭️  Saltando compilación de OpenCV"; \
     fi
 
-# 5. Dependencias y Modelos del Proyecto
+# ------------------------------------------------------------------------------
+# 5. Dependencias y Modelos del Proyecto (CON AUTO-REPARACIÓN ONNXSLIM)
+# ------------------------------------------------------------------------------
 WORKDIR /app
 COPY requirements.jetson.txt /app/requirements.txt
 
+# 1. Instalamos las dependencias + onnxslim
+# NOTA: Agregamos 'onnxslim' aquí. Es más ligero y compatible que onnx-simplifier.
 RUN ${PYTHON_BIN} -m pip install --no-cache-dir --upgrade pip setuptools wheel && \
     ${PYTHON_BIN} -m pip install --no-cache-dir Cython && \
     ${PYTHON_BIN} -m pip install --no-cache-dir "httptools>=0.6.0" "uvloop>=0.17.0" "websockets>=11.0" && \
+    ${PYTHON_BIN} -m pip install --no-cache-dir onnxslim && \
     ${PYTHON_BIN} -m pip install --no-cache-dir --ignore-installed PyYAML && \
     cat requirements.txt | grep -v "opencv-python" > requirements_filtered.txt && \
     ${PYTHON_BIN} -m pip install --no-cache-dir -r requirements_filtered.txt && \
-    # Descargar modelos base de jetson-inference (classification/obj detection/etc)
     if [ -d /opt/jetson-inference/python/training/classification ]; then \
         cd /opt/jetson-inference/python/training/classification && ./download-models.sh; \
     fi
 
+# 2. Descargamos modelos extra (Face / SuperRes)
 RUN mkdir -p /app/models && \
     curl -L -o /app/models/face_detection_yunet_2023mar.onnx https://github.com/opencv/opencv_zoo/raw/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx && \
     curl -L -o /app/models/face_recognition_sface_2021dec.onnx https://github.com/opencv/opencv_zoo/raw/main/models/face_recognition_sface/face_recognition_sface_2021dec.onnx && \
     curl -L -o /app/models/ESPCN_x4.pb https://github.com/Saafke/EDSR_Tensorflow/raw/master/models/ESPCN_x4.pb && \
     curl -L -o /app/models/FSRCNN_x4.pb https://github.com/Saafke/FSRCNN_Tensorflow/raw/master/models/FSRCNN_x4.pb
 
+# 3. Copiamos el código fuente (Incluyendo tu hit_detect.onnx MALO)
 COPY . /app
+
+# 4. >>> LA MAGIA: AUTO-REPARACIÓN DEL MODELO <<<
+# Buscamos el modelo y le pasamos onnxslim para quitar la capa TopK
+RUN if [ -f /app/src/services/hit_detect.onnx ]; then \
+        echo "🔧 Encontrado hit_detect.onnx - Ejecutando onnxslim para arreglar capas TopK..."; \
+        # Simplificamos y guardamos en un temporal
+        onnxslim /app/src/services/hit_detect.onnx /app/src/services/hit_detect_fixed.onnx && \
+        # Sobrescribimos el original con el arreglado
+        mv /app/src/services/hit_detect_fixed.onnx /app/src/services/hit_detect.onnx && \
+        echo "✅ Modelo reparado exitosamente."; \
+    else \
+        echo "⚠️ No se encontró hit_detect.onnx en la ruta esperada durante el build."; \
+    fi
+
+# Aseguramos que los modelos estén en su lugar final
 RUN mkdir -p /app/ai_engine/models && \
     cp /app/models/* /app/ai_engine/models/
 
