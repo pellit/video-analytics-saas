@@ -12,7 +12,7 @@ from typing import Any, Dict, List
 # 0. WRAPPER PARA API LOCAL (NUEVO)
 # ==========================================
 class ExternalApiWrapper:
-    def __init__(self, base_url="http://localhost:8000"):
+    def __init__(self, base_url="http://localhost:5050"):
         self.base_url = base_url
 
     def segment_image(self, image_b64):
