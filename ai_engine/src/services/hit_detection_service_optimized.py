@@ -290,7 +290,7 @@ class HitDetectionServiceOptimized:
         return frames_meta, faces_start, faces_mid, fps
 
     # ---------------------------------------------------------
-    # FASE 2: ANÁLISIS (Batch Logic)
+    # FASE 2: ANÁLISIS (Batch Logic) - VERSIÓN ENDURECIDA
     # ---------------------------------------------------------
     def analyze_trajectory(self, frames_meta):
         # 1. Calibración Global
@@ -305,7 +305,6 @@ class HitDetectionServiceOptimized:
                     valid_widths.append(f["ball"]["w"])
                     player_heights.append(f["person_h"])
         
-        # --- FIX: add_sample ahora solo toma 1 argumento ---
         for w in valid_widths: self.calibrator.add_sample(w)
         
         if player_heights:
@@ -326,7 +325,7 @@ class HitDetectionServiceOptimized:
         # 3. Detección Eventos
         events_log = []
         juggles = 0
-        last_hit_frame_idx = -100
+        last_hit_frame_idx = -100 # Tiempo absoluto del último golpe
         dribble_state = "Parado"
 
         for i, f in enumerate(frames_meta):
@@ -340,24 +339,39 @@ class HitDetectionServiceOptimized:
             height_cm = (floor - ball_y) / scale
             
             # --- JUGGLING ---
+            # Filtro 1: Altura mínima (evitar contar dribbling como juggles)
             if height_cm > 15:
-                # Condición relajada: Sube O está estable cerca del pie
-                is_contact = (velocity_y < -1.5) # Golpe fuerte
+                
+                # Filtro 2: Velocidad Vertical (Debe estar subiendo CLARAMENTE)
+                # Valor más negativo = subida más rápida. -2.0 filtra ruido.
+                is_moving_up = (velocity_y < -2.0) 
                 
                 for leg_label, foot in [("Izq", f["feet"]["L"]), ("Der", f["feet"]["R"])]:
                     if foot["conf"] < 0.5: continue
                     
+                    # Distancias en CM
                     dx = abs(foot["x"] - f["ball"]["x"]) / scale
                     dy = abs(foot["y"] - ball_y) / scale
-                    dz = abs(foot["z"] - f["ball"]["z"])
+                    dz = abs(foot["z"] - f["ball"]["z"]) # Profundidad (0-255)
                     
-                    # Golpe fuerte (sube rápido)
-                    hit_strong = is_contact and dx < 35 and dy < 35
-                    # Control suave (muy pegada)
-                    hit_soft = dx < 20 and dy < 20
+                    # --- REGLAS DE CONTACTO (ENDURECIDAS) ---
                     
-                    if (hit_strong or hit_soft) and dz < 70:
-                        if (f["idx"] - last_hit_frame_idx) > 8:
+                    # Caso A: Golpe Estándar (La pelota sale disparada)
+                    # Exigimos que esté a menos de 25cm (aprox el largo de un botín)
+                    hit_strong = is_moving_up and dx < 25 and dy < 30
+                    
+                    # Caso B: Control/Amortiguación (La pelota no sube rápido)
+                    # Exigimos proximidad EXTREMA. 15cm en X y 10cm en Y (pegada al empeine)
+                    hit_soft = dx < 15 and dy < 10
+                    
+                    # Filtro 3: Profundidad (Z)
+                    # 50 unidades es estricto. Evita falsos positivos por perspectiva.
+                    z_ok = dz < 50
+                    
+                    if (hit_strong or hit_soft) and z_ok:
+                        # Filtro 4: Debounce (Tiempo de espera)
+                        # 12 frames a 30fps = 0.4 segundos de espera entre toques.
+                        if (f["idx"] - last_hit_frame_idx) > 12:
                             juggles += 1
                             last_hit_frame_idx = f["idx"]
                             events_log.append({
@@ -366,14 +380,14 @@ class HitDetectionServiceOptimized:
                                 "count": juggles,
                                 "hit_leg": leg_label
                             })
-                            break
+                            break # Solo un pie puede golpear a la vez
             
             # --- DRIBBLE ---
             elif height_cm <= 15:
                 d_l = np.sqrt((f["feet"]["L"]["x"]-f["ball"]["x"])**2 + (f["feet"]["L"]["y"]-ball_y)**2) / scale
                 d_r = np.sqrt((f["feet"]["R"]["x"]-f["ball"]["x"])**2 + (f["feet"]["R"]["y"]-ball_y)**2) / scale
                 
-                if min(d_l, d_r) < 70:
+                if min(d_l, d_r) < 60:
                     cx = (f["feet"]["L"]["x"] + f["feet"]["R"]["x"]) / 2
                     if f["ball"]["x"] > cx + 15: dribble_state = "Derecha >>"
                     elif f["ball"]["x"] < cx - 15: dribble_state = "<< Izquierda"
