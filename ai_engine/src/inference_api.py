@@ -5,6 +5,7 @@ UPDATED: Uses NanoDet-Plus (NanoDet-Plus-m 416x416 recommended)
 
 import os
 import time
+import json
 import base64
 import numpy as np
 import cv2
@@ -451,14 +452,16 @@ def _run_hit_detection_on_video(
     frame_stride: int,
     max_frames: int,
     hit_threshold: float,
-    return_images: bool = False
+    return_images: bool = False,
+    api_params: Optional[Dict[str, Any]] = None,
 ):
     return hit_detection_service.run_on_video(
         video_path=video_path,
         frame_stride=frame_stride,
         max_frames=max_frames,
         hit_threshold=hit_threshold,
-        return_images=return_images
+        return_images=return_images,
+        api_params=api_params or {},
     )
 
 
@@ -1182,13 +1185,33 @@ def depth_midas_video(
 @app.post("/detect/hit/video")
 async def detect_hit_video(
     file: UploadFile = File(...),
-    frame_stride: int = Form(None),
-    max_frames: int = Form(None),
-    hit_threshold: float = Form(None),
-    return_images: bool = Form(False)
+    frame_stride: int = Form(1),
+    max_frames: int = Form(1800),
+    hit_threshold: float = Form(0.1),
+    return_images: bool = Form(False),
+    api_params: Optional[str] = Form(None),
 ):
     tmp_path = _save_upload_to_temp(file)
     try:
+        custom_hit_params: Dict[str, Any] = {}
+        if api_params:
+            try:
+                parsed_params = json.loads(api_params)
+            except json.JSONDecodeError as exc:
+                raise HTTPException(400, f"api_params debe ser JSON válido: {exc.msg}") from exc
+            if isinstance(parsed_params, dict):
+                custom_hit_params = parsed_params.get("api_params", parsed_params)
+                if not isinstance(custom_hit_params, dict):
+                    raise HTTPException(400, "api_params debe ser un objeto JSON con parámetros")
+            else:
+                raise HTTPException(400, "api_params debe ser un objeto JSON")
+
+        if "conf_threshold" in custom_hit_params:
+            try:
+                hit_threshold = float(custom_hit_params.pop("conf_threshold"))
+            except (TypeError, ValueError) as exc:
+                raise HTTPException(400, "conf_threshold debe ser un número") from exc
+
         # Obtener duración y FPS del video
         cap = cv2.VideoCapture(tmp_path)
         if not cap.isOpened():
@@ -1221,7 +1244,14 @@ async def detect_hit_video(
         if hit_threshold < 0 or hit_threshold > 1:
             raise HTTPException(400, "hit_threshold must be between 0 and 1")
 
-        results = _run_hit_detection_on_video(tmp_path, frame_stride, max_frames, hit_threshold, return_images=return_images)
+        results = _run_hit_detection_on_video(
+            tmp_path,
+            frame_stride,
+            max_frames,
+            hit_threshold,
+            return_images=return_images,
+            api_params=custom_hit_params,
+        )
         return {
             "success": True,
             "video_duration_s": duration,
