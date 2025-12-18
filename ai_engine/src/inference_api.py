@@ -5,7 +5,6 @@ UPDATED: Uses NanoDet-Plus (NanoDet-Plus-m 416x416 recommended)
 
 import os
 import time
-import json
 import base64
 import numpy as np
 import cv2
@@ -453,7 +452,6 @@ def _run_hit_detection_on_video(
     max_frames: int,
     hit_threshold: float,
     return_images: bool = False,
-    api_params: Optional[Dict[str, Any]] = None,
 ):
     return hit_detection_service.run_on_video(
         video_path=video_path,
@@ -461,7 +459,6 @@ def _run_hit_detection_on_video(
         max_frames=max_frames,
         hit_threshold=hit_threshold,
         return_images=return_images,
-        api_params=api_params or {},
     )
 
 
@@ -1189,29 +1186,9 @@ async def detect_hit_video(
     max_frames: int = Form(1800),
     hit_threshold: float = Form(0.1),
     return_images: bool = Form(False),
-    api_params: Optional[str] = Form(None),
 ):
     tmp_path = _save_upload_to_temp(file)
     try:
-        custom_hit_params: Dict[str, Any] = {}
-        if api_params:
-            try:
-                parsed_params = json.loads(api_params)
-            except json.JSONDecodeError as exc:
-                raise HTTPException(400, f"api_params debe ser JSON válido: {exc.msg}") from exc
-            if isinstance(parsed_params, dict):
-                custom_hit_params = parsed_params.get("api_params", parsed_params)
-                if not isinstance(custom_hit_params, dict):
-                    raise HTTPException(400, "api_params debe ser un objeto JSON con parámetros")
-            else:
-                raise HTTPException(400, "api_params debe ser un objeto JSON")
-
-        if "conf_threshold" in custom_hit_params:
-            try:
-                hit_threshold = float(custom_hit_params.pop("conf_threshold"))
-            except (TypeError, ValueError) as exc:
-                raise HTTPException(400, "conf_threshold debe ser un número") from exc
-
         # Obtener duración y FPS del video
         cap = cv2.VideoCapture(tmp_path)
         if not cap.isOpened():
@@ -1250,7 +1227,6 @@ async def detect_hit_video(
             max_frames,
             hit_threshold,
             return_images=return_images,
-            api_params=custom_hit_params,
         )
         return {
             "success": True,

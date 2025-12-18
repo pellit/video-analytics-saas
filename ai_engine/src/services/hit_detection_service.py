@@ -34,74 +34,59 @@ class ExternalApiWrapper:
         return "Error API"
 
 # ==========================================
-# 1. SISTEMA DE CALIBRACIÓN DE PELOTA
+# 1. SISTEMA DE CALIBRACIÓN AUTÓNOMA
 # ==========================================
 class BallCalibrator:
-    """
-    Administra la inferencia del tamaño de la pelota y la escala.
-    """
     def __init__(self):
-        # Estándares FIFA y Fabricantes (Diámetro en cm)
+        # Tamaños estándar (Diámetro cm)
         self.SIZES = {
-            1: 14.0, # Mini / Técnica
-            2: 14.0, # Promo
-            3: 18.0, # Niños < 8 años
-            4: 20.0, # Niños 8-12 años
-            5: 22.0  # Estándar Adultos/Pro
+            3: 18.0, # Niños pequeños
+            4: 20.0, # Niños 8-12
+            5: 22.0  # Estándar
         }
-        self.samples = [] # Muestras de ancho en px (solo válidas)
+        self.samples = [] 
         self.is_calibrated = False
-        self.selected_size_id = 5 # Por defecto Nº 5
+        self.selected_size_id = 5 # Asunción inicial
         self.real_diameter_cm = 22.0
-        self.px_per_cm = 0.0
-        
-        # Tolerancia (2cm en píxeles depende de la escala, se ajusta dinámicamente)
-        self.stability_counter = 0
+        self.px_per_cm = 1.0 # Valor seguro inicial
 
     def add_sample(self, ball_width_px, is_near_feet):
-        """
-        Solo agregamos muestras cuando la pelota está en el piso (mismo plano que el jugador)
-        para evitar deformación por perspectiva.
-        """
-        if is_near_feet and ball_width_px > 10:
+        # Solo tomamos muestras fiables (cerca del suelo/pies)
+        if is_near_feet and ball_width_px > 8:
             self.samples.append(ball_width_px)
 
-    def finalize_calibration(self, player_height_px, override_ball_size_cm: Optional[float] = None):
+    def finalize_calibration(self, player_height_px):
         """
-        Infiere el tipo de pelota basándose en la altura estimada del jugador.
+        Algoritmo de Inferencia Biológica:
+        Deduce el tamaño de la pelota según la altura lógica del jugador.
         """
         if not self.samples: return False
         
-        # 1. Obtener Mediana (Robusto a ruido)
-        median_px = np.median(self.samples)
+        # 1. Obtener la mediana del ancho de la pelota (filtra errores)
+        median_ball_px = np.median(self.samples)
         
-        # 2. Prueba de Hipótesis: ¿Es Adulto o Niño?
-        # Asumimos Talla 5 (22cm) y vemos qué altura da
-        temp_scale = median_px / 22.0
-        est_height_adult_hyp = player_height_px / temp_scale
+        # 2. Prueba de Hipótesis: ¿Si la pelota fuera Nº 5, cuánto mide el jugador?
+        scale_if_size_5 = median_ball_px / 22.0
+        height_if_size_5 = player_height_px / scale_if_size_5
         
-        print(f"[CALIB] Hipótesis Talla 5 -> Altura Jugador: {est_height_adult_hyp:.1f} cm")
-        
-        if override_ball_size_cm and override_ball_size_cm > 0:
-            self.selected_size_id = "manual"
-            self.real_diameter_cm = float(override_ball_size_cm)
+        print(f"[AUTO-CALIB] Mediana Pelota: {median_ball_px}px. Altura Jugador (Hipótesis T5): {height_if_size_5:.1f}cm")
+
+        # 3. Árbol de Decisión
+        if height_if_size_5 > 155:
+            self.selected_size_id = 5 # Es adulto o joven alto
+        elif 135 < height_if_size_5 <= 155:
+            self.selected_size_id = 4 # Es niño mediano
         else:
-            # Lógica de Decisión
-            if est_height_adult_hyp > 155:
-                self.selected_size_id = 5
-            elif 135 < est_height_adult_hyp <= 155:
-                self.selected_size_id = 4
-            elif est_height_adult_hyp <= 135:
-                self.selected_size_id = 3
-            self.real_diameter_cm = self.SIZES[self.selected_size_id]
-        self.px_per_cm = median_px / self.real_diameter_cm
+            self.selected_size_id = 3 # Es niño pequeño
+            
+        # 4. Fijar calibración final
+        self.real_diameter_cm = self.SIZES[self.selected_size_id]
+        self.px_per_cm = median_ball_px / self.real_diameter_cm
         self.is_calibrated = True
-        
-        print(f"[CALIB] FINAL: Pelota Nº {self.selected_size_id} ({self.real_diameter_cm}cm). Escala: {self.px_per_cm:.2f} px/cm")
         return True
 
 # ==========================================
-# 2. CLASES IA
+# 2. CLASES IA (YOLO)
 # ==========================================
 class YoloBaseWrapper:
     def __init__(self, model_path, conf_thres=0.4, iou_thres=0.5):
@@ -174,7 +159,7 @@ class YoloPoseWrapper(YoloBaseWrapper):
         return people
 
 # ==========================================
-# 2. SERVICIO PRINCIPAL
+# 2. SERVICIO INTELIGENTE
 # ==========================================
 class HitDetectionService:
     def __init__(self, default_model_dirs: List[str] = None):
@@ -185,12 +170,14 @@ class HitDetectionService:
         
         self.api = ExternalApiWrapper()
         
+        # Enlaces HF (Mirrors estables)
         self.det_url = "https://github.com/pellit/video-analytics-saas/raw/796d243e692b5b18f0344b033a152dcdd6326f36/ai_engine/yolov8n.onnx"
         self.pose_url = "https://huggingface.co/Xenova/yolov8-pose-onnx/resolve/main/yolov8n-pose.onnx?download=true"
         self.midas_url = "https://github.com/isl-org/MiDaS/releases/download/v2_1/model-small.onnx"
 
         self._check_and_download_models()
         
+        # Umbral bajo para la pelota (captar movimiento rápido)
         self.det_model = YoloDetWrapper(self.det_path, conf_thres=0.25)
         self.det_model.load_model("BALL")
         self.pose_model = YoloPoseWrapper(self.pose_path, conf_thres=0.5)
@@ -204,18 +191,17 @@ class HitDetectionService:
                 self.midas_net.setPreferableTarget(cv2.dnn.DNN_TARGET_CUDA)
             except: pass
 
-        # Estado Juego
+        # --- ESTADO ---
         self.juggles_count = 0        
         self.dribble_state = "Calibrando..." 
         self.prev_ball_y = None   
         self.ball_velocity_y = 0  
         self.last_hit_frame = -100 
         
-        # Reconocimiento
         self.faces_start, self.faces_middle = [], []
         self.detected_floor_y = None 
         
-        # INSTANCIA CALIBRADOR
+        # Instancia Calibrador Automático
         self.calibrator = BallCalibrator()
         self.player_height_m = 0.0
 
@@ -254,48 +240,35 @@ class HitDetectionService:
         elif not nose['conf'] > 0.4 and ears: return "Espalda"
         return "Lado"
 
-    def analyze_football(self, ball_box, person_box, person_kpts, depth_map, frame_idx,
-                         config: Optional[Dict[str, float]] = None):
-        config = config or {}
-        override_ball_size = config.get("ball_size_cm")
-        manual_player_height_m = config.get("player_height_m")
+    def analyze_football(self, ball_box, person_box, person_kpts, depth_map, frame_idx):
         bx, by, bw, bh = ball_box[:4]
         ball_cx = bx + bw//2
         ball_bottom_y = by + bh 
         
-        # === FASE DE CALIBRACIÓN ===
-        # Solo recolectamos datos si la pelota está "abajo" (cerca de los pies)
-        # para evitar problemas de perspectiva
+        # --- CALIBRACIÓN AUTOMÁTICA ---
+        # 1. Recolectar muestras si la pelota está "abajo" (cerca de los pies)
         feet = [person_kpts[15], person_kpts[16]]
         valid_feet = [f for f in feet if f['conf'] > 0.5]
         
         if valid_feet:
             feet_y_avg = sum([f['y'] for f in valid_feet]) / len(valid_feet)
-            # ¿Pelota cerca del suelo? (Margen 50px)
             is_near_feet = abs(ball_bottom_y - feet_y_avg) < 100 
             
-            # Recolectamos muestra
             if not self.calibrator.is_calibrated and is_near_feet:
                 self.calibrator.add_sample(bw, True)
                 
-            # Disparamos calibración en el frame 30
+            # 2. Finalizar calibración en frame 30 (Suficientes muestras)
             if frame_idx == 30 and not self.calibrator.is_calibrated:
-                self.calibrator.finalize_calibration(person_box[3], override_ball_size_cm=override_ball_size)
+                self.calibrator.finalize_calibration(person_box[3]) 
 
-        scale = self.calibrator.px_per_cm if (self.calibrator.is_calibrated and self.calibrator.px_per_cm > 0) else 0.0
-        if scale <= 0 and manual_player_height_m and manual_player_height_m > 0 and person_box[3] > 0:
-            # Calibración manual usando la altura configurada
-            scale = person_box[3] / (manual_player_height_m * 100.0)
-            self.player_height_m = manual_player_height_m
-        elif scale > 0:
+        # Si aún no calibramos, usamos escala genérica, sino la inferida
+        scale = self.calibrator.px_per_cm if self.calibrator.is_calibrated else 2.0 
+        
+        # Cálculo altura jugador en vivo
+        if self.calibrator.is_calibrated:
             self.player_height_m = (person_box[3] / scale) / 100.0
-        else:
-            scale = 2.0
 
-        if self.player_height_m <= 0 and manual_player_height_m:
-            self.player_height_m = manual_player_height_m
-
-        # === LÓGICA DE JUEGO ===
+        # --- LÓGICA DE JUEGO ---
         try: ball_z = depth_map[by+bh//2, bx+bw//2]
         except: return "", "Indefinido"
 
@@ -311,10 +284,9 @@ class HitDetectionService:
         self.prev_ball_y = ball_bottom_y
         
         event = ""
-        # Distancia en CM REALES (Calibrados)
         ball_height_cm = (ground_y - ball_bottom_y) / scale
 
-        # --- JUGGLING (> 15cm) ---
+        # JUGGLING (> 15cm Aire)
         if ball_height_cm > 15:
             if is_moving_up:
                 for foot in valid_feet:
@@ -324,8 +296,7 @@ class HitDetectionService:
                     except: foot_z = 0
                     dist_z = abs(int(ball_z) - int(foot_z))
 
-                    # Tolerancia de 2cm es muy estricta para video 30fps con motion blur
-                    # Usamos un radio efectivo de golpe de 25cm (bota + pelota)
+                    # Tolerancia de golpe efectiva
                     if dist_x_cm < 30 and dist_y_cm < 30 and dist_z < 60:
                         if (frame_idx - self.last_hit_frame) > 8:
                             self.juggles_count += 1
@@ -333,7 +304,7 @@ class HitDetectionService:
                             event = "JUGGLE!"
                             break
 
-        # --- DRIBBLE (<= 15cm) ---
+        # DRIBBLE (<= 15cm Piso)
         elif ball_height_cm <= 15:
             closest_cm = 999
             for f in valid_feet:
@@ -366,7 +337,7 @@ class HitDetectionService:
         except: bz = 128
         feet = [kpts[15], kpts[16]]
 
-        # AEREA
+        # Planta XZ
         cv2.putText(panel, "PLANTA (XZ)", (10,30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255,255,255), 1)
         cv2.rectangle(panel, (20,50), (300,200), (50,50,50), -1)
         def map_xz(x, z): return (20+int(x/w*280), 50+int(z/255.0*150))
@@ -379,7 +350,7 @@ class HitDetectionService:
                 f_xz = map_xz(f['x'], fz)
                 cv2.circle(panel, f_xz, 5, (0,255,0), -1)
 
-        # LATERAL
+        # Perfil ZY
         cv2.putText(panel, "PERFIL (ZY)", (10,240), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255,255,255), 1)
         cv2.rectangle(panel, (20,260), (300,410), (50,50,50), -1)
         def map_zy(z, y): return (20+int(z/255.0*280), 260+int(y/h*150))
@@ -390,50 +361,17 @@ class HitDetectionService:
             floor_y_map = map_zy(128, self.detected_floor_y)[1]
             cv2.line(panel, (20, floor_y_map), (300, floor_y_map), (0,0,255), 1)
 
-        # INFO CALIBRACIÓN
+        # Stats Visuales
         color_calib = (0, 255, 0) if self.calibrator.is_calibrated else (0, 0, 255)
-        ball_info = f"N {self.calibrator.selected_size_id} ({self.calibrator.real_diameter_cm}cm)"
-        cv2.putText(panel, f"Ball: {ball_info}", (10, 450), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color_calib, 1)
-        cv2.putText(panel, f"Player: {self.player_height_m:.2f} m", (10, 480), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200,200,200), 1)
-        cv2.putText(panel, f"Juggles: {self.juggles_count}", (10, 520), cv2.FONT_HERSHEY_SIMPLEX, 1, (0,255,255), 2)
+        txt_size = f"N {self.calibrator.selected_size_id} ({self.calibrator.real_diameter_cm}cm)"
+        cv2.putText(panel, f"Ball: {txt_size}", (10, 450), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color_calib, 1)
+        cv2.putText(panel, f"Playr: {self.player_height_m:.2f}m", (10, 480), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200,200,200), 1)
+        cv2.putText(panel, f"Juggl: {self.juggles_count}", (10, 520), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0,255,255), 2)
 
         return np.hstack((frame, panel))
 
-    def run_on_video(self, video_path, frame_stride=3, max_frames=300, hit_threshold=0.4,
-                     return_images=True, api_params: Optional[Dict[str, Any]] = None):
-        manual_ball_size = None
-        manual_player_height = None
-        if api_params:
-            if "ball_size_cm" in api_params:
-                try:
-                    manual_ball_size = float(api_params["ball_size_cm"])
-                except (TypeError, ValueError):
-                    manual_ball_size = None
-            if "player_height_m" in api_params:
-                try:
-                    manual_player_height = float(api_params["player_height_m"])
-                except (TypeError, ValueError):
-                    manual_player_height = None
-        config = {
-            "ball_size_cm": manual_ball_size,
-            "player_height_m": manual_player_height,
-        }
-
-        self.calibrator = BallCalibrator()
-        if manual_ball_size and manual_ball_size > 0:
-            self.calibrator.real_diameter_cm = manual_ball_size
-            self.calibrator.selected_size_id = "manual"
-
-        # Reiniciar estado entre ejecuciones
-        self.juggles_count = 0
-        self.dribble_state = "Calibrando..."
-        self.prev_ball_y = None
-        self.ball_velocity_y = 0
-        self.last_hit_frame = -100
-        self.faces_start, self.faces_middle = [], []
-        self.detected_floor_y = None
-        self.player_height_m = manual_player_height or 0.0
-
+    # SIN PARÁMETROS MANUALES (100% Autónomo)
+    def run_on_video(self, video_path, frame_stride=3, max_frames=300, hit_threshold=0.4, return_images=True):
         cap = cv2.VideoCapture(video_path)
         fps = cap.get(cv2.CAP_PROP_FPS)
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
@@ -443,6 +381,8 @@ class HitDetectionService:
         processed = 0
         images_output = []
         start_t = time.time()
+        self.faces_start, self.faces_middle = [], []
+        
         while processed < max_frames:
             ret, frame = cap.read()
             if not ret: break
@@ -452,6 +392,7 @@ class HitDetectionService:
             
             h, w = frame.shape[:2]
             
+            # Detección Piso (Frame 10)
             if processed == 10:
                 _, b = cv2.imencode('.jpg', frame)
                 seg_res = self.api.segment_image(base64.b64encode(b).decode('utf-8'))
@@ -472,10 +413,9 @@ class HitDetectionService:
                 depth_map = self.get_depth_map(frame)
                 
                 if depth_map is not None:
-                    event, orientation = self.analyze_football(
-                        ball, person['box'], person['keypoints'], depth_map, frame_idx, config
-                    )
+                    event, orientation = self.analyze_football(ball, person['box'], person['keypoints'], depth_map, frame_idx)
                     
+                    # Recolectar Caras (Frente)
                     if orientation == "Frente":
                         if processed < 50 and len(self.faces_start) < 4:
                             f = self.extract_face(frame, person['keypoints'])
@@ -490,6 +430,7 @@ class HitDetectionService:
                 if not return_images:
                     cv2.rectangle(vis_frame, (ball[0], ball[1]), (ball[0]+ball[2], ball[1]+ball[3]), (0,0,255), 2)
             
+            # Guardado inteligente de imágenes
             is_important = (event != "" and "Control" not in event and event != "Parado")
             is_sample = (processed % 15 == 0)
             
@@ -517,13 +458,15 @@ class HitDetectionService:
             "meta": {
                 "performance": {
                     "total_time_s": round(total_t, 2),
+                    "video_duration_s": round(dur_s, 2),
                     "frames_processed": processed
                 },
                 "stats": {
                     "total_juggles": self.juggles_count,
                     "final_state": self.dribble_state,
-                    "inferred_player_height_m": round(self.player_height_m, 2),
-                    "detected_ball_size": f"Size {self.calibrator.selected_size_id} ({self.calibrator.real_diameter_cm}cm)"
+                    # Aquí la IA te dice qué decidió
+                    "inferred_ball_size": f"Size {self.calibrator.selected_size_id} ({self.calibrator.real_diameter_cm}cm)",
+                    "inferred_player_height_m": round(self.player_height_m, 2)
                 },
                 "face_verification": face_res
             }
