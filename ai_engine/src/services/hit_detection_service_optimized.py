@@ -25,7 +25,9 @@ class BallCalibrator:
         self.px_per_cm = 2.0 # Valor safe
 
     def add_sample(self, width_px):
-        if 10 < width_px < 200: self.samples.append(width_px)
+        # El filtrado de "cerca de los pies" se hace antes de llamar a esta función
+        if 10 < width_px < 200: 
+            self.samples.append(width_px)
 
     def finalize(self, player_h_px):
         if not self.samples: return
@@ -303,9 +305,11 @@ class HitDetectionServiceOptimized:
                     valid_widths.append(f["ball"]["w"])
                     player_heights.append(f["person_h"])
         
-        for w in valid_widths: self.calibrator.add_sample(w, True)
+        # --- FIX: add_sample ahora solo toma 1 argumento ---
+        for w in valid_widths: self.calibrator.add_sample(w)
+        
         if player_heights:
-             self.calibrator.finalize_calibration(np.median(player_heights))
+             self.calibrator.finalize(np.median(player_heights))
         
         scale = self.calibrator.px_per_cm if self.calibrator.is_calibrated else 2.0
         
@@ -428,10 +432,6 @@ class HitDetectionServiceOptimized:
         
         ball = meta["ball"]
         kpts = meta["kpts"]
-        # Usamos mapa de profundidad aproximado de los puntos guardados
-        # (Nota: En optimizado no recalculamos depth map entero para ahorrar, 
-        #  usamos Z guardado en puntos o re-inferencia ligera si fuera necesario. 
-        #  Para simplificar visualización 2D stickman con Z simulado)
         
         # Mapeo
         def to_p(x, y): return (20 + int(x/w*280), 20 + int(y/h*(h-40)))
