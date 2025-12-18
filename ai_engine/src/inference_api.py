@@ -139,6 +139,43 @@ face_service = FaceEmbeddingService(
     sface_template=SFACE_TEMPLATE,
 )
 
+
+def _decode_face_crop_base64(face_b64: str) -> Optional[np.ndarray]:
+    if not face_b64:
+        return None
+    try:
+        data = base64.b64decode(face_b64)
+    except Exception:
+        return None
+    arr = np.frombuffer(data, np.uint8)
+    if arr.size == 0:
+        return None
+    img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+    return img
+
+
+def _compare_faces_for_hit_detection(face_a_b64: str, face_b_b64: str) -> Dict[str, Any]:
+    score_threshold = 0.6
+    img_a = _decode_face_crop_base64(face_a_b64)
+    img_b = _decode_face_crop_base64(face_b_b64)
+    if img_a is None or img_b is None:
+        raise ValueError("Invalid face crop data for comparison")
+    face_a = face_service.get_primary_face_embedding(img_a, score_threshold)
+    if not face_a:
+        raise ValueError("No face detected in image A")
+    face_b = face_service.get_primary_face_embedding(img_b, score_threshold)
+    if not face_b:
+        raise ValueError("No face detected in image B")
+    similarity = face_service.compare_embeddings(face_a["embedding"], face_b["embedding"])
+    return {
+        "success": True,
+        "similarity": similarity,
+        "match": similarity >= score_threshold,
+        "threshold": score_threshold,
+        "face_a": {"face_id": face_a["face_id"], "score": face_a["score"]},
+        "face_b": {"face_id": face_b["face_id"], "score": face_b["score"]},
+    }
+
 BALL_YOLO_FALLBACK = os.environ.get("BALL_YOLO_FALLBACK", "1").lower() not in ("0", "false", "off")
 BALL_YOLO_CONFIDENCE = float(os.environ.get("BALL_YOLO_CONFIDENCE", "0.45"))
 BALL_YOLO_NMS = float(os.environ.get("BALL_YOLO_NMS", "0.35"))
@@ -154,12 +191,15 @@ activity_analyzer = ActivityAnalyzer(
 
 actionnet_service = ActionNetService(ACTIONNET_MODEL, ACTIONNET_LABELS)
 
-hit_detection_service = HitDetectionService([
-    os.path.join(BASE_DIR, "../models/hit_detect.onnx"),
-    os.path.join(BASE_DIR, "../hit_detect.onnx"),
-    os.path.join(BASE_DIR, "hit_detect.onnx"),
-    os.path.join(MODELS_DIR, "hit_detect.onnx"),
-])
+hit_detection_service = HitDetectionService(
+    [
+        os.path.join(BASE_DIR, "../models/hit_detect.onnx"),
+        os.path.join(BASE_DIR, "../hit_detect.onnx"),
+        os.path.join(BASE_DIR, "hit_detect.onnx"),
+        os.path.join(MODELS_DIR, "hit_detect.onnx"),
+    ],
+    face_compare_fn=_compare_faces_for_hit_detection,
+)
 
 superres_service = SuperResolutionService(SUPERRES_MODEL_DIR, SUPERRES_MODEL_PATH)
 
