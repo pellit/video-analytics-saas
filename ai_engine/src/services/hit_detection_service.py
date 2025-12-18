@@ -66,7 +66,7 @@ class BallCalibrator:
         if is_near_feet and ball_width_px > 10:
             self.samples.append(ball_width_px)
 
-    def finalize_calibration(self, player_height_px):
+    def finalize_calibration(self, player_height_px, override_ball_size_cm: Optional[float] = None):
         """
         Infiere el tipo de pelota basándose en la altura estimada del jugador.
         """
@@ -82,19 +82,18 @@ class BallCalibrator:
         
         print(f"[CALIB] Hipótesis Talla 5 -> Altura Jugador: {est_height_adult_hyp:.1f} cm")
         
-        # Lógica de Decisión
-        if est_height_adult_hyp > 155:
-            # Es un adulto o adolescente -> Talla 5
-            self.selected_size_id = 5
-        elif 135 < est_height_adult_hyp <= 155:
-            # Probablemente adolescente/niño grande -> Talla 4
-            self.selected_size_id = 4
-        elif est_height_adult_hyp <= 135:
-            # Niño pequeño -> Talla 3
-            self.selected_size_id = 3
-            
-        # 3. Fijar Valores
-        self.real_diameter_cm = self.SIZES[self.selected_size_id]
+        if override_ball_size_cm and override_ball_size_cm > 0:
+            self.selected_size_id = "manual"
+            self.real_diameter_cm = float(override_ball_size_cm)
+        else:
+            # Lógica de Decisión
+            if est_height_adult_hyp > 155:
+                self.selected_size_id = 5
+            elif 135 < est_height_adult_hyp <= 155:
+                self.selected_size_id = 4
+            elif est_height_adult_hyp <= 135:
+                self.selected_size_id = 3
+            self.real_diameter_cm = self.SIZES[self.selected_size_id]
         self.px_per_cm = median_px / self.real_diameter_cm
         self.is_calibrated = True
         
@@ -255,7 +254,11 @@ class HitDetectionService:
         elif not nose['conf'] > 0.4 and ears: return "Espalda"
         return "Lado"
 
-    def analyze_football(self, ball_box, person_box, person_kpts, depth_map, frame_idx):
+    def analyze_football(self, ball_box, person_box, person_kpts, depth_map, frame_idx,
+                         config: Optional[Dict[str, float]] = None):
+        config = config or {}
+        override_ball_size = config.get("ball_size_cm")
+        manual_player_height_m = config.get("player_height_m")
         bx, by, bw, bh = ball_box[:4]
         ball_cx = bx + bw//2
         ball_bottom_y = by + bh 
@@ -277,14 +280,20 @@ class HitDetectionService:
                 
             # Disparamos calibración en el frame 30
             if frame_idx == 30 and not self.calibrator.is_calibrated:
-                self.calibrator.finalize_calibration(person_box[3]) # Altura persona px
+                self.calibrator.finalize_calibration(person_box[3], override_ball_size_cm=override_ball_size)
 
-        # Si aún no calibramos, usamos valores seguros temporales
-        scale = self.calibrator.px_per_cm if self.calibrator.is_calibrated else 2.0 
-
-        # Estimación continua de altura jugador
-        if self.calibrator.is_calibrated:
+        scale = self.calibrator.px_per_cm if (self.calibrator.is_calibrated and self.calibrator.px_per_cm > 0) else 0.0
+        if scale <= 0 and manual_player_height_m and manual_player_height_m > 0 and person_box[3] > 0:
+            # Calibración manual usando la altura configurada
+            scale = person_box[3] / (manual_player_height_m * 100.0)
+            self.player_height_m = manual_player_height_m
+        elif scale > 0:
             self.player_height_m = (person_box[3] / scale) / 100.0
+        else:
+            scale = 2.0
+
+        if self.player_height_m <= 0 and manual_player_height_m:
+            self.player_height_m = manual_player_height_m
 
         # === LÓGICA DE JUEGO ===
         try: ball_z = depth_map[by+bh//2, bx+bw//2]
@@ -390,7 +399,41 @@ class HitDetectionService:
 
         return np.hstack((frame, panel))
 
-    def run_on_video(self, video_path, frame_stride=3, max_frames=300, hit_threshold=0.4, return_images=True):
+    def run_on_video(self, video_path, frame_stride=3, max_frames=300, hit_threshold=0.4,
+                     return_images=True, api_params: Optional[Dict[str, Any]] = None):
+        manual_ball_size = None
+        manual_player_height = None
+        if api_params:
+            if "ball_size_cm" in api_params:
+                try:
+                    manual_ball_size = float(api_params["ball_size_cm"])
+                except (TypeError, ValueError):
+                    manual_ball_size = None
+            if "player_height_m" in api_params:
+                try:
+                    manual_player_height = float(api_params["player_height_m"])
+                except (TypeError, ValueError):
+                    manual_player_height = None
+        config = {
+            "ball_size_cm": manual_ball_size,
+            "player_height_m": manual_player_height,
+        }
+
+        self.calibrator = BallCalibrator()
+        if manual_ball_size and manual_ball_size > 0:
+            self.calibrator.real_diameter_cm = manual_ball_size
+            self.calibrator.selected_size_id = "manual"
+
+        # Reiniciar estado entre ejecuciones
+        self.juggles_count = 0
+        self.dribble_state = "Calibrando..."
+        self.prev_ball_y = None
+        self.ball_velocity_y = 0
+        self.last_hit_frame = -100
+        self.faces_start, self.faces_middle = [], []
+        self.detected_floor_y = None
+        self.player_height_m = manual_player_height or 0.0
+
         cap = cv2.VideoCapture(video_path)
         fps = cap.get(cv2.CAP_PROP_FPS)
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
@@ -400,8 +443,6 @@ class HitDetectionService:
         processed = 0
         images_output = []
         start_t = time.time()
-        self.faces_start, self.faces_middle = [], []
-        
         while processed < max_frames:
             ret, frame = cap.read()
             if not ret: break
@@ -431,7 +472,9 @@ class HitDetectionService:
                 depth_map = self.get_depth_map(frame)
                 
                 if depth_map is not None:
-                    event, orientation = self.analyze_football(ball, person['box'], person['keypoints'], depth_map, frame_idx)
+                    event, orientation = self.analyze_football(
+                        ball, person['box'], person['keypoints'], depth_map, frame_idx, config
+                    )
                     
                     if orientation == "Frente":
                         if processed < 50 and len(self.faces_start) < 4:
