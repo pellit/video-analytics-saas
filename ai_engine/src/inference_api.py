@@ -30,6 +30,7 @@ from .services.face_service import FaceEmbeddingService
 from .services.activity_analysis import ActivityAnalyzer, SOCCER_BALL_LABELS, GYM_EQUIPMENT_LABELS
 from .services.actionnet_service import ActionNetService, JETSON_INFERENCE_AVAILABLE as ACTIONNET_AVAILABLE
 from .services.hit_detection_service import HitDetectionService
+from .services.hit_detection_service_optimized import HitDetectionServiceOptimized
 from .services.superres_service import SuperResolutionService
 from .services.jetson_env import ensure_jetson_models
 
@@ -200,6 +201,8 @@ hit_detection_service = HitDetectionService(
     ],
     face_compare_fn=_compare_faces_for_hit_detection,
 )
+
+hit_detection_service_fast = HitDetectionServiceOptimized()
 
 superres_service = SuperResolutionService(SUPERRES_MODEL_DIR, SUPERRES_MODEL_PATH)
 
@@ -1262,6 +1265,62 @@ async def detect_hit_video(
             raise HTTPException(400, "hit_threshold must be between 0 and 1")
 
         results = _run_hit_detection_on_video(
+            tmp_path,
+            frame_stride,
+            max_frames,
+            hit_threshold,
+            return_images=return_images,
+        )
+        return {
+            "success": True,
+            "video_duration_s": duration,
+            **results
+        }
+    finally:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+
+
+@app.post("/detect/hit/fast/video")
+async def detect_hit_fast_video(
+    file: UploadFile = File(...),
+    frame_stride: int = Form(1),
+    max_frames: int = Form(1800),
+    hit_threshold: float = Form(0.1),
+    return_images: bool = Form(False),
+):
+    tmp_path = _save_upload_to_temp(file)
+    try:
+        cap = cv2.VideoCapture(tmp_path)
+        if not cap.isOpened():
+            raise HTTPException(400, "Unable to open uploaded video")
+        fps = cap.get(cv2.CAP_PROP_FPS)
+        if not fps or fps <= 0:
+            fps = 30
+        duration = cap.get(cv2.CAP_PROP_FRAME_COUNT) / fps if fps > 0 else 0
+        cap.release()
+
+        cuda_enabled = False
+        try:
+            cuda_enabled = cv2.cuda.getCudaEnabledDeviceCount() > 0
+        except Exception:
+            cuda_enabled = False
+
+        if frame_stride is None:
+            frame_stride = 1 if cuda_enabled else 3
+        if hit_threshold is None:
+            hit_threshold = 0.4
+        if max_frames is None:
+            max_frames = int(fps * 60)
+
+        if frame_stride <= 0:
+            raise HTTPException(400, "frame_stride must be > 0")
+        if max_frames <= 0:
+            raise HTTPException(400, "max_frames must be > 0")
+        if hit_threshold < 0 or hit_threshold > 1:
+            raise HTTPException(400, "hit_threshold must be between 0 and 1")
+
+        results = hit_detection_service_fast.run_on_video(
             tmp_path,
             frame_stride,
             max_frames,

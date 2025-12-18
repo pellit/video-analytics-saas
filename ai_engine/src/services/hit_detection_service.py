@@ -4,7 +4,7 @@ import os
 import urllib.request
 import time
 import base64
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 # ==========================================
 # 1. SISTEMA DE CALIBRACIÓN AUTÓNOMA
@@ -16,15 +16,20 @@ class BallCalibrator:
         self.is_calibrated = False
         self.selected_size_id = 5
         self.real_diameter_cm = 22.0
-        self.px_per_cm = 1.0
+        self.px_per_cm = 2.0 # Valor inicial más seguro (aprox para 720p/1080p)
 
     def add_sample(self, ball_width_px, is_near_feet):
-        if is_near_feet and ball_width_px > 8:
+        # Ignorar ruido muy pequeño o muy grande
+        if is_near_feet and 10 < ball_width_px < 200:
             self.samples.append(ball_width_px)
 
     def finalize_calibration(self, player_height_px):
         if not self.samples: return False
         median_ball_px = np.median(self.samples)
+        
+        # Evitar división por cero
+        if median_ball_px == 0: return False
+
         scale_if_size_5 = median_ball_px / 22.0
         height_if_size_5 = player_height_px / scale_if_size_5
         
@@ -33,7 +38,14 @@ class BallCalibrator:
         else: self.selected_size_id = 3
             
         self.real_diameter_cm = self.SIZES[self.selected_size_id]
-        self.px_per_cm = median_ball_px / self.real_diameter_cm
+        
+        # Calcular escala final
+        raw_scale = median_ball_px / self.real_diameter_cm
+        
+        # CLAMP DE SEGURIDAD: Limitar escala a valores lógicos
+        # (Evita que un error de detección rompa toda la física)
+        self.px_per_cm = max(0.5, min(raw_scale, 10.0)) 
+        
         self.is_calibrated = True
         return True
 
@@ -54,11 +66,14 @@ class YoloBaseWrapper:
             self.net = cv2.dnn.readNet(self.model_path)
             self.net.setPreferableBackend(cv2.dnn.DNN_BACKEND_CUDA)
             self.net.setPreferableTarget(cv2.dnn.DNN_TARGET_CUDA)
+            # Warmup
             self.net.setInput(np.zeros((1, 3, 640, 640), dtype=np.float32))
             self.net.forward()
             print(f"[{name}] ✅ GPU Ready.")
             return True
-        except: return False
+        except Exception as e: 
+            print(f"Error loading {name}: {e}")
+            return False
 
     def preprocess(self, img):
         return cv2.dnn.blobFromImage(img, 1/255.0, self.input_size, swapRB=True, crop=False)
@@ -69,21 +84,29 @@ class YoloDetWrapper(YoloBaseWrapper):
         self.net.setInput(blob)
         outputs = self.net.forward()
         preds = np.squeeze(outputs[0]).T
+        
+        if preds.ndim < 2: return [] # Seguridad
+        
         if preds.shape[1] > 36:
             scores = preds[:, 32+4] 
             keep = scores > self.conf_thres
             preds = preds[keep]
             scores = scores[keep]
         else: return []
+        
         if len(scores) == 0: return []
+        
         boxes = preds[:, :4]
         boxes[:, 0] -= boxes[:, 2] / 2
         boxes[:, 1] -= boxes[:, 3] / 2
+        
         indices = cv2.dnn.NMSBoxes(boxes.tolist(), scores.tolist(), self.conf_thres, self.iou_thres)
         balls = []
         sx, sy = img_w / self.input_size[0], img_h / self.input_size[1]
+        
         for i in indices.flatten():
             b = boxes[i]
+            # x, y, w, h, score
             balls.append([int(b[0]*sx), int(b[1]*sy), int(b[2]*sx), int(b[3]*sy), float(scores[i])])
         return balls
 
@@ -93,15 +116,19 @@ class YoloPoseWrapper(YoloBaseWrapper):
         self.net.setInput(blob)
         outputs = self.net.forward()
         preds = np.squeeze(outputs[0]).T
+        
+        if preds.ndim < 2: return []
+
         scores = preds[:, 4]
         keep = scores > self.conf_thres
         preds = preds[keep]
-        scores = scores[keep]
-        if len(scores) == 0: return []
+        if len(preds) == 0: return []
+        
         kpts = preds[:, 5:]
-        indices = cv2.dnn.NMSBoxes(preds[:, :4].tolist(), scores.tolist(), self.conf_thres, self.iou_thres)
+        indices = cv2.dnn.NMSBoxes(preds[:, :4].tolist(), scores[keep].tolist(), self.conf_thres, self.iou_thres)
         people = []
         sx, sy = img_w / self.input_size[0], img_h / self.input_size[1]
+        
         for i in indices.flatten():
             pk = kpts[i].reshape(-1, 3)
             scaled = [{"x": int(p[0]*sx), "y": int(p[1]*sy), "conf": float(p[2])} for p in pk]
@@ -128,14 +155,18 @@ class HitDetectionService:
         self.segment_floor_fn = segment_floor_fn
         self.face_compare_fn = face_compare_fn
 
+        # Usamos enlaces HF estables (Bingsu es muy rápido para v8n)
+
         self.det_url = "https://github.com/pellit/video-analytics-saas/raw/796d243e692b5b18f0344b033a152dcdd6326f36/ai_engine/yolov8n.onnx"
         self.pose_url = "https://huggingface.co/Xenova/yolov8-pose-onnx/resolve/main/yolov8n-pose.onnx?download=true"
         self.midas_url = "https://github.com/isl-org/MiDaS/releases/download/v2_1/model-small.onnx"
 
         self._check_and_download_models()
         
-        self.det_model = YoloDetWrapper(self.det_path, conf_thres=0.25)
+        # Umbral MUY BAJO (0.15) para detectar pelotas borrosas en movimiento
+        self.det_model = YoloDetWrapper(self.det_path, conf_thres=0.15) 
         self.det_model.load_model("BALL")
+        
         self.pose_model = YoloPoseWrapper(self.pose_path, conf_thres=0.5)
         self.pose_model.load_model("POSE")
         
@@ -151,9 +182,12 @@ class HitDetectionService:
         self.juggles_count = 0        
         self.dribble_state = "Calibrando..." 
         self.prev_ball_y = None   
-        self.ball_velocity_y = 0  
         self.last_hit_frame = -100 
-        self.last_hit_leg = "" # NUEVO: Guarda qué pierna golpeó
+        self.last_hit_leg = ""
+        
+        # Debug Data
+        self.debug_dist_x = 0
+        self.debug_dist_y = 0
         
         self.faces_start, self.faces_middle = [], []
         self.detected_floor_y = None 
@@ -161,13 +195,10 @@ class HitDetectionService:
         self.calibrator = BallCalibrator()
         self.player_height_m = 0.0
         
-        # Definición del Esqueleto para dibujo (Pares de Keypoints)
-        # 11:CaderaI, 12:CaderaD, 13:RodillaI, 14:RodillaD, 15:TobilloI, 16:TobilloD, 5:HombroI, 6:HombroD
+        # Esqueleto
         self.skeleton_links = [
-            (5, 11), (6, 12), # Torso
-            (11, 13), (13, 15), # Pierna Izq
-            (12, 14), (14, 16), # Pierna Der
-            (11, 12), (5, 6) # Conexiones horizontales
+            (5, 11), (6, 12), (11, 13), (13, 15), 
+            (12, 14), (14, 16), (11, 12), (5, 6)
         ]
 
     def _check_and_download_models(self):
@@ -199,11 +230,8 @@ class HitDetectionService:
 
     def check_orientation(self, kpts):
         nose = kpts[0]
-        eyes = (kpts[1]['conf'] > 0.5 and kpts[2]['conf'] > 0.5)
-        ears = (kpts[3]['conf'] > 0.5 and kpts[4]['conf'] > 0.5)
-        if nose['conf'] > 0.6 and eyes: return "Frente"
-        elif not nose['conf'] > 0.4 and ears: return "Espalda"
-        return "Lado"
+        if nose['conf'] > 0.6: return "Frente"
+        return "Espalda/Lado"
 
     def analyze_football(self, ball_box, person_box, person_kpts, depth_map, frame_idx):
         bx, by, bw, bh = ball_box[:4]
@@ -216,18 +244,18 @@ class HitDetectionService:
         
         if valid_feet_kpts:
             feet_y_avg = sum([f['y'] for f in valid_feet_kpts]) / len(valid_feet_kpts)
-            is_near_feet = abs(ball_bottom_y - feet_y_avg) < 100 
+            is_near_feet = abs(ball_bottom_y - feet_y_avg) < 150 
             
             if not self.calibrator.is_calibrated and is_near_feet:
                 self.calibrator.add_sample(bw, True)
             if frame_idx == 30 and not self.calibrator.is_calibrated:
                 self.calibrator.finalize_calibration(person_box[3]) 
 
-        scale = self.calibrator.px_per_cm if self.calibrator.is_calibrated else 2.0 
+        scale = self.calibrator.px_per_cm 
         if self.calibrator.is_calibrated:
             self.player_height_m = (person_box[3] / scale) / 100.0
 
-        # === LÓGICA DE JUEGO REFINADA ===
+        # === LÓGICA ===
         try: ball_z = depth_map[by+bh//2, bx+bw//2]
         except: return "", "Indefinido"
 
@@ -237,40 +265,52 @@ class HitDetectionService:
         if self.detected_floor_y: ground_y = self.detected_floor_y
         else: ground_y = max([f['y'] for f in valid_feet_kpts])
 
+        # Velocidad
         curr_vel = 0
         if self.prev_ball_y is not None: curr_vel = ball_bottom_y - self.prev_ball_y
-        is_moving_up = (curr_vel < -2)
+        
+        # HÍBRIDO: Detectar subida (golpe) O Estabilidad (control suave)
+        is_moving_up = (curr_vel < -2) 
         self.prev_ball_y = ball_bottom_y
         
         event = ""
         ball_height_cm = (ground_y - ball_bottom_y) / scale
 
-        # --- JUGGLING: Detección de Pierna ---
+        # --- JUGGLING ---
         if ball_height_cm > 15:
-            if is_moving_up:
-                # Iteramos sobre pies etiquetados
-                feet_data = [
-                    {"kpt": person_kpts[15], "label": "Izq"},
-                    {"kpt": person_kpts[16], "label": "Der"}
-                ]
+            feet_data = [
+                {"kpt": person_kpts[15], "label": "Izq"},
+                {"kpt": person_kpts[16], "label": "Der"}
+            ]
+            
+            for foot_obj in feet_data:
+                foot = foot_obj["kpt"]
+                if foot['conf'] <= 0.5: continue
+
+                dist_x_cm = abs(foot['x'] - ball_cx) / scale
+                dist_y_cm = abs(foot['y'] - ball_bottom_y) / scale
                 
-                for foot_obj in feet_data:
-                    foot = foot_obj["kpt"]
-                    if foot['conf'] <= 0.5: continue
+                # Debug
+                self.debug_dist_x = int(dist_x_cm)
+                self.debug_dist_y = int(dist_y_cm)
 
-                    dist_x_cm = abs(foot['x'] - ball_cx) / scale
-                    dist_y_cm = abs(foot['y'] - ball_bottom_y) / scale
-                    try: foot_z = depth_map[foot['y'], foot['x']]
-                    except: foot_z = 0
-                    dist_z = abs(int(ball_z) - int(foot_z))
+                try: foot_z = depth_map[foot['y'], foot['x']]
+                except: foot_z = 0
+                dist_z = abs(int(ball_z) - int(foot_z))
 
-                    if dist_x_cm < 30 and dist_y_cm < 30 and dist_z < 60:
-                        if (frame_idx - self.last_hit_frame) > 8:
-                            self.juggles_count += 1
-                            self.last_hit_frame = frame_idx
-                            self.last_hit_leg = foot_obj["label"] # Guardamos pierna
-                            event = f"JUGGLE! (Pie {self.last_hit_leg})"
-                            break # Importante: Salir tras detectar el primer golpe válido
+                # LÓGICA RELAJADA:
+                # 1. Si sube rápido, permitimos distancia media (35cm)
+                hit_strong = is_moving_up and dist_x_cm < 35 and dist_y_cm < 35
+                # 2. Si no sube rápido (control), exigimos distancia muy corta (20cm)
+                hit_soft = dist_x_cm < 20 and dist_y_cm < 20
+
+                if (hit_strong or hit_soft) and dist_z < 70:
+                    if (frame_idx - self.last_hit_frame) > 8:
+                        self.juggles_count += 1
+                        self.last_hit_frame = frame_idx
+                        self.last_hit_leg = foot_obj["label"]
+                        event = f"JUGGLE! (Pie {self.last_hit_leg})"
+                        break 
 
         # --- DRIBBLE ---
         elif ball_height_cm <= 15:
@@ -280,130 +320,85 @@ class HitDetectionService:
                 d_cm = d_px / scale
                 if d_cm < closest_cm: closest_cm = d_cm
             
-            if closest_cm < 60:
+            if closest_cm < 70:
                 cx = (feet_kpts[0]['x'] + feet_kpts[1]['x']) / 2
                 side = ""
-                if orientation == "Frente":
-                    if ball_cx > cx + 10: side = "Izquierda (M)"
-                    elif ball_cx < cx - 10: side = "Derecha (M)"
-                else:
-                    if ball_cx > cx + 10: side = "Derecha"
-                    elif ball_cx < cx - 10: side = "Izquierda"
+                if ball_cx > cx + 10: side = "Der"
+                elif ball_cx < cx - 10: side = "Izq"
                 self.dribble_state = f"Control {side}"
                 event = self.dribble_state
 
         return event, orientation
 
     def draw_stickman_panel(self, frame, kpts, ball_box, depth_map, is_hit_frame):
-        """
-        Dibuja un 'muñequito' wireframe usando Z para simular 3D (tamaño).
-        Resalta la pierna de golpe si is_hit_frame es True.
-        """
         h_frame, w_frame = frame.shape[:2]
         panel_w, panel_h = 320, h_frame
         panel = np.zeros((panel_h, panel_w, 3), dtype=np.uint8)
         panel[:] = (30, 30, 30)
         
-        # Mapeo simple: Frame Coords -> Panel Coords
         def map_to_panel(x, y):
             return (20 + int(x / w_frame * (panel_w - 40)), 
                     20 + int(y / h_frame * (panel_h - 40)))
 
-        # Colores
         c_bone = (100, 100, 100)
         c_joint = (0, 200, 0)
         c_ball = (0, 140, 255)
-        c_hit = (255, 255, 0) # Cyan para golpe
+        c_hit = (255, 255, 0)
 
-        # 1. DIBUJAR ESQUELETO (Wireframe)
+        # Esqueleto
         for idx_a, idx_b in self.skeleton_links:
             ka, kb = kpts[idx_a], kpts[idx_b]
             if ka['conf'] > 0.4 and kb['conf'] > 0.4:
                 pa = map_to_panel(ka['x'], ka['y'])
                 pb = map_to_panel(kb['x'], kb['y'])
-                
-                # Color especial si es la pierna de golpe
-                is_hit_leg = False
-                if is_hit_frame and self.last_hit_leg:
-                    if self.last_hit_leg == "Izq" and (13 in (idx_a, idx_b) or 15 in (idx_a, idx_b)): is_hit_leg = True
-                    if self.last_hit_leg == "Der" and (14 in (idx_a, idx_b) or 16 in (idx_a, idx_b)): is_hit_leg = True
-                
-                line_color = c_hit if is_hit_leg else c_bone
-                thickness = 3 if is_hit_leg else 2
-                cv2.line(panel, pa, pb, line_color, thickness)
+                cv2.line(panel, pa, pb, c_bone, 2)
 
-        # 2. DIBUJAR ARTICULACIONES (Círculos con 'profundidad')
-        # Usamos Z para el radio: más cerca (Z mayor) = más grande
-        joints_to_draw = [11, 12, 13, 14, 15, 16, 5, 6, 0] # Caderas, Rodillas, Tobillos, Hombros, Nariz
-        for idx in joints_to_draw:
+        # Articulaciones
+        joints = [11, 12, 13, 14, 15, 16, 5, 6, 0]
+        for idx in joints:
             kp = kpts[idx]
             if kp['conf'] > 0.4:
                 try: z_val = int(depth_map[kp['y'], kp['x']])
                 except: z_val = 128
-                radius = max(3, int((z_val / 255.0) * 8)) # Radio entre 3 y 8
-                
-                joint_color = c_joint
-                # Resaltar tobillo de golpe
-                if is_hit_frame and ((self.last_hit_leg == "Izq" and idx == 15) or (self.last_hit_leg == "Der" and idx == 16)):
-                     joint_color = c_hit
-                     radius += 3
+                radius = max(3, int((z_val / 255.0) * 8))
+                color = c_hit if (is_hit_frame and self.last_hit_leg and 
+                                 ((self.last_hit_leg=="Izq" and idx in [13,15]) or 
+                                  (self.last_hit_leg=="Der" and idx in [14,16]))) else c_joint
+                cv2.circle(panel, map_to_panel(kp['x'], kp['y']), radius, color, -1)
 
-                cv2.circle(panel, map_to_panel(kp['x'], kp['y']), radius, joint_color, -1)
-
-        # 3. DIBUJAR PELOTA
+        # Pelota
         bx, by, bw, bh = ball_box[:4]
         bcx, bcy = bx+bw//2, by+bh//2
         try: bz = int(depth_map[bcy, bcx])
         except: bz = 128
-        ball_radius = max(5, int((bz / 255.0) * 12))
-        ball_color = c_hit if is_hit_frame else c_ball
-        cv2.circle(panel, map_to_panel(bcx, bcy), ball_radius, ball_color, -1)
+        ball_rad = max(5, int((bz / 255.0) * 12))
+        cv2.circle(panel, map_to_panel(bcx, bcy), ball_rad, c_hit if is_hit_frame else c_ball, -1)
 
-        # 4. TEXTOS INFO
+        # Textos Debug
         cv2.putText(panel, "VISUALIZADOR 3D", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255,255,255), 1)
         
-        color_calib = (0, 255, 0) if self.calibrator.is_calibrated else (0, 0, 255)
-        txt_size = f"N {self.calibrator.selected_size_id} ({self.calibrator.real_diameter_cm}cm)"
-        cv2.putText(panel, f"Ball: {txt_size}", (10, 450), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color_calib, 1)
-        cv2.putText(panel, f"Playr: {self.player_height_m:.2f}m", (10, 480), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200,200,200), 1)
+        ball_info = f"N {self.calibrator.selected_size_id}"
+        cv2.putText(panel, f"Ball: {ball_info}", (10, 450), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0,255,0), 1)
+        # Mostrar distancias para debuggear fallos de detección
+        cv2.putText(panel, f"DistX: {self.debug_dist_x}cm", (150, 450), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (150,150,150), 1)
+        cv2.putText(panel, f"DistY: {self.debug_dist_y}cm", (150, 470), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (150,150,150), 1)
+        
         cv2.putText(panel, f"Juggles: {self.juggles_count}", (10, 520), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0,255,255), 2)
 
         return np.hstack((frame, panel))
-
 
     def _infer_floor_y(self, frame: np.ndarray) -> Optional[int]:
         if self.segment_floor_fn:
             try:
                 result = self.segment_floor_fn(frame)
-                if isinstance(result, dict):
-                    floor_val = result.get("floor_y")
-                else:
-                    floor_val = result
-                if floor_val is not None:
-                    return int(floor_val)
-            except Exception as exc:
-                print(f"[HitDetection] segment_floor_fn failure: {exc}")
-        return self._heuristic_floor_estimate(frame)
-
-    @staticmethod
-    def _heuristic_floor_estimate(frame: np.ndarray) -> Optional[int]:
-        h, w = frame.shape[:2]
-        if h == 0 or w == 0:
-            return None
-        roi_start = int(h * 0.4)
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        roi = gray[roi_start:, :]
-        if roi.size == 0:
-            return None
-        blur = cv2.GaussianBlur(roi, (5, 5), 0)
-        sobel = cv2.Sobel(blur, cv2.CV_32F, 0, 1, ksize=3)
-        row_scores = np.mean(np.abs(sobel), axis=1)
-        if row_scores.size == 0:
-            return None
-        idx = int(np.argmax(row_scores))
-        floor_y = min(h - 1, roi_start + idx)
-        return floor_y
-
+                if isinstance(result, dict): floor_val = result.get("floor_y")
+                else: floor_val = result
+                if floor_val: return int(floor_val)
+            except: pass
+        
+        # Heurística simple si no hay segmentación
+        h = frame.shape[0]
+        return int(h * 0.9)
 
     def run_on_video(self, video_path, frame_stride=3, max_frames=300, hit_threshold=0.4, return_images=True):
         cap = cv2.VideoCapture(video_path)
@@ -427,9 +422,7 @@ class HitDetectionService:
             h, w = frame.shape[:2]
             
             if processed == 10:
-                floor_guess = self._infer_floor_y(frame)
-                if floor_guess is not None:
-                    self.detected_floor_y = int(floor_guess)
+                self.detected_floor_y = self._infer_floor_y(frame)
 
             det_blob = self.det_model.preprocess(frame)
             pose_blob = self.pose_model.preprocess(frame)
@@ -459,12 +452,12 @@ class HitDetectionService:
                             if f: self.faces_middle.append(f)
 
                     if return_images:
-                        # Usamos el nuevo visualizador de stickman
                         vis_frame = self.draw_stickman_panel(vis_frame, person['keypoints'], ball, depth_map, is_hit_frame)
                 
                 if not return_images:
                     cv2.rectangle(vis_frame, (ball[0], ball[1]), (ball[0]+ball[2], ball[1]+ball[3]), (0,0,255), 2)
             
+            # Guardado Prioritario
             is_important = (event != "" and "Control" not in event and event != "Parado")
             is_sample = (processed % 15 == 0)
             
@@ -480,12 +473,10 @@ class HitDetectionService:
             frame_idx += 1
 
         cap.release()
-        face_res: Any = "N/A"
+        face_res = "N/A"
         if self.face_compare_fn and self.faces_start and self.faces_middle:
-            try:
-                face_res = self.face_compare_fn(self.faces_start[0], self.faces_middle[0])
-            except Exception as exc:
-                face_res = {"success": False, "error": str(exc)}
+            try: face_res = self.face_compare_fn(self.faces_start[0], self.faces_middle[0])
+            except: pass
 
         total_t = time.time() - start_t
         
@@ -499,10 +490,9 @@ class HitDetectionService:
                 },
                 "stats": {
                     "total_juggles": self.juggles_count,
-                    "last_hit_leg": self.last_hit_leg if self.juggles_count > 0 else "N/A", # INFO NUEVA EN JSON
+                    "last_hit_leg": self.last_hit_leg,
                     "final_state": self.dribble_state,
-                    "inferred_ball_size": f"Size {self.calibrator.selected_size_id} ({self.calibrator.real_diameter_cm}cm)",
-                    "inferred_player_height_m": round(self.player_height_m, 2)
+                    "ball_size": f"N {self.calibrator.selected_size_id}"
                 },
                 "face_verification": face_res
             }
