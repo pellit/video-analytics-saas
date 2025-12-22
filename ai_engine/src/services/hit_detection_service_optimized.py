@@ -452,21 +452,29 @@ class HitDetectionServiceOptimized:
 
     def _draw_panel(self, frame, meta, depth_map, event_txt, count, is_hit, hit_leg):
         h, w = frame.shape[:2]
-        panel = np.zeros((h, 320, 3), dtype=np.uint8); panel[:] = (30,30,30)
+        panel_w, panel_h = 320, h
+        # Inicializar panel gris oscuro
+        panel = np.zeros((panel_h, panel_w, 3), dtype=np.uint8)
+        panel[:] = (30, 30, 30)
         
         ball = meta["ball"]
         kpts = meta["kpts"]
         
         # Función de Mapeo: Frame(x,y) -> Panel(x,y)
+        # Mapea al área interna del panel (dejando 20px de margen)
         def to_p(x, y): 
-            return (20 + int(x/w*280), 20 + int(y/h*(h-40)))
+            px = 20 + int(x / w * (panel_w - 40))
+            py = 20 + int(y / h * (panel_h - 40))
+            return (px, py)
         
-        # Colores
+        # --- COLORES ---
         c_bone = (100, 100, 100) # Gris para huesos
-        c_head = (200, 200, 255) # Cabeza
-        c_joint = (0, 200, 0)    # Articulaciones normales
-        c_hit = (0, 255, 255)    # Amarillo/Cyan para golpe
-        c_ball = (0, 140, 255)   # Naranja pelota
+        c_head = (200, 200, 255) # Cabeza rosada/azulada
+        c_joint = (0, 200, 0)    # Articulaciones normales (Verde)
+        c_hit = (0, 255, 255)    # Amarillo intenso para golpe
+        
+        # Colores base para la pelota (Naranja normal, Amarillo si es golpe)
+        base_ball_color = c_hit if is_hit else (0, 140, 255) 
 
         # 1. DIBUJAR HUESOS (Líneas)
         for a, b in self.skeleton_links:
@@ -478,48 +486,62 @@ class HitDetectionServiceOptimized:
                 col = c_bone
                 thick = 2
                 if is_hit:
-                    # Si golpeó Izq y el hueso es parte de la pierna Izq (Cadera-Rodilla o Rodilla-Tobillo)
                     if hit_leg == "Izq" and (a in [11,13,15] and b in [11,13,15]): 
                         col = c_hit; thick = 3
-                    # Si golpeó Der
                     if hit_leg == "Der" and (a in [12,14,16] and b in [12,14,16]): 
                         col = c_hit; thick = 3
                         
                 cv2.line(panel, pa, pb, col, thick)
 
         # 2. DIBUJAR ARTICULACIONES Y CABEZA (Círculos 3D)
-        # Iteramos todos los 17 keypoints de COCO
         for i, kp in enumerate(kpts):
             if kp['conf'] > 0.4:
-                # Obtener Profundidad Z para el radio (Efecto 3D)
-                # Z alto (blanco) = Cerca = Radio grande
+                # Efecto 3D usando Z para el radio
                 try: z_val = int(depth_map[kp['y'], kp['x']])
                 except: z_val = 128
                 radius = max(3, int((z_val / 255.0) * 9))
                 
-                # Color por defecto
                 color = c_joint
                 
-                # Cabeza (Nariz=0, Ojos=1,2, Orejas=3,4)
+                # Cabeza más grande y de otro color
                 if i <= 4: 
                     color = c_head
-                    radius += 2 # Cabeza un poco más grande
+                    radius += 2
                 
                 # Resaltar pie de golpe
                 if is_hit:
                     if hit_leg == "Izq" and i in [13, 15]: color = c_hit; radius += 3
                     if hit_leg == "Der" and i in [14, 16]: color = c_hit; radius += 3
 
-                # Dibujar
                 cv2.circle(panel, to_p(kp['x'], kp['y']), radius, color, -1)
 
-        # 3. DIBUJAR PELOTA
+        # =================================================
+        # 3. DIBUJAR PELOTA (Semib-transparente + Borde Fuerte)
+        # =================================================
+        # Centro de la pelota en el panel
         bc = to_p(ball["x"], ball["y"] - ball["w"]//2)
-        # Radio pelota basado en profundidad guardada en meta
-        bz = ball["z"] 
-        ball_rad = max(5, int((bz / 255.0) * 14))
-        cv2.circle(panel, bc, ball_rad, c_hit if is_hit else c_ball, -1)
         
+        # Calcular el RADIO REAL escalado al panel.
+        # El ancho interno del panel es (panel_w - 40) = 280px.
+        # Factor de escala = ancho_panel_interno / ancho_frame_original
+        scale_factor = 280.0 / w
+        # El radio es la mitad del ancho detectado (ball["w"]), escalado.
+        real_radius_panel = max(4, int((ball["w"] / 2) * scale_factor))
+        
+        # A) Relleno Semitransparente (Overlay)
+        overlay = panel.copy()
+        opacity = 0.5 # 50% de transparencia
+        # Dibujamos relleno sólido (-1) en el overlay
+        cv2.circle(overlay, bc, real_radius_panel, base_ball_color, -1)
+        # Mezclamos el overlay con el panel actual
+        cv2.addWeighted(overlay, opacity, panel, 1 - opacity, 0, panel)
+        
+        # B) Borde Fuerte Sólido
+        border_thickness = 3
+        # Dibujamos solo el contorno sobre el panel ya mezclado
+        cv2.circle(panel, bc, real_radius_panel, base_ball_color, border_thickness)
+        # =================================================
+
         # 4. TEXTOS
         cv2.putText(panel, f"Juggl: {count}", (10, 450), cv2.FONT_HERSHEY_SIMPLEX, 1, (0,255,255), 2)
         if event_txt:
@@ -528,6 +550,7 @@ class HitDetectionServiceOptimized:
         ball_info = f"N {self.calibrator.selected_size_id} ({self.calibrator.real_diameter_cm}cm)"
         cv2.putText(panel, f"Ball: {ball_info}", (10, 520), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (150,150,150), 1)
         
+        # Unir frame original con el panel lateral
         return np.hstack((frame, panel))
     # ---------------------------------------------------------
     # RUN
