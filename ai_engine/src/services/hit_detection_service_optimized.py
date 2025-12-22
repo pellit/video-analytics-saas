@@ -151,10 +151,17 @@ class HitDetectionServiceOptimized:
         self._setup_models()
         self.calibrator = BallCalibrator()
         
-        # Esqueleto visualización
+        # Definición del Esqueleto COMPLETO (Pares de Keypoints)
+        # 0:Nariz, 5:HombroI, 6:HombroD, 7:CodoI, 8:CodoD, 9:MuñecaI, 10:MuñecaD
+        # 11:CaderaI, 12:CaderaD, 13:RodillaI, 14:RodillaD, 15:TobilloI, 16:TobilloD
         self.skeleton_links = [
-            (5, 11), (6, 12), (11, 13), (13, 15), 
-            (12, 14), (14, 16), (11, 12), (5, 6)
+            (0, 5), (0, 6),           # Cabeza (Nariz a hombros)
+            (5, 7), (7, 9),           # Brazo Izquierdo
+            (6, 8), (8, 10),          # Brazo Derecho
+            (5, 11), (6, 12),         # Torso
+            (11, 12), (5, 6),         # Conexiones Horizontales
+            (11, 13), (13, 15),       # Pierna Izquierda
+            (12, 14), (14, 16)        # Pierna Derecha
         ]
 
     def _setup_models(self):
@@ -427,7 +434,10 @@ class HitDetectionServiceOptimized:
                     is_hit = "JUGGLE" in txt
                     hit_leg = evt.get("hit_leg", "")
                     
-                    vis = self._draw_panel(frame, meta, txt, cnt, is_hit, hit_leg)
+                    # Calculamos profundidad AHORA para el dibujo 3D
+                    depth_map = self.get_depth(frame)
+                    
+                    vis = self._draw_panel(frame, meta, depth_map, txt, cnt, is_hit, hit_leg)
                     
                     _, b = cv2.imencode('.jpg', vis)
                     b64 = base64.b64encode(b).decode('utf-8')
@@ -440,35 +450,77 @@ class HitDetectionServiceOptimized:
         cap.release()
         return images_out
 
-    def _draw_panel(self, frame, meta, event_txt, count, is_hit, hit_leg):
+    def _draw_panel(self, frame, meta, depth_map, event_txt, count, is_hit, hit_leg):
         h, w = frame.shape[:2]
         panel = np.zeros((h, 320, 3), dtype=np.uint8); panel[:] = (30,30,30)
         
         ball = meta["ball"]
         kpts = meta["kpts"]
         
-        # Mapeo
-        def to_p(x, y): return (20 + int(x/w*280), 20 + int(y/h*(h-40)))
+        # Función de Mapeo: Frame(x,y) -> Panel(x,y)
+        def to_p(x, y): 
+            return (20 + int(x/w*280), 20 + int(y/h*(h-40)))
         
-        c_bone = (100,100,100)
-        c_hit = (255,255,0)
-        
-        # Stickman
+        # Colores
+        c_bone = (100, 100, 100) # Gris para huesos
+        c_head = (200, 200, 255) # Cabeza
+        c_joint = (0, 200, 0)    # Articulaciones normales
+        c_hit = (0, 255, 255)    # Amarillo/Cyan para golpe
+        c_ball = (0, 140, 255)   # Naranja pelota
+
+        # 1. DIBUJAR HUESOS (Líneas)
         for a, b in self.skeleton_links:
             ka, kb = kpts[a], kpts[b]
-            if ka['conf']>0.4 and kb['conf']>0.4:
-                # Color hit leg
+            if ka['conf'] > 0.4 and kb['conf'] > 0.4:
+                pa, pb = to_p(ka['x'], ka['y']), to_p(kb['x'], kb['y'])
+                
+                # Resaltar hueso de la pierna de golpe
                 col = c_bone
+                thick = 2
                 if is_hit:
-                    if hit_leg=="Izq" and (a in [13,15] or b in [13,15]): col = c_hit
-                    if hit_leg=="Der" and (a in [14,16] or b in [14,16]): col = c_hit
-                cv2.line(panel, to_p(ka['x'],ka['y']), to_p(kb['x'],kb['y']), col, 2)
+                    # Si golpeó Izq y el hueso es parte de la pierna Izq (Cadera-Rodilla o Rodilla-Tobillo)
+                    if hit_leg == "Izq" and (a in [11,13,15] and b in [11,13,15]): 
+                        col = c_hit; thick = 3
+                    # Si golpeó Der
+                    if hit_leg == "Der" and (a in [12,14,16] and b in [12,14,16]): 
+                        col = c_hit; thick = 3
+                        
+                cv2.line(panel, pa, pb, col, thick)
+
+        # 2. DIBUJAR ARTICULACIONES Y CABEZA (Círculos 3D)
+        # Iteramos todos los 17 keypoints de COCO
+        for i, kp in enumerate(kpts):
+            if kp['conf'] > 0.4:
+                # Obtener Profundidad Z para el radio (Efecto 3D)
+                # Z alto (blanco) = Cerca = Radio grande
+                try: z_val = int(depth_map[kp['y'], kp['x']])
+                except: z_val = 128
+                radius = max(3, int((z_val / 255.0) * 9))
+                
+                # Color por defecto
+                color = c_joint
+                
+                # Cabeza (Nariz=0, Ojos=1,2, Orejas=3,4)
+                if i <= 4: 
+                    color = c_head
+                    radius += 2 # Cabeza un poco más grande
+                
+                # Resaltar pie de golpe
+                if is_hit:
+                    if hit_leg == "Izq" and i in [13, 15]: color = c_hit; radius += 3
+                    if hit_leg == "Der" and i in [14, 16]: color = c_hit; radius += 3
+
+                # Dibujar
+                cv2.circle(panel, to_p(kp['x'], kp['y']), radius, color, -1)
+
+        # 3. DIBUJAR PELOTA
+        bc = to_p(ball["x"], ball["y"] - ball["w"]//2)
+        # Radio pelota basado en profundidad guardada en meta
+        bz = ball["z"] 
+        ball_rad = max(5, int((bz / 255.0) * 14))
+        cv2.circle(panel, bc, ball_rad, c_hit if is_hit else c_ball, -1)
         
-        # Bola
-        bc = to_p(ball["x"], ball["y"] - ball["w"]//2) # centro
-        cv2.circle(panel, bc, 6, c_hit if is_hit else (0,140,255), -1)
-        
-        # Textos
+        # 4. TEXTOS
         cv2.putText(panel, f"Juggl: {count}", (10, 450), cv2.FONT_HERSHEY_SIMPLEX, 1, (0,255,255), 2)
         if event_txt:
             cv2.putText(panel, event_txt, (10, 490), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0,255,0), 2)
@@ -477,7 +529,6 @@ class HitDetectionServiceOptimized:
         cv2.putText(panel, f"Ball: {ball_info}", (10, 520), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (150,150,150), 1)
         
         return np.hstack((frame, panel))
-
     # ---------------------------------------------------------
     # RUN
     # ---------------------------------------------------------
