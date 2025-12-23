@@ -26,12 +26,16 @@ from .services.video_io import (
     read_frame_at,
 )
 from .models.nanodet_plus import NanoDetPlusDetector
+def segment_image(req: SegmentRequest):
+    # Implementation for segmenting an image
+    pass
 from .services.face_service import FaceEmbeddingService
 from .services.activity_analysis import ActivityAnalyzer, SOCCER_BALL_LABELS, GYM_EQUIPMENT_LABELS
 from .services.actionnet_service import ActionNetService, JETSON_INFERENCE_AVAILABLE as ACTIONNET_AVAILABLE
 from .services.hit_detection_service import HitDetectionService
 from .services.hit_detection_service_optimized import HitDetectionServiceOptimized
 from .services.superres_service import SuperResolutionService
+from .services.move_detection_service_optimized import MoveDetectionServiceOptimized
 from .services.jetson_env import ensure_jetson_models
 
 JETSON_INFERENCE_AVAILABLE = ACTIONNET_AVAILABLE
@@ -205,6 +209,18 @@ hit_detection_service = HitDetectionService(
 hit_detection_service_fast = HitDetectionServiceOptimized()
 
 superres_service = SuperResolutionService(SUPERRES_MODEL_DIR, SUPERRES_MODEL_PATH)
+
+# Lazy-loaded optimized move detection service (utiliza _segment_scene y comparador de caras)
+_move_detection_service: Optional[MoveDetectionServiceOptimized] = None
+
+def _ensure_move_detection_service() -> MoveDetectionServiceOptimized:
+    global _move_detection_service
+    if _move_detection_service is None:
+        _move_detection_service = MoveDetectionServiceOptimized(
+            segment_floor_fn=_segment_scene,
+            face_compare_fn=_compare_faces_for_hit_detection,
+        )
+    return _move_detection_service
 
 # Optional NanoDet-Plus detector and MiDaS ONNX depth model
 _nanodet_detector: Optional[NanoDetPlusDetector] = None
@@ -1332,6 +1348,35 @@ async def detect_hit_fast_video(
             "video_duration_s": duration,
             **results
         }
+    finally:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+
+
+@app.post("/detect/move/video")
+async def detect_move_video(
+    file: UploadFile = File(...),
+    frame_stride: int = Form(3),
+    max_frames: int = Form(300),
+    return_images: bool = Form(True),
+):
+    """Procesa un video para detección/seguimiento de movimiento (move_detection_service_optimized).
+    Devuelve imágenes de visualización, trayectoria y estadísticas.
+    """
+    tmp_path = _save_upload_to_temp(file)
+    try:
+        _ensure_video_duration(tmp_path)
+        start = time.perf_counter()
+        service = _ensure_move_detection_service()
+        result = service.run_on_video(tmp_path, frame_stride=frame_stride, max_frames=max_frames, return_images=return_images)
+        perf = result.get("meta", {}).get("performance", {})
+        frames = perf.get("frames_analyzed", 0)
+        _add_perf_metadata(perf, start, frames)
+        return {"success": True, **result}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
     finally:
         if os.path.exists(tmp_path):
             os.remove(tmp_path)
