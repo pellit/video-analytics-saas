@@ -630,9 +630,29 @@ def _resolve_superres_model_path(model_hint: Optional[str]) -> Optional[str]:
         return None
     hint = model_hint.strip().lower()
     if hint in ("espcn", "espcn_x4", "espcn4"):
-        return ESPCN_MODEL_PATH
+        # Prefer configured path; if missing try to download a known public weight
+        path = ESPCN_MODEL_PATH
+        if path and not os.path.exists(path):
+            try:
+                os.makedirs(os.path.dirname(path), exist_ok=True)
+                url = "https://github.com/Saafke/EDSR_Tensorflow/raw/master/models/ESPCN_x4.pb"
+                import urllib.request
+                urllib.request.urlretrieve(url, path)
+            except Exception:
+                # If download failed, fall back to None so SuperResolutionService can search other dirs
+                path = None
+        return path
     if hint in ("fsrcnn", "fsrcnn_x4", "fsrcnn4"):
-        return FSRCNN_MODEL_PATH
+        path = FSRCNN_MODEL_PATH
+        if path and not os.path.exists(path):
+            try:
+                os.makedirs(os.path.dirname(path), exist_ok=True)
+                url = "https://github.com/Saafke/FSRCNN_Tensorflow/raw/master/models/FSRCNN_x4.pb"
+                import urllib.request
+                urllib.request.urlretrieve(url, path)
+            except Exception:
+                path = None
+        return path
     if os.path.exists(model_hint):
         return model_hint
     candidate = os.path.join(SUPERRES_MODELS_DIR_ENV, model_hint)
