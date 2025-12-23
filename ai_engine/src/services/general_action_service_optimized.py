@@ -210,14 +210,14 @@ class GeneralActionService:
                 
                 # Datos Pelota
                 bx, by, bw, bh = b[:4]
-                bz = depth[by+bh//2, bx+bw//2] if depth else 128
+                bz = depth[by+bh//2, bx+bw//2] if depth is not None else 128
                 frame_data["ball"] = {"x": bx+bw//2, "y": by+bh, "z": int(bz), "w": bw, "box": b}
                 
                 # Datos Persona Completa (Keypoints)
                 # 0:Nariz, 5,6:Hombros, 11,12:Caderas, 13,14:Rodillas, 15,16:Tobillos
                 kpts_dict = {}
                 for i, kp in enumerate(p["kpts"]):
-                    kz = depth[kp['y'], kp['x']] if depth else 128
+                    kz = depth[kp['y'], kp['x']] if depth is not None else 128
                     kpts_dict[i] = {"x": kp['x'], "y": kp['y'], "z": int(kz), "conf": kp['conf']}
                 
                 frame_data["person"] = {
