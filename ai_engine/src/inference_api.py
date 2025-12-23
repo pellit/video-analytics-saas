@@ -55,11 +55,6 @@ POSENET_MODEL = os.environ.get('POSENET_MODEL', 'resnet18-body')
 # Models directory
 MODELS_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "../models"))
 os.makedirs(MODELS_DIR, exist_ok=True)
-
-def segment_image(req: SegmentRequest):
-    # Implementation for segmenting an image
-    pass
-
 def _add_perf_metadata(payload, start_time, frames_processed):
     """Annotate payload with elapsed time (ms) and FPS."""
     elapsed_s = max(time.perf_counter() - start_time, 1e-9)
