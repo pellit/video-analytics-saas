@@ -13,7 +13,7 @@ def smooth_signal(data_list, window_size=5):
     return np.convolve(data_list, np.ones(window_size)/window_size, mode='same').tolist()
 
 # ==========================================
-# 1. SISTEMA DE CALIBRACIÓN
+# 1. SISTEMA DE CALIBRACIÓN AUTÓNOMA
 # ==========================================
 class BallCalibrator:
     def __init__(self):
@@ -22,10 +22,9 @@ class BallCalibrator:
         self.is_calibrated = False
         self.selected_size_id = 5
         self.real_diameter_cm = 22.0
-        self.px_per_cm = 2.0 # Valor safe
+        self.px_per_cm = 2.0 
 
     def add_sample(self, width_px):
-        # El filtrado de "cerca de los pies" se hace antes de llamar a esta función
         if 10 < width_px < 200: 
             self.samples.append(width_px)
 
@@ -34,7 +33,6 @@ class BallCalibrator:
         median_px = np.median(self.samples)
         if median_px == 0: return
 
-        # Hipótesis Talla 5
         scale_t5 = median_px / 22.0
         h_hyp = player_h_px / scale_t5
         
@@ -44,7 +42,7 @@ class BallCalibrator:
             
         self.real_diameter_cm = self.SIZES[self.selected_size_id]
         raw_scale = median_px / self.real_diameter_cm
-        self.px_per_cm = max(0.5, min(raw_scale, 10.0)) # Clamp seguridad
+        self.px_per_cm = max(0.5, min(raw_scale, 10.0))
         self.is_calibrated = True
 
 # ==========================================
@@ -69,7 +67,7 @@ class YoloBaseWrapper:
         return cv2.dnn.blobFromImage(img, 1/255.0, self.input_size, swapRB=True, crop=False)
 
 class YoloDetWrapper(YoloBaseWrapper):
-    def detect(self, img, conf=0.15): # Umbral bajo para batch processing
+    def detect(self, img, conf=0.15):
         if not self.net: return []
         h, w = img.shape[:2]
         self.net.setInput(self.preprocess(img))
@@ -122,12 +120,12 @@ class YoloPoseWrapper(YoloBaseWrapper):
         return sorted(res, key=lambda x: x["area"])[-1:] 
 
 # ==========================================
-# 3. SERVICIO OPTIMIZADO (2 PASOS - SIN API INTERNA)
+# 3. SERVICIO OPTIMIZADO
 # ==========================================
 class HitDetectionServiceOptimized:
     def __init__(
         self,
-        default_model_dirs: List[str] = None, # Mantener firma compatible
+        default_model_dirs: List[str] = None,
         segment_floor_fn: Optional[Callable[[np.ndarray], Optional[int]]] = None,
         face_compare_fn: Optional[Callable[[str, str], Any]] = None
     ):
@@ -137,31 +135,21 @@ class HitDetectionServiceOptimized:
             "pose": os.path.join(self.models_dir, "yolov8n-pose.onnx"),
             "midas": os.path.join(self.models_dir, "midas_v21_small.onnx")
         }
-        # Enlaces HF
         self.urls = {
-            "det": "https://github.com/pellit/video-analytics-saas/raw/796d243e692b5b18f0344b033a152dcdd6326f36/ai_engine/yolov8n.onnx",
+            "det": "https://huggingface.co/Bingsu/yolov8n_onnx/resolve/main/yolov8n.onnx",
             "pose": "https://huggingface.co/Xenova/yolov8-pose-onnx/resolve/main/yolov8n-pose.onnx?download=true",
             "midas": "https://github.com/isl-org/MiDaS/releases/download/v2_1/model-small.onnx"
         }
         
-        # Funciones inyectadas
         self.segment_floor_fn = segment_floor_fn
         self.face_compare_fn = face_compare_fn
         
         self._setup_models()
         self.calibrator = BallCalibrator()
         
-        # Definición del Esqueleto COMPLETO (Pares de Keypoints)
-        # 0:Nariz, 5:HombroI, 6:HombroD, 7:CodoI, 8:CodoD, 9:MuñecaI, 10:MuñecaD
-        # 11:CaderaI, 12:CaderaD, 13:RodillaI, 14:RodillaD, 15:TobilloI, 16:TobilloD
         self.skeleton_links = [
-            (0, 5), (0, 6),           # Cabeza (Nariz a hombros)
-            (5, 7), (7, 9),           # Brazo Izquierdo
-            (6, 8), (8, 10),          # Brazo Derecho
-            (5, 11), (6, 12),         # Torso
-            (11, 12), (5, 6),         # Conexiones Horizontales
-            (11, 13), (13, 15),       # Pierna Izquierda
-            (12, 14), (14, 16)        # Pierna Derecha
+            (0, 5), (0, 6), (5, 7), (7, 9), (6, 8), (8, 10), 
+            (5, 11), (6, 12), (11, 12), (5, 6), (11, 13), (13, 15), (12, 14), (14, 16)
         ]
 
     def _setup_models(self):
@@ -191,19 +179,13 @@ class HitDetectionServiceOptimized:
         d = self.midas.forward()
         return cv2.normalize(cv2.resize(d[0,0], (w, h)), None, 0, 255, cv2.NORM_MINMAX, cv2.CV_8U)
 
-    # ---------------------------------------------------------
-    # HELPERS DE INYECCIÓN
-    # ---------------------------------------------------------
     def _infer_floor_y(self, frame: np.ndarray) -> Optional[int]:
-        """Intenta usar la función inyectada, o cae en heurística"""
         if self.segment_floor_fn:
             try:
                 result = self.segment_floor_fn(frame)
                 if isinstance(result, dict): return int(result.get("floor_y", 0))
                 if result: return int(result)
             except: pass
-        
-        # Heurística simple (Sobel horizontal en mitad inferior)
         h, w = frame.shape[:2]
         roi_start = int(h * 0.5)
         gray = cv2.cvtColor(frame[roi_start:, :], cv2.COLOR_BGR2GRAY)
@@ -224,17 +206,12 @@ class HitDetectionServiceOptimized:
             return base64.b64encode(b).decode('utf-8')
         return None
 
-    # ---------------------------------------------------------
-    # FASE 1: EXTRACCIÓN (Batch)
-    # ---------------------------------------------------------
     def extract_trajectory(self, video_path, stride=3, max_frames=300):
         cap = cv2.VideoCapture(video_path)
         fps = cap.get(cv2.CAP_PROP_FPS)
         frames_meta = [] 
-        
         processed = 0
         idx = 0
-        
         faces_start, faces_mid = [], []
         floor_y = None
         
@@ -244,7 +221,6 @@ class HitDetectionServiceOptimized:
             if idx % stride != 0: 
                 idx += 1; continue
             
-            # Detectar piso una vez al principio
             if processed == 10:
                 floor_y = self._infer_floor_y(frame)
 
@@ -262,12 +238,11 @@ class HitDetectionServiceOptimized:
             if ball and person:
                 b = ball[0]
                 p = person[0] 
-                
                 depth = self.get_depth(frame)
                 
                 bx, by, bw, bh = b[:4]
                 bz = depth[by+bh//2, bx+bw//2] if depth is not None else 128
-                frame_data["ball"] = {"x": bx+bw//2, "y": by+bh, "z": int(bz), "w": bw} # y = bottom
+                frame_data["ball"] = {"x": bx+bw//2, "y": by+bh, "z": int(bz), "w": bw}
                 
                 f_l, f_r = p["kpts"][15], p["kpts"][16]
                 fz_l = depth[f_l['y'], f_l['x']] if depth is not None else 128
@@ -281,7 +256,6 @@ class HitDetectionServiceOptimized:
                 frame_data["kpts"] = p["kpts"] 
                 frame_data["ball_box"] = b 
                 
-                # Recolectar caras
                 if processed < 50 and len(faces_start) < 4:
                     f = self._extract_face_b64(frame, p["kpts"])
                     if f: faces_start.append(f)
@@ -296,44 +270,42 @@ class HitDetectionServiceOptimized:
         cap.release()
         return frames_meta, faces_start, faces_mid, fps
 
-    # ---------------------------------------------------------
-    # FASE 2: ANÁLISIS (Batch Logic) - VERSIÓN ENDURECIDA
-    # ---------------------------------------------------------
     def analyze_trajectory(self, frames_meta):
-        # 1. Calibración Global
         valid_widths = []
         player_heights = []
         
         for f in frames_meta:
             if f["ball"] and f["feet"]:
                 feet_y = (f["feet"]["L"]["y"] + f["feet"]["R"]["y"]) / 2
-                # Pelota cerca del suelo (plano pies)
                 if abs(f["ball"]["y"] - feet_y) < 150:
                     valid_widths.append(f["ball"]["w"])
                     player_heights.append(f["person_h"])
         
         for w in valid_widths: self.calibrator.add_sample(w)
-        
-        if player_heights:
-             self.calibrator.finalize(np.median(player_heights))
-        
+        if player_heights: self.calibrator.finalize(np.median(player_heights))
         scale = self.calibrator.px_per_cm if self.calibrator.is_calibrated else 2.0
         
-        # 2. Suavizado
         raw_y = []
         last_val = 0
         for f in frames_meta:
             val = f["ball"]["y"] if f["ball"] else last_val
             raw_y.append(val)
             last_val = val
-        
         smooth_y = smooth_signal(raw_y, window_size=5)
 
-        # 3. Detección Eventos
         events_log = []
+        full_trajectory = [] # <-- NUEVA LISTA PARA 3D
+        
         juggles = 0
-        last_hit_frame_idx = -100 # Tiempo absoluto del último golpe
+        last_hit_frame_idx = -100
         dribble_state = "Parado"
+        
+        stats_counters = {
+            "total": 0,
+            "left": 0,
+            "right": 0,
+            "simultaneous": 0
+        }
 
         for i, f in enumerate(frames_meta):
             if not f["ball"] or not f["feet"]: continue
@@ -342,52 +314,64 @@ class HitDetectionServiceOptimized:
             prev_y = smooth_y[i-1] if i > 0 else ball_y
             velocity_y = ball_y - prev_y 
             
+            # --- CONSTRUCCIÓN DE TRAYECTORIA 3D ---
+            # Guardamos la posición suavizada para reconstrucción limpia
+            full_trajectory.append({
+                "frame": f["idx"],
+                "x": int(f["ball"]["x"]),
+                "y": int(ball_y), # Usamos Y suavizado
+                "z": int(f["ball"]["z"])
+            })
+            
             floor = f["floor_y"] if f["floor_y"] else max(f["feet"]["L"]["y"], f["feet"]["R"]["y"])
             height_cm = (floor - ball_y) / scale
             
             # --- JUGGLING ---
-            # Filtro 1: Altura mínima (evitar contar dribbling como juggles)
             if height_cm > 15:
+                is_contact = (velocity_y < -2.0)
                 
-                # Filtro 2: Velocidad Vertical (Debe estar subiendo CLARAMENTE)
-                # Valor más negativo = subida más rápida. -2.0 filtra ruido.
-                is_moving_up = (velocity_y < -2.0) 
+                hit_L = False
+                hit_R = False
                 
-                for leg_label, foot in [("Izq", f["feet"]["L"]), ("Der", f["feet"]["R"])]:
-                    if foot["conf"] < 0.5: continue
+                if f["feet"]["L"]["conf"] > 0.5:
+                    dx = abs(f["feet"]["L"]["x"] - f["ball"]["x"]) / scale
+                    dy = abs(f["feet"]["L"]["y"] - ball_y) / scale
+                    dz = abs(f["feet"]["L"]["z"] - f["ball"]["z"])
+                    if ((is_contact and dx < 25 and dy < 30) or (dx < 15 and dy < 10)) and dz < 50:
+                        hit_L = True
+
+                if f["feet"]["R"]["conf"] > 0.5:
+                    dx = abs(f["feet"]["R"]["x"] - f["ball"]["x"]) / scale
+                    dy = abs(f["feet"]["R"]["y"] - ball_y) / scale
+                    dz = abs(f["feet"]["R"]["z"] - f["ball"]["z"])
+                    if ((is_contact and dx < 25 and dy < 30) or (dx < 15 and dy < 10)) and dz < 50:
+                        hit_R = True
+                
+                if (hit_L or hit_R) and (f["idx"] - last_hit_frame_idx) > 12:
+                    juggles += 1
+                    last_hit_frame_idx = f["idx"]
                     
-                    # Distancias en CM
-                    dx = abs(foot["x"] - f["ball"]["x"]) / scale
-                    dy = abs(foot["y"] - ball_y) / scale
-                    dz = abs(foot["z"] - f["ball"]["z"]) # Profundidad (0-255)
+                    if hit_L and hit_R:
+                        hit_type = "Simultaneo"
+                        stats_counters["simultaneous"] += 1
+                        leg_label = "Simul"
+                    elif hit_L:
+                        hit_type = "Izq"
+                        stats_counters["left"] += 1
+                        leg_label = "Izq"
+                    else:
+                        hit_type = "Der"
+                        stats_counters["right"] += 1
+                        leg_label = "Der"
+                        
+                    stats_counters["total"] = juggles
                     
-                    # --- REGLAS DE CONTACTO (ENDURECIDAS) ---
-                    
-                    # Caso A: Golpe Estándar (La pelota sale disparada)
-                    # Exigimos que esté a menos de 25cm (aprox el largo de un botín)
-                    hit_strong = is_moving_up and dx < 25 and dy < 30
-                    
-                    # Caso B: Control/Amortiguación (La pelota no sube rápido)
-                    # Exigimos proximidad EXTREMA. 15cm en X y 10cm en Y (pegada al empeine)
-                    hit_soft = dx < 15 and dy < 10
-                    
-                    # Filtro 3: Profundidad (Z)
-                    # 50 unidades es estricto. Evita falsos positivos por perspectiva.
-                    z_ok = dz < 50
-                    
-                    if (hit_strong or hit_soft) and z_ok:
-                        # Filtro 4: Debounce (Tiempo de espera)
-                        # 12 frames a 30fps = 0.4 segundos de espera entre toques.
-                        if (f["idx"] - last_hit_frame_idx) > 12:
-                            juggles += 1
-                            last_hit_frame_idx = f["idx"]
-                            events_log.append({
-                                "idx": f["idx"], 
-                                "type": f"JUGGLE! ({leg_label})", 
-                                "count": juggles,
-                                "hit_leg": leg_label
-                            })
-                            break # Solo un pie puede golpear a la vez
+                    events_log.append({
+                        "idx": f["idx"], 
+                        "type": f"JUGGLE! ({hit_type})", 
+                        "count": juggles,
+                        "hit_leg": leg_label
+                    })
             
             # --- DRIBBLE ---
             elif height_cm <= 15:
@@ -403,16 +387,11 @@ class HitDetectionServiceOptimized:
                     if i % 15 == 0:
                         events_log.append({"idx": f["idx"], "type": dribble_state, "count": juggles})
 
-        return events_log, juggles, dribble_state
+        return events_log, stats_counters, dribble_state, full_trajectory
 
-    # ---------------------------------------------------------
-    # FASE 3: GENERACIÓN VISUAL
-    # ---------------------------------------------------------
     def generate_visuals(self, video_path, events_log, frames_meta):
         event_map = {e["idx"]: e for e in events_log}
-        
         target_indices = set(e["idx"] for e in events_log)
-        # Muestreo regular cada 30 frames para contexto
         for f in frames_meta:
             if f["idx"] % 30 == 0: target_indices.add(f["idx"])
             
@@ -427,149 +406,85 @@ class HitDetectionServiceOptimized:
             if curr_frame in target_indices:
                 meta = next((m for m in frames_meta if m["idx"] == curr_frame), None)
                 if meta and meta["ball"]:
-                    
                     evt = event_map.get(curr_frame, {})
                     txt = evt.get("type", "")
                     cnt = evt.get("count", meta.get("last_count", 0))
                     is_hit = "JUGGLE" in txt
                     hit_leg = evt.get("hit_leg", "")
                     
-                    # Calculamos profundidad AHORA para el dibujo 3D
                     depth_map = self.get_depth(frame)
-                    
                     vis = self._draw_panel(frame, meta, depth_map, txt, cnt, is_hit, hit_leg)
                     
                     _, b = cv2.imencode('.jpg', vis)
                     b64 = base64.b64encode(b).decode('utf-8')
                     images_out.append({"image_id": str(curr_frame), "image_base64": f"data:image/jpeg;base64,{b64}"})
-                    
                     if len(images_out) >= 60: break
-            
             curr_frame += 1
-        
         cap.release()
         return images_out
 
     def _draw_panel(self, frame, meta, depth_map, event_txt, count, is_hit, hit_leg):
         h, w = frame.shape[:2]
-        panel_w, panel_h = 320, h
-        # Inicializar panel gris oscuro
-        panel = np.zeros((panel_h, panel_w, 3), dtype=np.uint8)
-        panel[:] = (30, 30, 30)
-        
+        panel = np.zeros((h, 320, 3), dtype=np.uint8); panel[:] = (30,30,30)
         ball = meta["ball"]
         kpts = meta["kpts"]
         
-        # Función de Mapeo: Frame(x,y) -> Panel(x,y)
-        # Mapea al área interna del panel (dejando 20px de margen)
-        def to_p(x, y): 
-            px = 20 + int(x / w * (panel_w - 40))
-            py = 20 + int(y / h * (panel_h - 40))
-            return (px, py)
+        def to_p(x, y): return (20 + int(x/w*280), 20 + int(y/h*(h-40)))
         
-        # --- COLORES ---
-        c_bone = (100, 100, 100) # Gris para huesos
-        c_head = (200, 200, 255) # Cabeza rosada/azulada
-        c_joint = (0, 200, 0)    # Articulaciones normales (Verde)
-        c_hit = (0, 255, 255)    # Amarillo intenso para golpe
-        
-        # Colores base para la pelota (Naranja normal, Amarillo si es golpe)
+        c_bone, c_head = (100, 100, 100), (200, 200, 255)
+        c_joint, c_hit = (0, 200, 0), (0, 255, 255)
         base_ball_color = c_hit if is_hit else (0, 140, 255) 
 
-        # 1. DIBUJAR HUESOS (Líneas)
         for a, b in self.skeleton_links:
             ka, kb = kpts[a], kpts[b]
             if ka['conf'] > 0.4 and kb['conf'] > 0.4:
                 pa, pb = to_p(ka['x'], ka['y']), to_p(kb['x'], kb['y'])
-                
-                # Resaltar hueso de la pierna de golpe
-                col = c_bone
-                thick = 2
+                col, thick = c_bone, 2
                 if is_hit:
-                    if hit_leg == "Izq" and (a in [11,13,15] and b in [11,13,15]): 
-                        col = c_hit; thick = 3
-                    if hit_leg == "Der" and (a in [12,14,16] and b in [12,14,16]): 
-                        col = c_hit; thick = 3
-                        
+                    check_L = (hit_leg in ["Izq", "Simul"]) and (a in [11,13,15] and b in [11,13,15])
+                    check_R = (hit_leg in ["Der", "Simul"]) and (a in [12,14,16] and b in [12,14,16])
+                    if check_L or check_R: col, thick = c_hit, 3
                 cv2.line(panel, pa, pb, col, thick)
 
-        # 2. DIBUJAR ARTICULACIONES Y CABEZA (Círculos 3D)
         for i, kp in enumerate(kpts):
             if kp['conf'] > 0.4:
-                # Efecto 3D usando Z para el radio
                 try: z_val = int(depth_map[kp['y'], kp['x']])
                 except: z_val = 128
                 radius = max(3, int((z_val / 255.0) * 9))
-                
                 color = c_joint
+                if i <= 4: color = c_head; radius += 2
                 
-                # Cabeza más grande y de otro color
-                if i <= 4: 
-                    color = c_head
-                    radius += 2
-                
-                # Resaltar pie de golpe
                 if is_hit:
-                    if hit_leg == "Izq" and i in [13, 15]: color = c_hit; radius += 3
-                    if hit_leg == "Der" and i in [14, 16]: color = c_hit; radius += 3
-
+                    if (hit_leg in ["Izq", "Simul"]) and i in [13, 15]: color = c_hit; radius += 3
+                    if (hit_leg in ["Der", "Simul"]) and i in [14, 16]: color = c_hit; radius += 3
                 cv2.circle(panel, to_p(kp['x'], kp['y']), radius, color, -1)
 
-        # =================================================
-        # 3. DIBUJAR PELOTA (Semib-transparente + Borde Fuerte)
-        # =================================================
-        # Centro de la pelota en el panel
         bc = to_p(ball["x"], ball["y"] - ball["w"]//2)
-        
-        # Calcular el RADIO REAL escalado al panel.
-        # El ancho interno del panel es (panel_w - 40) = 280px.
-        # Factor de escala = ancho_panel_interno / ancho_frame_original
         scale_factor = 280.0 / w
-        # El radio es la mitad del ancho detectado (ball["w"]), escalado.
         real_radius_panel = max(4, int((ball["w"] / 2) * scale_factor))
         
-        # A) Relleno Semitransparente (Overlay)
         overlay = panel.copy()
-        opacity = 0.5 # 50% de transparencia
-        # Dibujamos relleno sólido (-1) en el overlay
         cv2.circle(overlay, bc, real_radius_panel, base_ball_color, -1)
-        # Mezclamos el overlay con el panel actual
-        cv2.addWeighted(overlay, opacity, panel, 1 - opacity, 0, panel)
-        
-        # B) Borde Fuerte Sólido
-        border_thickness = 3
-        # Dibujamos solo el contorno sobre el panel ya mezclado
-        cv2.circle(panel, bc, real_radius_panel, base_ball_color, border_thickness)
-        # =================================================
+        cv2.addWeighted(overlay, 0.5, panel, 0.5, 0, panel)
+        cv2.circle(panel, bc, real_radius_panel, base_ball_color, 3)
 
-        # 4. TEXTOS
         cv2.putText(panel, f"Juggl: {count}", (10, 450), cv2.FONT_HERSHEY_SIMPLEX, 1, (0,255,255), 2)
-        if event_txt:
-            cv2.putText(panel, event_txt, (10, 490), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0,255,0), 2)
+        if event_txt: cv2.putText(panel, event_txt, (10, 490), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0,255,0), 2)
         
         ball_info = f"N {self.calibrator.selected_size_id} ({self.calibrator.real_diameter_cm}cm)"
         cv2.putText(panel, f"Ball: {ball_info}", (10, 520), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (150,150,150), 1)
-        
-        # Unir frame original con el panel lateral
         return np.hstack((frame, panel))
-    # ---------------------------------------------------------
-    # RUN
-    # ---------------------------------------------------------
+
     def run_on_video(self, video_path, frame_stride=3, max_frames=300, hit_threshold=0.4, return_images=True):
         t0 = time.time()
-        
-        # 1. Extracción
         meta, f_start, f_mid, fps = self.extract_trajectory(video_path, stride=frame_stride, max_frames=max_frames)
         
-        # 2. Análisis
-        logs, juggles, end_state = self.analyze_trajectory(meta)
+        # 2. Análisis con Trayectoria
+        logs, stats_data, end_state, trajectory_3d = self.analyze_trajectory(meta)
         
-        # 3. Visuals
         hit_imgs = []
-        if return_images:
-            hit_imgs = self.generate_visuals(video_path, logs, meta)
+        if return_images: hit_imgs = self.generate_visuals(video_path, logs, meta)
             
-        # 4. Face Compare
         face_res = "N/A"
         if self.face_compare_fn and f_start and f_mid:
             try: face_res = self.face_compare_fn(f_start[0], f_mid[0])
@@ -577,7 +492,6 @@ class HitDetectionServiceOptimized:
 
         total_t = time.time() - t0
         
-        # Info última pierna
         last_leg = "N/A"
         for e in reversed(logs):
             if "JUGGLE" in e["type"]:
@@ -587,13 +501,14 @@ class HitDetectionServiceOptimized:
         return {
             "id": int(time.time()),
             "hit_images": hit_imgs,
+            "trajectory": trajectory_3d, # NUEVO CAMPO
             "meta": {
-                "performance": {
-                    "total_time_s": round(total_t, 2),
-                    "frames_analyzed": len(meta)
-                },
+                "performance": {"total_time_s": round(total_t, 2), "frames_analyzed": len(meta)},
                 "stats": {
-                    "total_juggles": juggles,
+                    "total_juggles": stats_data["total"],
+                    "count_left": stats_data["left"],
+                    "count_right": stats_data["right"],
+                    "count_simultaneous": stats_data["simultaneous"],
                     "last_hit_leg": last_leg,
                     "final_state": end_state,
                     "ball_size": f"N {self.calibrator.selected_size_id}"
