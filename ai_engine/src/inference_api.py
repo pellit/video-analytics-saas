@@ -33,6 +33,7 @@ from .services.hit_detection_service import HitDetectionService
 from .services.hit_detection_service_optimized import HitDetectionServiceOptimized
 from .services.superres_service import SuperResolutionService
 from .services.move_detection_service_optimized import MoveDetectionServiceOptimized
+from .services.general_action_service_optimized import GeneralActionService
 from .services.jetson_env import ensure_jetson_models
 
 JETSON_INFERENCE_AVAILABLE = ACTIONNET_AVAILABLE
@@ -216,6 +217,18 @@ def _ensure_move_detection_service() -> MoveDetectionServiceOptimized:
             face_compare_fn=_compare_faces_for_hit_detection,
         )
     return _move_detection_service
+
+# Lazy-loaded general action service
+_general_action_service: Optional[GeneralActionService] = None
+
+def _ensure_general_action_service() -> GeneralActionService:
+    global _general_action_service
+    if _general_action_service is None:
+        _general_action_service = GeneralActionService(
+            segment_floor_fn=_segment_scene,
+            face_compare_fn=_compare_faces_for_hit_detection,
+        )
+    return _general_action_service
 
 # Optional NanoDet-Plus detector and MiDaS ONNX depth model
 _nanodet_detector: Optional[NanoDetPlusDetector] = None
@@ -1121,6 +1134,35 @@ async def detect_nanodet_video(
             "results": frames,
         }
         return _add_perf_metadata(payload, start_time, frames_processed=processed)
+    finally:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+
+
+@app.post("/action/general/video")
+async def action_general_video(
+    file: UploadFile = File(...),
+    frame_stride: int = Form(3),
+    max_frames: int = Form(300),
+    return_images: bool = Form(True),
+):
+    """Endpoint que ejecuta `GeneralActionService.run_on_video` sobre un video subido.
+    Devuelve imágenes de visualización, trayectoria y estadísticas agregadas.
+    """
+    tmp_path = _save_upload_to_temp(file)
+    try:
+        _ensure_video_duration(tmp_path)
+        start = time.perf_counter()
+        service = _ensure_general_action_service()
+        result = service.run_on_video(tmp_path, frame_stride=frame_stride, max_frames=max_frames, return_images=return_images)
+        perf = result.get("meta", {}).get("performance", {})
+        frames = perf.get("frames_analyzed", 0)
+        _add_perf_metadata(perf, start, frames)
+        return {"success": True, **result}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
     finally:
         if os.path.exists(tmp_path):
             os.remove(tmp_path)
