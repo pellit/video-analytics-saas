@@ -11,9 +11,10 @@ import cv2
 import tempfile
 from typing import Optional, List, Dict, Any, Tuple
 
-from fastapi import FastAPI, HTTPException, UploadFile, File, Form
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
+from fastapi.responses import FileResponse
 
 from .services.video_utils import bgr_to_cuda
 from .services.depth_pose import run_depthnet_video, analyze_depth_pose_video as depth_pose_service_analyze
@@ -706,22 +707,24 @@ def superres_apply(req: SuperResRequest):
 async def superres_espcn_video(
     file: UploadFile = File(...),
     frame_stride: int = Form(1),
+    background_tasks: BackgroundTasks = None,
 ):
     """Super-resolve a video usando el motor ESPCN (x4 por defecto).
     Reutiliza la ruta `/superres/video` pasando `model='espcn'`.
     """
-    return await superres_video(file=file, frame_stride=frame_stride, model="espcn")
+    return await superres_video(file=file, frame_stride=frame_stride, model="espcn", background_tasks=background_tasks)
 
 
 @app.post("/superres/fsrcnn/video")
 async def superres_fsrcnn_video(
     file: UploadFile = File(...),
     frame_stride: int = Form(1),
+    background_tasks: BackgroundTasks = None,
 ):
     """Super-resolve a video usando el motor FSRCNN (x4 por defecto).
     Reutiliza la ruta `/superres/video` pasando `model='fsrcnn'`.
     """
-    return await superres_video(file=file, frame_stride=frame_stride, model="fsrcnn")
+    return await superres_video(file=file, frame_stride=frame_stride, model="fsrcnn", background_tasks=background_tasks)
 
 @app.post("/detect")
 def detect(req: DetectionRequest):
@@ -958,6 +961,7 @@ def face_video_total_summary(
     match_threshold: float = Form(0.7),
     frame_stride: int = Form(5),
     max_frames: int = Form(500),
+    background_tasks: BackgroundTasks = None,
 ):
     """
     Analiza todo el video (saltando `frame_stride` frames) para detectar y agrupar
@@ -1088,11 +1092,10 @@ async def detect_video(
     max_frames: int = Form(200),
     frame_stride: int = Form(5),
 ):
-    """Upload a short video and analyze sampled frames."""
-    if max_frames <= 0:
-        raise HTTPException(400, "max_frames must be > 0")
     if frame_stride <= 0:
         raise HTTPException(400, "frame_stride must be > 0")
+    if max_frames <= 0:
+        raise HTTPException(400, "max_frames must be > 0")
 
     start_time = time.perf_counter()
     tmp_path = _save_upload_to_temp(file)
@@ -1109,7 +1112,6 @@ async def detect_video(
             ret, frame = cap.read()
             if not ret:
                 break
-
             if frame_idx % frame_stride != 0:
                 frame_idx += 1
                 continue
@@ -1945,7 +1947,22 @@ async def superres_image(
     if img is None:
         raise HTTPException(400, "No se pudo decodificar la imagen subida")
 
-    sr, scale = superres_service.load_engine(_resolve_superres_model_path(model))
+    # Intentar cargar el modelo solicitado; si falla para 'espcn' intentamos 'fsrcnn' como fallback
+    model_path = _resolve_superres_model_path(model)
+    try:
+        sr, scale = superres_service.load_engine(model_path)
+    except HTTPException as exc:
+        # Si se pidió específicamente espcn y falló, intentar fsrcnn automáticamente
+        msg = str(exc.detail)
+        if model and model.strip().lower().startswith("espcn"):
+            try:
+                alt_path = _resolve_superres_model_path("fsrcnn")
+                sr, scale = superres_service.load_engine(alt_path)
+            except HTTPException:
+                # Re-raise original error to preserve context
+                raise
+        else:
+            raise
     try:
         upscaled = sr.upsample(img)
     except Exception as exc:
@@ -1966,7 +1983,8 @@ async def superres_image(
 async def superres_video(
     file: UploadFile = File(...),
     frame_stride: int = Form(1),
-    model: Optional[str] = Form(None)
+    model: Optional[str] = Form(None),
+    background_tasks: BackgroundTasks = None,
 ):
     if frame_stride <= 0:
         raise HTTPException(400, "frame_stride debe ser > 0")
@@ -2019,17 +2037,10 @@ async def superres_video(
         if os.path.exists(tmp_path):
             os.remove(tmp_path)
 
-    with open(output_tmp.name, "rb") as f:
-        video_b64 = base64.b64encode(f.read()).decode()
-    os.remove(output_tmp.name)
-
-    return {
-        "success": True,
-        "scale": scale,
-        "frames_written": processed,
-        "upscaled_resolution": {"width": out_size[0], "height": out_size[1]},
-        "video_base64": "data:video/mp4;base64," + video_b64
-    }
+    # Devolver archivo MP4 directamente y borrar el temp file en background
+    if background_tasks is not None:
+        background_tasks.add_task(os.remove, output_tmp.name)
+    return FileResponse(output_tmp.name, media_type="video/mp4", filename=os.path.basename(output_tmp.name))
 
 if __name__ == "__main__":
     import uvicorn
