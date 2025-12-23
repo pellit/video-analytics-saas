@@ -681,6 +681,28 @@ def superres_apply(req: SuperResRequest):
         raise HTTPException(400, "Debes enviar el campo 'model' (ej: 'espcn' o 'fsrcnn').")
     return _superres_endpoint_response(req, req.model)
 
+
+@app.post("/superres/espcn/video")
+async def superres_espcn_video(
+    file: UploadFile = File(...),
+    frame_stride: int = Form(1),
+):
+    """Super-resolve a video usando el motor ESPCN (x4 por defecto).
+    Reutiliza la ruta `/superres/video` pasando `model='espcn'`.
+    """
+    return await superres_video(file=file, frame_stride=frame_stride, model="espcn")
+
+
+@app.post("/superres/fsrcnn/video")
+async def superres_fsrcnn_video(
+    file: UploadFile = File(...),
+    frame_stride: int = Form(1),
+):
+    """Super-resolve a video usando el motor FSRCNN (x4 por defecto).
+    Reutiliza la ruta `/superres/video` pasando `model='fsrcnn'`.
+    """
+    return await superres_video(file=file, frame_stride=frame_stride, model="fsrcnn")
+
 @app.post("/detect")
 def detect(req: DetectionRequest):
     start_time = time.perf_counter()
