@@ -26,9 +26,6 @@ from .services.video_io import (
     read_frame_at,
 )
 from .models.nanodet_plus import NanoDetPlusDetector
-def segment_image(req: SegmentRequest):
-    # Implementation for segmenting an image
-    pass
 from .services.face_service import FaceEmbeddingService
 from .services.activity_analysis import ActivityAnalyzer, SOCCER_BALL_LABELS, GYM_EQUIPMENT_LABELS
 from .services.actionnet_service import ActionNetService, JETSON_INFERENCE_AVAILABLE as ACTIONNET_AVAILABLE
@@ -59,6 +56,9 @@ POSENET_MODEL = os.environ.get('POSENET_MODEL', 'resnet18-body')
 MODELS_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "../models"))
 os.makedirs(MODELS_DIR, exist_ok=True)
 
+def segment_image(req: SegmentRequest):
+    # Implementation for segmenting an image
+    pass
 
 def _add_perf_metadata(payload, start_time, frames_processed):
     """Annotate payload with elapsed time (ms) and FPS."""
