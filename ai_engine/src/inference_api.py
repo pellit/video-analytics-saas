@@ -5,6 +5,7 @@ UPDATED: Uses NanoDet-Plus (NanoDet-Plus-m 416x416 recommended)
 
 import os
 import time
+import math
 import base64
 import numpy as np
 import cv2
@@ -1394,7 +1395,12 @@ async def detect_hit_fast_video(
         fps = cap.get(cv2.CAP_PROP_FPS)
         if not fps or fps <= 0:
             fps = 30
-        duration = cap.get(cv2.CAP_PROP_FRAME_COUNT) / fps if fps > 0 else 0
+        total_frames = cap.get(cv2.CAP_PROP_FRAME_COUNT)
+        if not total_frames or total_frames <= 0:
+            total_frames = None
+        else:
+            total_frames = int(total_frames)
+        duration = (total_frames / fps) if (fps > 0 and total_frames is not None) else 0
         cap.release()
 
         cuda_enabled = False
@@ -1424,9 +1430,21 @@ async def detect_hit_fast_video(
             hit_threshold,
             return_images=return_images,
         )
+        perf = results.get("meta", {}).get("performance", {})
+        frames_processed = int(perf.get("frames_analyzed", 0) or 0)
+        expected_frames = max_frames
+        if total_frames is not None:
+            expected_frames = min(max_frames, int(math.ceil(total_frames / max(frame_stride, 1))))
+        if expected_frames <= 0:
+            expected_frames = max(frames_processed, 1)
+        progress_pct = round(min(100.0, (frames_processed / expected_frames) * 100.0), 2)
         return {
             "success": True,
             "video_duration_s": duration,
+            "frames_total": total_frames,
+            "frames_expected": expected_frames,
+            "frames_processed": frames_processed,
+            "progress_pct": progress_pct,
             **results
         }
     finally:
