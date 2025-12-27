@@ -204,7 +204,9 @@ hit_detection_service = HitDetectionService(
     face_compare_fn=_compare_faces_for_hit_detection,
 )
 
-hit_detection_service_fast = HitDetectionServiceOptimized()
+hit_detection_service_fast = HitDetectionServiceOptimized(
+    face_compare_fn=_compare_faces_for_hit_detection,
+)
 
 superres_service = SuperResolutionService(SUPERRES_MODEL_DIR, SUPERRES_MODEL_PATH)
 

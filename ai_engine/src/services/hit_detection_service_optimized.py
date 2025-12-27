@@ -6,6 +6,7 @@ import time
 import base64
 from collections import deque
 from typing import Any, Callable, Dict, List, Optional, Tuple
+from .video_io import read_frame_at
 
 def smooth_signal(data_list, window_size=5):
     """Suaviza una lista de números usando media móvil"""
@@ -205,6 +206,127 @@ class HitDetectionServiceOptimized:
             _, b = cv2.imencode('.jpg', frame[y1:y2, x1:x2])
             return base64.b64encode(b).decode('utf-8')
         return None
+
+    def _build_sample_indices(self, frame_count: int, sample_interval_pct: int) -> List[int]:
+        if frame_count <= 0:
+            return []
+        interval = max(1, min(sample_interval_pct, 100))
+        percents = list(range(0, 101, interval))
+        if percents[-1] != 100:
+            percents.append(100)
+        indices: List[int] = []
+        last_idx = None
+        for pct in percents:
+            idx = int(round((frame_count - 1) * (pct / 100.0)))
+            idx = max(0, min(idx, frame_count - 1))
+            if last_idx is None or idx != last_idx:
+                indices.append(idx)
+                last_idx = idx
+        return indices
+
+    def _encode_frame_b64(self, frame: np.ndarray) -> Optional[str]:
+        if frame is None:
+            return None
+        ok, buf = cv2.imencode('.jpg', frame)
+        if not ok:
+            return None
+        return base64.b64encode(buf).decode('utf-8')
+
+    def _evaluate_face_consistency(self, video_path: str, sample_interval_pct: int = 20) -> Dict[str, Any]:
+        if not self.face_compare_fn:
+            return {
+                "consistent": False,
+                "sample_interval_pct": sample_interval_pct,
+                "samples": [],
+                "note": "face_compare_fn_unavailable"
+            }
+
+        cap = cv2.VideoCapture(video_path)
+        if not cap.isOpened():
+            return {
+                "consistent": False,
+                "sample_interval_pct": sample_interval_pct,
+                "samples": [],
+                "note": "video_unavailable"
+            }
+        frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+        cap.release()
+        if frame_count <= 0:
+            return {
+                "consistent": False,
+                "sample_interval_pct": sample_interval_pct,
+                "samples": [],
+                "note": "frame_count_unavailable"
+            }
+
+        indices = self._build_sample_indices(frame_count, sample_interval_pct)
+        samples: List[Dict[str, Any]] = []
+        reference_b64: Optional[str] = None
+
+        for idx in indices:
+            frame = read_frame_at(video_path, int(idx))
+            sample: Dict[str, Any] = {"frame": int(idx), "success": False}
+            if frame is None:
+                sample["error"] = "frame_unavailable"
+                samples.append(sample)
+                continue
+            b64 = self._encode_frame_b64(frame)
+            if not b64:
+                sample["error"] = "encode_failed"
+                samples.append(sample)
+                continue
+
+            if reference_b64 is None:
+                try:
+                    ref_res = self.face_compare_fn(b64, b64)
+                except Exception:
+                    sample["error"] = "face_not_detected"
+                    samples.append(sample)
+                    continue
+                sample["success"] = True
+                sample["reference"] = True
+                if isinstance(ref_res, dict):
+                    if "similarity" in ref_res:
+                        sample["similarity"] = ref_res["similarity"]
+                    if "threshold" in ref_res:
+                        sample["threshold"] = ref_res["threshold"]
+                    sample["match"] = bool(ref_res.get("match", True))
+                else:
+                    sample["match"] = True
+                reference_b64 = b64
+                samples.append(sample)
+                continue
+
+            try:
+                cmp_res = self.face_compare_fn(reference_b64, b64)
+            except Exception:
+                sample["error"] = "compare_failed"
+                samples.append(sample)
+                continue
+
+            sample["success"] = True
+            if isinstance(cmp_res, dict):
+                sample["match"] = bool(cmp_res.get("match", False))
+                if "similarity" in cmp_res:
+                    sample["similarity"] = cmp_res["similarity"]
+                if "threshold" in cmp_res:
+                    sample["threshold"] = cmp_res["threshold"]
+            else:
+                sample["match"] = bool(cmp_res)
+            samples.append(sample)
+
+        successful_samples = [s for s in samples if s.get("success")]
+        consistent = bool(successful_samples) and all(
+            s.get("match", True) for s in successful_samples if not s.get("reference")
+        )
+
+        return {
+            "consistent": consistent,
+            "sample_interval_pct": sample_interval_pct,
+            "frame_count": frame_count,
+            "samples": samples,
+            "successful_samples": len(successful_samples)
+        }
 
     def extract_trajectory(self, video_path, stride=3, max_frames=300):
         cap = cv2.VideoCapture(video_path)
@@ -475,7 +597,7 @@ class HitDetectionServiceOptimized:
         cv2.putText(panel, f"Ball: {ball_info}", (10, 520), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (150,150,150), 1)
         return np.hstack((frame, panel))
 
-    def run_on_video(self, video_path, frame_stride=3, max_frames=300, hit_threshold=0.4, return_images=True):
+    def run_on_video(self, video_path, frame_stride=3, max_frames=300, hit_threshold=0.4, return_images=True, face_sample_interval_pct=20):
         t0 = time.time()
         meta, f_start, f_mid, fps = self.extract_trajectory(video_path, stride=frame_stride, max_frames=max_frames)
         
@@ -488,6 +610,11 @@ class HitDetectionServiceOptimized:
         face_res = "N/A"
         if self.face_compare_fn and f_start and f_mid:
             try: face_res = self.face_compare_fn(f_start[0], f_mid[0])
+            except: pass
+
+        face_consistency = "N/A"
+        if self.face_compare_fn:
+            try: face_consistency = self._evaluate_face_consistency(video_path, sample_interval_pct=face_sample_interval_pct)
             except: pass
 
         total_t = time.time() - t0
@@ -513,6 +640,7 @@ class HitDetectionServiceOptimized:
                     "final_state": end_state,
                     "ball_size": f"N {self.calibrator.selected_size_id}"
                 },
-                "face_verification": face_res
+                "face_verification": face_res,
+                "face_consistency": face_consistency
             }
         }
