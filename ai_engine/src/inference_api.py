@@ -48,6 +48,7 @@ DETECTION_MODEL = os.environ.get('DETECTION_MODEL', 'nanodet')
 DETECTION_RESOLUTION = os.environ.get('DETECTION_RESOLUTION', 'medium')
 DEVICE_NAME = os.environ.get('DEVICE_NAME', 'jetson-nano')
 MAX_VIDEO_DURATION_S = 60
+NFS_MEDIA_ROOT = os.environ.get('NFS_MEDIA_ROOT', '/app/media')
 
 # Optional NVIDIA jetson-inference models
 ACTIONNET_MODEL = os.environ.get('ACTIONNET_MODEL', 'resnet18')
@@ -291,6 +292,13 @@ class SuperResRequest(BaseModel):
     image_base64: str
     model: Optional[str] = None  # path override or keywords 'espcn'/'fsrcnn'
 
+class HitFastNfsRequest(BaseModel):
+    file_path: str = Field(..., min_length=1)
+    frame_stride: Optional[int] = 1
+    max_frames: Optional[int] = 1800
+    hit_threshold: Optional[float] = 0.1
+    return_images: bool = False
+
 @app.get("/health")
 def health():
     return {
@@ -306,6 +314,24 @@ def _decode_base64_image(image_base64: str) -> np.ndarray:
 
 def _save_upload_to_temp(file: UploadFile) -> str:
     return save_upload_to_temp(file)
+
+
+def _resolve_nfs_video_path(file_path: str) -> str:
+    base_dir = os.path.abspath(NFS_MEDIA_ROOT)
+    if not file_path:
+        raise HTTPException(400, 'file_path is required')
+    candidate = file_path
+    if not os.path.isabs(candidate):
+        candidate = os.path.join(base_dir, candidate)
+    candidate = os.path.abspath(candidate)
+    try:
+        if os.path.commonpath([candidate, base_dir]) != base_dir:
+            raise HTTPException(400, 'Invalid file_path')
+    except ValueError:
+        raise HTTPException(400, 'Invalid file_path')
+    if not os.path.isfile(candidate):
+        raise HTTPException(404, 'Video path not found')
+    return candidate
 
 
 def _ensure_video_duration(path: str, max_seconds: int = MAX_VIDEO_DURATION_S):
@@ -1381,6 +1407,74 @@ async def detect_hit_video(
             os.remove(tmp_path)
 
 
+def _run_hit_fast_from_path(
+    video_path: str,
+    frame_stride: Optional[int],
+    max_frames: Optional[int],
+    hit_threshold: Optional[float],
+    return_images: bool,
+    error_message: str,
+) -> Dict[str, Any]:
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        raise HTTPException(400, error_message)
+    fps = cap.get(cv2.CAP_PROP_FPS)
+    if not fps or fps <= 0:
+        fps = 30
+    total_frames = cap.get(cv2.CAP_PROP_FRAME_COUNT)
+    if not total_frames or total_frames <= 0:
+        total_frames = None
+    else:
+        total_frames = int(total_frames)
+    duration = (total_frames / fps) if (fps > 0 and total_frames is not None) else 0
+    cap.release()
+
+    cuda_enabled = False
+    try:
+        cuda_enabled = cv2.cuda.getCudaEnabledDeviceCount() > 0
+    except Exception:
+        cuda_enabled = False
+
+    if frame_stride is None:
+        frame_stride = 1 if cuda_enabled else 3
+    if hit_threshold is None:
+        hit_threshold = 0.4
+    if max_frames is None:
+        max_frames = int(fps * 60)
+
+    if frame_stride <= 0:
+        raise HTTPException(400, "frame_stride must be > 0")
+    if max_frames <= 0:
+        raise HTTPException(400, "max_frames must be > 0")
+    if hit_threshold < 0 or hit_threshold > 1:
+        raise HTTPException(400, "hit_threshold must be between 0 and 1")
+
+    results = hit_detection_service_fast.run_on_video(
+        video_path,
+        frame_stride,
+        max_frames,
+        hit_threshold,
+        return_images=return_images,
+    )
+    perf = results.get("meta", {}).get("performance", {})
+    frames_processed = int(perf.get("frames_analyzed", 0) or 0)
+    expected_frames = max_frames
+    if total_frames is not None:
+        expected_frames = min(max_frames, int(math.ceil(total_frames / max(frame_stride, 1))))
+    if expected_frames <= 0:
+        expected_frames = max(frames_processed, 1)
+    progress_pct = round(min(100.0, (frames_processed / expected_frames) * 100.0), 2)
+    return {
+        "success": True,
+        "video_duration_s": duration,
+        "frames_total": total_frames,
+        "frames_expected": expected_frames,
+        "frames_processed": frames_processed,
+        "progress_pct": progress_pct,
+        **results
+    }
+
+
 @app.post("/detect/hit/fast/video")
 async def detect_hit_fast_video(
     file: UploadFile = File(...),
@@ -1391,67 +1485,30 @@ async def detect_hit_fast_video(
 ):
     tmp_path = _save_upload_to_temp(file)
     try:
-        cap = cv2.VideoCapture(tmp_path)
-        if not cap.isOpened():
-            raise HTTPException(400, "Unable to open uploaded video")
-        fps = cap.get(cv2.CAP_PROP_FPS)
-        if not fps or fps <= 0:
-            fps = 30
-        total_frames = cap.get(cv2.CAP_PROP_FRAME_COUNT)
-        if not total_frames or total_frames <= 0:
-            total_frames = None
-        else:
-            total_frames = int(total_frames)
-        duration = (total_frames / fps) if (fps > 0 and total_frames is not None) else 0
-        cap.release()
-
-        cuda_enabled = False
-        try:
-            cuda_enabled = cv2.cuda.getCudaEnabledDeviceCount() > 0
-        except Exception:
-            cuda_enabled = False
-
-        if frame_stride is None:
-            frame_stride = 1 if cuda_enabled else 3
-        if hit_threshold is None:
-            hit_threshold = 0.4
-        if max_frames is None:
-            max_frames = int(fps * 60)
-
-        if frame_stride <= 0:
-            raise HTTPException(400, "frame_stride must be > 0")
-        if max_frames <= 0:
-            raise HTTPException(400, "max_frames must be > 0")
-        if hit_threshold < 0 or hit_threshold > 1:
-            raise HTTPException(400, "hit_threshold must be between 0 and 1")
-
-        results = hit_detection_service_fast.run_on_video(
+        return _run_hit_fast_from_path(
             tmp_path,
             frame_stride,
             max_frames,
             hit_threshold,
-            return_images=return_images,
+            return_images,
+            error_message="Unable to open uploaded video",
         )
-        perf = results.get("meta", {}).get("performance", {})
-        frames_processed = int(perf.get("frames_analyzed", 0) or 0)
-        expected_frames = max_frames
-        if total_frames is not None:
-            expected_frames = min(max_frames, int(math.ceil(total_frames / max(frame_stride, 1))))
-        if expected_frames <= 0:
-            expected_frames = max(frames_processed, 1)
-        progress_pct = round(min(100.0, (frames_processed / expected_frames) * 100.0), 2)
-        return {
-            "success": True,
-            "video_duration_s": duration,
-            "frames_total": total_frames,
-            "frames_expected": expected_frames,
-            "frames_processed": frames_processed,
-            "progress_pct": progress_pct,
-            **results
-        }
     finally:
         if os.path.exists(tmp_path):
             os.remove(tmp_path)
+
+
+@app.post("/detect/hit/fast/nfs/video")
+async def detect_hit_fast_nfs_video(payload: HitFastNfsRequest):
+    video_path = _resolve_nfs_video_path(payload.file_path)
+    return _run_hit_fast_from_path(
+        video_path,
+        payload.frame_stride,
+        payload.max_frames,
+        payload.hit_threshold,
+        payload.return_images,
+        error_message="Unable to open video path",
+    )
 
 
 @app.post("/detect/move/video")

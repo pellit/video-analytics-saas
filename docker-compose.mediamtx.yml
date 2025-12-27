@@ -85,6 +85,7 @@ services:
       - PYTHONUNBUFFERED=1
       - BACKEND_API_URL=http://api:8000
       - WORKER_API_KEY=${WORKER_API_KEY}
+      - NFS_MEDIA_ROOT=/app/media
       # Model configuration
       - DETECTION_MODEL=${DETECTION_MODEL:-nanodet}
       - DETECTION_RESOLUTION=${DETECTION_RESOLUTION:-medium}
@@ -102,6 +103,7 @@ services:
       - SENTINEL_CLIENT_SECRET=${SENTINEL_CLIENT_SECRET:-}
     volumes:
       - ./ai_engine/models:/app/models
+      - ${NFS_MEDIA_PATH:-/mnt/videos_servidor}:/app/media:ro
       - app_storage:/app/storage  # Volumen compartido con Laravel
     depends_on:
       - redis
