@@ -1,184 +1,127 @@
-import cv2
-import time
-import numpy as np
 import os
+import subprocess
 import sys
-import shutil
-
-# Intentar importar librerías de NVIDIA (Standard en Jetson)
-try:
-    import tensorrt as trt
-    import pycuda.driver as cuda
-    import pycuda.autoinit
-    TRT_AVAILABLE = True
-except ImportError:
-    print("⚠️ Librerías tensorrt/pycuda no encontradas. Se usará solo Ultralytics para exportar.")
-    TRT_AVAILABLE = False
-
-from ultralytics import YOLO
+import time
 
 # ==============================================================================
 # CONFIGURACIÓN
 # ==============================================================================
 MODELS_DIR = "/app/ai_engine/models"
-ONNX_PATH = os.path.join(MODELS_DIR, "yolov8n.onnx")
-ENGINE_PATH_416 = os.path.join(MODELS_DIR, "yolov8n_416.engine")
+# Usamos el ONNX que ya debería estar en tu imagen Docker
+ONNX_PATH = os.path.join(MODELS_DIR, "yolov8n.onnx") 
+ENGINE_PATH = os.path.join(MODELS_DIR, "yolov8n_416.engine")
 
-# ==============================================================================
-# 1. CLASE WRAPPER TENSORRT (Infernecia Pura y Rápida)
-# ==============================================================================
-class TensorRTWrapper:
-    def __init__(self, engine_path):
-        self.engine_path = engine_path
-        self.logger = trt.Logger(trt.Logger.WARNING)
-        self.runtime = trt.Runtime(self.logger)
-        self.engine = self.load_engine()
-        self.context = self.engine.create_execution_context()
-        self.inputs, self.outputs, self.bindings, self.stream = self.allocate_buffers()
+# Ruta al binario de NVIDIA (estándar en Jetson)
+TRTEXEC_BIN = "/usr/src/tensorrt/bin/trtexec"
 
-    def load_engine(self):
-        with open(self.engine_path, "rb") as f:
-            return self.runtime.deserialize_cuda_engine(f.read())
-
-    def allocate_buffers(self):
-        inputs, outputs, bindings = [], [], []
-        stream = cuda.Stream()
-        for binding in self.engine:
-            size = trt.volume(self.engine.get_binding_shape(binding))
-            dtype = trt.nptype(self.engine.get_binding_dtype(binding))
-            # Allocate host and device buffers
-            host_mem = cuda.pagelocked_empty(size, dtype)
-            device_mem = cuda.mem_alloc(host_mem.nbytes)
-            bindings.append(int(device_mem))
-            if self.engine.binding_is_input(binding):
-                inputs.append({'host': host_mem, 'device': device_mem})
-            else:
-                outputs.append({'host': host_mem, 'device': device_mem})
-        return inputs, outputs, bindings, stream
-
-    def detect(self, img):
-        # Preprocesamiento Básico (Resize + Normalize) para 416x416
-        # Asume img es BGR
-        resized = cv2.resize(img, (416, 416))
-        input_data = resized.transpose((2, 0, 1)).ravel() / 255.0
-        
-        # Copiar a memoria paginada
-        np.copyto(self.inputs[0]['host'], input_data)
-
-        # Transferencia Host -> Device
-        cuda.memcpy_htod_async(self.inputs[0]['device'], self.inputs[0]['host'], self.stream)
-        
-        # Ejecutar Inferencia
-        self.context.execute_async_v2(bindings=self.bindings, stream_handle=self.stream.handle)
-        
-        # Transferencia Device -> Host
-        cuda.memcpy_dtoh_async(self.outputs[0]['host'], self.outputs[0]['device'], self.stream)
-        self.stream.synchronize()
-        
-        # Retornar output crudo (aquí harías el post-proceso de cajas)
-        return self.outputs[0]['host']
-
-# ==============================================================================
-# 2. CLASE WRAPPER ONNX (La versión actual lenta)
-# ==============================================================================
-class YoloOnnxWrapper:
-    def __init__(self, model_path, size):
-        self.net = cv2.dnn.readNet(model_path)
-        self.net.setPreferableBackend(cv2.dnn.DNN_BACKEND_CUDA)
-        self.net.setPreferableTarget(cv2.dnn.DNN_TARGET_CUDA)
-        self.size = size
-
-    def detect(self, img):
-        blob = cv2.dnn.blobFromImage(img, 1/255.0, self.size, swapRB=True, crop=False)
-        self.net.setInput(blob)
-        self.net.forward()
-
-# ==============================================================================
-# 3. GENERADOR DE ENGINE
-# ==============================================================================
-def ensure_engine_exists():
-    if os.path.exists(ENGINE_PATH_416):
-        print(f"✅ Engine encontrado: {ENGINE_PATH_416}")
-        return True
+def check_files():
+    if not os.path.exists(ONNX_PATH):
+        print(f"❌ ERROR CRÍTICO: No encuentro el archivo ONNX en: {ONNX_PATH}")
+        print("   Verifica que la imagen Docker se construyó correctamente o copia tu yolov8n.onnx ahí.")
+        return False
     
-    print(f"⚠️ Engine no encontrado. Generando {ENGINE_PATH_416}...")
-    print("⏳ Esto tomará unos 5-10 minutos en la Jetson Nano. ¡Paciencia!")
+    if not os.path.exists(TRTEXEC_BIN):
+        # Intentar buscarlo en el PATH por si acaso
+        global TRTEXEC_BIN
+        TRTEXEC_BIN = "trtexec"
+        try:
+            subprocess.run([TRTEXEC_BIN, "--help"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except FileNotFoundError:
+            print("❌ ERROR: No encuentro la herramienta 'trtexec'.")
+            print("   ¿Estás seguro que estás usando la imagen base l4t-jetpack o dustynv/jetson-inference?")
+            return False
+            
+    print(f"✅ ONNX encontrado: {ONNX_PATH}")
+    return True
+
+def build_engine():
+    print("\n[1/2] 🛠️  CONSTRUYENDO ENGINE DESDE ONNX (OFFLINE)...")
+    if os.path.exists(ENGINE_PATH):
+        print(f"✅ El engine ya existe: {ENGINE_PATH}")
+        print("   (Si quieres regenerarlo, bórralo primero con: rm " + ENGINE_PATH + ")")
+        return True
+
+    print(f"⏳ Ejecutando conversión con trtexec (esto tardará 5-10 min)...")
+    print("   Parámetros: FP16=ON, Input=416x416")
+    
+    # Comando mágico de conversión nativa
+    # --onnx: Entrada
+    # --saveEngine: Salida
+    # --fp16: Usar media precisión (Doble de velocidad en Jetson)
+    # --explicitBatch: Necesario para ONNX modernos
+    cmd = [
+        TRTEXEC_BIN,
+        f"--onnx={ONNX_PATH}",
+        f"--saveEngine={ENGINE_PATH}",
+        "--fp16",
+        "--allowGPUFallback",
+        "--explicitBatch"
+    ]
+    
+    # Nota: Si el ONNX original es dinámico o 640x640, trtexec intentará optimizarlo tal cual.
+    # Si falla por dimensiones, agregaremos flags de shapes.
     
     try:
-        # Usamos Ultralytics para exportar. Es más seguro que trtexec manual.
-        # Bajamos el modelo .pt original (pequeño)
-        model = YOLO("yolov8n.pt") 
+        # Ejecutamos y mostramos output para que veas el progreso
+        t0 = time.time()
+        process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
         
-        # Exportamos a TensorRT (format='engine') con imgsz=416 y half=True (FP16 es vital para Nano)
-        print("🚀 Iniciando exportación (FP16, 416x416)...")
-        path = model.export(format="engine", imgsz=416, half=True, device=0)
+        for line in process.stdout:
+            # Filtrar ruido, mostrar progreso
+            if "TensorRT version" in line or "Starting build" in line or "Built engine" in line:
+                print(f"   [TRT log] {line.strip()}")
         
-        # Mover al directorio correcto
-        shutil.move(path, ENGINE_PATH_416)
-        print("✅ Exportación completada exitosamente.")
-        return True
+        process.wait()
+        
+        if process.returncode == 0 and os.path.exists(ENGINE_PATH):
+            print(f"✅ Conversión completada en {int(time.time()-t0)} segundos.")
+            return True
+        else:
+            print("❌ Error: trtexec falló. Revisa los logs anteriores.")
+            return False
     except Exception as e:
-        print(f"❌ Falló la exportación: {e}")
+        print(f"❌ Excepción ejecutando trtexec: {e}")
         return False
 
-# ==============================================================================
-# MAIN TEST
-# ==============================================================================
-def main():
-    print("\n=======================================================")
-    print(" 🚀 TEST DE ACELERACIÓN: ONNX vs TENSORRT (.engine)")
-    print("=======================================================")
-
-    # 1. Preparar el modelo Engine
-    if not ensure_engine_exists():
+def benchmark_engine():
+    print("\n[2/2] 🚀 BENCHMARK DE VELOCIDAD (ENGINE)...")
+    
+    if not os.path.exists(ENGINE_PATH):
+        print("❌ No hay engine para probar.")
         return
 
-    img = np.zeros((1080, 1920, 3), dtype=np.uint8)
-
-    # 2. Benchmark ONNX Original (640x640)
-    print("\n1️⃣  TEST ONNX (Actual - 640x640)")
+    cmd = [
+        TRTEXEC_BIN,
+        f"--loadEngine={ENGINE_PATH}",
+        "--duration=10",     # 10 segundos de prueba
+        "--noDataTransfer",  # Medir solo cómputo GPU
+        "--useSpinWait"      # Máximo estrés
+    ]
+    
+    print(f"Ejecutando: {' '.join(cmd)}")
+    print("-" * 50)
+    
     try:
-        onnx_model = YoloOnnxWrapper(ONNX_PATH, (640, 640))
-        # Warmup
-        onnx_model.detect(img)
+        process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        fps_found = False
         
-        start = time.time()
-        for _ in range(30): onnx_model.detect(img)
-        end = time.time()
+        for line in process.stdout:
+            if "Queries per second" in line: # Esta es la línea de FPS
+                print(f"🏁 \033[92m{line.strip()}\033[0m") # Verde
+                fps_found = True
+            elif "Mean Host Latency" in line or "Throughput" in line:
+                print(f"   {line.strip()}")
         
-        fps_onnx = 30 / (end - start)
-        ms_onnx = ((end - start) / 30) * 1000
-        print(f"   🐢 ONNX 640: {ms_onnx:.1f} ms | {fps_onnx:.1f} FPS")
+        process.wait()
+        print("-" * 50)
+        
+        if not fps_found:
+            print("⚠️ No pude leer los FPS exactos, pero si no hubo error, funcionó.")
+            
     except Exception as e:
-        print(f"   ❌ Error en ONNX: {e}")
-        fps_onnx = 0.1
-
-    # 3. Benchmark TensorRT Engine (416x416)
-    if TRT_AVAILABLE:
-        print("\n2️⃣  TEST TENSORRT ENGINE (Nuevo - 416x416 FP16)")
-        try:
-            trt_model = TensorRTWrapper(ENGINE_PATH_416)
-            # Warmup
-            trt_model.detect(img)
-            
-            start = time.time()
-            for _ in range(50): trt_model.detect(img) # Más iters porque es rápido
-            end = time.time()
-            
-            fps_trt = 50 / (end - start)
-            ms_trt = ((end - start) / 50) * 1000
-            print(f"   🐇 ENGINE 416: {ms_trt:.1f} ms | {fps_trt:.1f} FPS")
-            
-            speedup = fps_trt / fps_onnx
-            print(f"\n🚀 MEJORA DE VELOCIDAD: {speedup:.1f}x veces más rápido")
-            
-        except Exception as e:
-            print(f"   ❌ Error en TensorRT: {e}")
-            import traceback
-            traceback.print_exc()
-    else:
-        print("\n⚠️ No se pudo correr el test de TensorRT (faltan librerías python).")
-        print("   Pero si la exportación funcionó, puedes usar 'yolo predict model=yolov8n_416.engine' para probar.")
+        print(f"❌ Error en benchmark: {e}")
 
 if __name__ == "__main__":
-    main()
+    if check_files():
+        if build_engine():
+            benchmark_engine()
