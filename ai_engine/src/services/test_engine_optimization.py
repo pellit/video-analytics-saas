@@ -1,120 +1,114 @@
-import os
-import subprocess
-import sys
+import cv2
 import time
+import numpy as np
+import os
 
 # ==============================================================================
 # CONFIGURACIÓN
 # ==============================================================================
-MODELS_DIR = "/app/ai_engine/models"
-ONNX_PATH = os.path.join(MODELS_DIR, "yolov8n.onnx") 
-ENGINE_PATH = os.path.join(MODELS_DIR, "yolov8n_416.engine")
+# Usamos el ONNX estándar que ya tienes. 
+# OpenCV es capaz de redimensionar la entrada dinámicamente.
+MODEL_PATH = "/app/ai_engine/models/yolov8n.onnx"
 
-# Ruta al binario de NVIDIA (estándar en Jetson)
-TRTEXEC_BIN = "/usr/src/tensorrt/bin/trtexec"
+class BenchmarkRunner:
+    def __init__(self):
+        self.img_dummy = np.zeros((1080, 1920, 3), dtype=np.uint8)
 
-def check_files():
-    # CORRECCIÓN: Declaramos global al principio
-    global TRTEXEC_BIN
-    
-    if not os.path.exists(ONNX_PATH):
-        print(f"❌ ERROR CRÍTICO: No encuentro el archivo ONNX en: {ONNX_PATH}")
-        print("   Verifica que copiaste el yolov8n.onnx ahí.")
-        return False
-    
-    if not os.path.exists(TRTEXEC_BIN):
-        # Intentar buscarlo en el PATH por si acaso
-        print(f"⚠️ No encontré trtexec en {TRTEXEC_BIN}, probando en el PATH...")
-        TRTEXEC_BIN = "trtexec"
+    def run_test(self, test_name, input_size, enable_fp16):
+        print(f"\n🔹 PROBANDO: {test_name}")
+        print(f"   Config: Input={input_size} | Mode={'FP16 (Rápido)' if enable_fp16 else 'FP32 (Estándar)'}")
+        
+        if not os.path.exists(MODEL_PATH):
+            print(f"❌ Error: No encuentro el modelo en {MODEL_PATH}")
+            return 0
+
         try:
-            subprocess.run([TRTEXEC_BIN, "--help"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        except FileNotFoundError:
-            print("❌ ERROR: No encuentro la herramienta 'trtexec'.")
-            print("   ¿Estás usando la imagen base de dustynv/jetson-inference o l4t-ml?")
-            return False
+            # 1. Cargar Red
+            net = cv2.dnn.readNet(MODEL_PATH)
             
-    print(f"✅ ONNX encontrado: {ONNX_PATH}")
-    print(f"✅ Herramienta trtexec: {TRTEXEC_BIN}")
-    return True
-
-def build_engine():
-    print("\n[1/2] 🛠️  CONSTRUYENDO ENGINE DESDE ONNX (OFFLINE)...")
-    if os.path.exists(ENGINE_PATH):
-        print(f"✅ El engine ya existe: {ENGINE_PATH}")
-        print("   (Si quieres regenerarlo, bórralo primero con: rm " + ENGINE_PATH + ")")
-        return True
-
-    print(f"⏳ Ejecutando conversión con trtexec (esto tardará 5-10 min)...")
-    print("   Parámetros: FP16=ON, Input=416x416")
-    
-    cmd = [
-        TRTEXEC_BIN,
-        f"--onnx={ONNX_PATH}",
-        f"--saveEngine={ENGINE_PATH}",
-        "--fp16",
-        "--allowGPUFallback",
-        "--explicitBatch"
-    ]
-    
-    try:
-        t0 = time.time()
-        process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-        
-        for line in process.stdout:
-            if "TensorRT version" in line or "Starting build" in line or "Built engine" in line:
-                print(f"   [TRT log] {line.strip()}")
-        
-        process.wait()
-        
-        if process.returncode == 0 and os.path.exists(ENGINE_PATH):
-            print(f"✅ Conversión completada en {int(time.time()-t0)} segundos.")
-            return True
-        else:
-            print("❌ Error: trtexec falló. Revisa los logs anteriores.")
-            return False
-    except Exception as e:
-        print(f"❌ Excepción ejecutando trtexec: {e}")
-        return False
-
-def benchmark_engine():
-    print("\n[2/2] 🚀 BENCHMARK DE VELOCIDAD (ENGINE)...")
-    
-    if not os.path.exists(ENGINE_PATH):
-        print("❌ No hay engine para probar.")
-        return
-
-    cmd = [
-        TRTEXEC_BIN,
-        f"--loadEngine={ENGINE_PATH}",
-        "--duration=10",
-        "--noDataTransfer",
-        "--useSpinWait"
-    ]
-    
-    print(f"Ejecutando: {' '.join(cmd)}")
-    print("-" * 50)
-    
-    try:
-        process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-        fps_found = False
-        
-        for line in process.stdout:
-            if "Queries per second" in line:
-                print(f"🏁 \033[92m{line.strip()}\033[0m") # Verde
-                fps_found = True
-            elif "Mean Host Latency" in line or "Throughput" in line:
-                print(f"   {line.strip()}")
-        
-        process.wait()
-        print("-" * 50)
-        
-        if not fps_found:
-            print("⚠️ No pude leer los FPS exactos, pero si no hubo error, funcionó.")
+            # 2. Configurar Backend (CUDA)
+            net.setPreferableBackend(cv2.dnn.DNN_BACKEND_CUDA)
             
-    except Exception as e:
-        print(f"❌ Error en benchmark: {e}")
+            # 3. Configurar Precisión (El secreto de la velocidad)
+            if enable_fp16:
+                net.setPreferableTarget(cv2.dnn.DNN_TARGET_CUDA_FP16)
+            else:
+                net.setPreferableTarget(cv2.dnn.DNN_TARGET_CUDA)
+            
+            # 4. Preprocesamiento (Blob)
+            blob = cv2.dnn.blobFromImage(
+                self.img_dummy, 
+                1/255.0, 
+                input_size, 
+                swapRB=True, 
+                crop=False
+            )
+            net.setInput(blob)
+            
+            # 5. Warmup (Calentamiento)
+            print("   🔥 Calentando GPU...")
+            for _ in range(5):
+                net.forward()
+
+            # 6. Benchmark Real
+            iters = 50
+            print(f"   🚀 Ejecutando {iters} inferencias...")
+            
+            t_start = time.time()
+            for _ in range(iters):
+                # Es vital volver a setear el input si cambiamos algo, 
+                # aunque aquí es estático, simula el flujo real.
+                net.setInput(blob) 
+                output = net.forward()
+            t_end = time.time()
+            
+            # Cálculos
+            total_time = t_end - t_start
+            avg_ms = (total_time / iters) * 1000
+            fps = iters / total_time
+            
+            print(f"   🏁 RESULTADO: {avg_ms:.1f} ms | \033[92m{fps:.2f} FPS\033[0m")
+            return fps
+
+        except Exception as e:
+            print(f"❌ Error durante el test: {e}")
+            return 0
+
+def main():
+    print("=======================================================")
+    print(" 🏎️  TEST DE VELOCIDAD: OPTIMIZACIÓN OPENCV CUDA FP16")
+    print("=======================================================")
+    
+    runner = BenchmarkRunner()
+    
+    # 1. Escenario Base (Lo que tenías antes)
+    fps_base = runner.run_test(
+        test_name="BASE (Lo que tenías antes)", 
+        input_size=(640, 640), 
+        enable_fp16=False
+    )
+    
+    # 2. Escenario Optimizado (Lo que tendrás ahora)
+    fps_opt = runner.run_test(
+        test_name="OPTIMIZADO (Tu nueva config)", 
+        input_size=(416, 416), 
+        enable_fp16=True
+    )
+    
+    print("\n" + "="*50)
+    print(" RESUMEN FINAL")
+    print("="*50)
+    print(f"🐢 Antes (640 FP32):  {fps_base:.2f} FPS")
+    print(f"🐇 Ahora (416 FP16):  {fps_opt:.2f} FPS")
+    
+    if fps_base > 0:
+        mejora = fps_opt / fps_base
+        print(f"\n🚀 MEJORA DE VELOCIDAD: {mejora:.1f}x veces más rápido")
+    
+    if fps_opt > 12:
+        print("\n✅ CONCLUSIÓN: El sistema es viable para tiempo real.")
+    else:
+        print("\n⚠️ CONCLUSIÓN: Aún falta velocidad (¿Seguro que es Maxwell/CUDA?)")
 
 if __name__ == "__main__":
-    if check_files():
-        if build_engine():
-            benchmark_engine()
+    main()
