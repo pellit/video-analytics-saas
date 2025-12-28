@@ -7,7 +7,6 @@ import time
 # CONFIGURACIÓN
 # ==============================================================================
 MODELS_DIR = "/app/ai_engine/models"
-# Usamos el ONNX que ya debería estar en tu imagen Docker
 ONNX_PATH = os.path.join(MODELS_DIR, "yolov8n.onnx") 
 ENGINE_PATH = os.path.join(MODELS_DIR, "yolov8n_416.engine")
 
@@ -15,23 +14,27 @@ ENGINE_PATH = os.path.join(MODELS_DIR, "yolov8n_416.engine")
 TRTEXEC_BIN = "/usr/src/tensorrt/bin/trtexec"
 
 def check_files():
+    # CORRECCIÓN: Declaramos global al principio
+    global TRTEXEC_BIN
+    
     if not os.path.exists(ONNX_PATH):
         print(f"❌ ERROR CRÍTICO: No encuentro el archivo ONNX en: {ONNX_PATH}")
-        print("   Verifica que la imagen Docker se construyó correctamente o copia tu yolov8n.onnx ahí.")
+        print("   Verifica que copiaste el yolov8n.onnx ahí.")
         return False
     
     if not os.path.exists(TRTEXEC_BIN):
         # Intentar buscarlo en el PATH por si acaso
-        global TRTEXEC_BIN
+        print(f"⚠️ No encontré trtexec en {TRTEXEC_BIN}, probando en el PATH...")
         TRTEXEC_BIN = "trtexec"
         try:
             subprocess.run([TRTEXEC_BIN, "--help"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         except FileNotFoundError:
             print("❌ ERROR: No encuentro la herramienta 'trtexec'.")
-            print("   ¿Estás seguro que estás usando la imagen base l4t-jetpack o dustynv/jetson-inference?")
+            print("   ¿Estás usando la imagen base de dustynv/jetson-inference o l4t-ml?")
             return False
             
     print(f"✅ ONNX encontrado: {ONNX_PATH}")
+    print(f"✅ Herramienta trtexec: {TRTEXEC_BIN}")
     return True
 
 def build_engine():
@@ -44,11 +47,6 @@ def build_engine():
     print(f"⏳ Ejecutando conversión con trtexec (esto tardará 5-10 min)...")
     print("   Parámetros: FP16=ON, Input=416x416")
     
-    # Comando mágico de conversión nativa
-    # --onnx: Entrada
-    # --saveEngine: Salida
-    # --fp16: Usar media precisión (Doble de velocidad en Jetson)
-    # --explicitBatch: Necesario para ONNX modernos
     cmd = [
         TRTEXEC_BIN,
         f"--onnx={ONNX_PATH}",
@@ -58,16 +56,11 @@ def build_engine():
         "--explicitBatch"
     ]
     
-    # Nota: Si el ONNX original es dinámico o 640x640, trtexec intentará optimizarlo tal cual.
-    # Si falla por dimensiones, agregaremos flags de shapes.
-    
     try:
-        # Ejecutamos y mostramos output para que veas el progreso
         t0 = time.time()
         process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
         
         for line in process.stdout:
-            # Filtrar ruido, mostrar progreso
             if "TensorRT version" in line or "Starting build" in line or "Built engine" in line:
                 print(f"   [TRT log] {line.strip()}")
         
@@ -93,9 +86,9 @@ def benchmark_engine():
     cmd = [
         TRTEXEC_BIN,
         f"--loadEngine={ENGINE_PATH}",
-        "--duration=10",     # 10 segundos de prueba
-        "--noDataTransfer",  # Medir solo cómputo GPU
-        "--useSpinWait"      # Máximo estrés
+        "--duration=10",
+        "--noDataTransfer",
+        "--useSpinWait"
     ]
     
     print(f"Ejecutando: {' '.join(cmd)}")
@@ -106,7 +99,7 @@ def benchmark_engine():
         fps_found = False
         
         for line in process.stdout:
-            if "Queries per second" in line: # Esta es la línea de FPS
+            if "Queries per second" in line:
                 print(f"🏁 \033[92m{line.strip()}\033[0m") # Verde
                 fps_found = True
             elif "Mean Host Latency" in line or "Throughput" in line:
