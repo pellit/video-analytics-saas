@@ -1,3 +1,22 @@
+import sys
+import os
+
+# --- FIX TEMPORAL PARA TESTING ---
+# Añadimos la ruta actual al path para poder importar sin paquete si es necesario
+# O mejor aún, añadimos la raíz /app
+sys.path.append("/app")
+
+# Truco: Si ejecutamos esto directo, forzamos que las importaciones funcionen
+# Cambia la importación relativa en el script que llamamos (esto es un parche sucio pero efectivo para testing rápido)
+try:
+    from src.services.hit_detection_service_optimized import HitDetectionServiceOptimized
+except ImportError:
+    # Fallback por si la estructura de carpetas es distinta
+    sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+    from hit_detection_service_optimized import HitDetectionServiceOptimized
+# ---------------------------------
+
+
 import cv2
 import time
 import numpy as np
