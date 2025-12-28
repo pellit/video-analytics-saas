@@ -16,6 +16,12 @@ except ImportError:
     from hit_detection_service_optimized import HitDetectionServiceOptimized
 # ---------------------------------
 
+### EJECUTAR TEST ###
+# docker exec -it 8736cee28da3 sed -i 's/from hit_detection_service_optimized/from src.services.hit_detection_service_optimized/' /app/src/services/test_cuda_performance.py
+# Ejecutar el Test
+# Ahora sí, ejecuta el comando que usaste antes:
+# Bash dentro del contenedor:
+# docker exec -it 8736cee28da3 python3.11 -m src.services.test_cuda_performance
 
 import cv2
 import time
