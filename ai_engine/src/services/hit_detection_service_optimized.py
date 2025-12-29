@@ -50,22 +50,30 @@ class BallCalibrator:
 # 2. MODELOS IA (WRAPPERS)
 # ==========================================
 class YoloBaseWrapper:
-    def __init__(self, model_path):
+    def __init__(self, model_path, input_size=(320, 320), use_fp16=True):
         self.model_path = model_path
         self.net = None
-        self.input_size = (640, 640)
-    
+        self.input_size = input_size
+        self.use_fp16 = use_fp16
+
     def load(self):
-        if not os.path.exists(self.model_path): return False
+        if not os.path.exists(self.model_path):
+            return False
         try:
             self.net = cv2.dnn.readNet(self.model_path)
-            self.net.setPreferableBackend(cv2.dnn.DNN_BACKEND_CUDA)
-            self.net.setPreferableTarget(cv2.dnn.DNN_TARGET_CUDA)
-            return True
-        except: return False
 
-    def preprocess(self, img):
-        return cv2.dnn.blobFromImage(img, 1/255.0, self.input_size, swapRB=True, crop=False)
+            # CUDA (si tu OpenCV fue compilado con CUDA)
+            self.net.setPreferableBackend(cv2.dnn.DNN_BACKEND_CUDA)
+
+            # Intentar FP16 si existe en tu build
+            if self.use_fp16 and hasattr(cv2.dnn, "DNN_TARGET_CUDA_FP16"):
+                self.net.setPreferableTarget(cv2.dnn.DNN_TARGET_CUDA_FP16)
+            else:
+                self.net.setPreferableTarget(cv2.dnn.DNN_TARGET_CUDA)
+
+            return True
+        except Exception:
+            return False
 
 class YoloDetWrapper(YoloBaseWrapper):
     def detect(self, img, conf=0.15):
@@ -160,9 +168,12 @@ class HitDetectionServiceOptimized:
                 try: urllib.request.urlretrieve(self.urls[k], path)
                 except: pass
         
-        self.det = YoloDetWrapper(self.paths["det"])
+        self.det  = YoloDetWrapper(self.paths["det"])
         self.pose = YoloPoseWrapper(self.paths["pose"])
-        self.det.load(); self.pose.load()
+        self.det.input_size  = (320, 320)
+        self.pose.input_size = (320, 320)
+        self.det.load()
+        self.pose.load()
         
         self.midas = None
         if os.path.exists(self.paths["midas"]):
