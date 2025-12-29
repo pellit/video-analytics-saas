@@ -256,15 +256,16 @@ class HitDetectionServiceOptimized:
         midas_size: int = 256              # 256 ok; si querés más FPS: 192
     ):
         self.models_dir = "/app/ai_engine/models"
+
+        yolo_size = int(os.getenv("YOLO_SIZE", 320))
+        assert yolo_size in (320, 416, 640), f"YOLO_SIZE inválido: {yolo_size}"
+
+        self.yolo_size = yolo_size
+
         self.paths = {
-            "det": os.path.join(self.models_dir, "yolov8n.onnx"),
-            "pose": os.path.join(self.models_dir, "yolov8n-pose.onnx"),
+            "det": os.path.join(self.models_dir, f"yolov8n_{yolo_size}.onnx"),
+            "pose": os.path.join(self.models_dir, f"yolov8n-pose_{yolo_size}.onnx"),
             "midas": os.path.join(self.models_dir, "midas_v21_small.onnx"),
-        }
-        self.urls = {
-            "det": "https://huggingface.co/Bingsu/yolov8n_onnx/resolve/main/yolov8n.onnx",
-            "pose": "https://huggingface.co/Xenova/yolov8-pose-onnx/resolve/main/yolov8n-pose.onnx?download=true",
-            "midas": "https://github.com/isl-org/MiDaS/releases/download/v2_1/model-small.onnx",
         }
 
         self.segment_floor_fn = segment_floor_fn
