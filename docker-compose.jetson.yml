@@ -9,7 +9,30 @@ services:
     container_name: jetson_inference
     restart: always
 
-    command: python3.11 -m uvicorn src.inference_api:app --host 0.0.0.0 --port 5050 --workers 1
+    command: >
+      bash -lc '
+        set -e
+        echo "YOLO_SIZE=${YOLO_SIZE:-320}"
+        echo "MODELS_DIR=${MODELS_DIR:-/app/models}"
+        mkdir -p /app/models
+
+        if [ -d /app/onnx ]; then
+          echo "ONNX disponibles en /app/onnx:"
+          ls -1 /app/onnx/*.onnx 2>/dev/null || true
+        else
+          echo "⚠️ No existe /app/onnx dentro del contenedor"
+        fi
+
+        if [ -z "$(ls -A /app/models 2>/dev/null)" ] && [ -d /app/onnx ]; then
+          echo "📦 /app/models vacío → copiando ONNX desde /app/onnx"
+          cp /app/onnx/*.onnx /app/models/ 2>/dev/null || true
+        fi
+
+        echo "Modelos en /app/models:"
+        ls -lh /app/models | head -n 200
+
+        exec python3.11 -m uvicorn src.inference_api:app --host 0.0.0.0 --port 5050 --workers 1
+      '
 
     environment:
       - DEVICE_NAME=jetson-nano
