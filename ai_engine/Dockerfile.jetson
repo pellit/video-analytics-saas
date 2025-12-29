@@ -182,4 +182,13 @@ ENV SUPERRES_MODEL_PATH=/app/ai_engine/models/ESPCN_x4.pb
 ENV NANODET_MODEL_PATH=/app/ai_engine/models/nanodet-plus-m_416.onnx
 ENV MIDAS_MODEL_PATH=/app/ai_engine/models/midas_v21_small.onnx
 
-CMD ["uvicorn", "src.inference_api:app", "--host", "0.0.0.0", "--port", "5050", "--workers", "1"]
+# ------------------------------------------------------------------------------
+# 6. FIX runtime: garantizar que uvicorn corra con Python 3.11 (sin tocar /usr/bin)
+# ------------------------------------------------------------------------------
+RUN ln -sf /usr/local/bin/python3.11 /usr/local/bin/python3 && \
+    (ln -sf /usr/local/bin/pip3.11 /usr/local/bin/pip3 || true) && \
+    python3.11 -c "import sys; print('Runtime Python:', sys.version)" && \
+    python3.11 -c "import cv2; print('Runtime OpenCV:', cv2.__version__)"
+
+# ✅ IMPORTANTÍSIMO: uvicorn con python3.11 para usar el entorno correcto (cv2, deps, etc.)
+CMD ["python3.11", "-m", "uvicorn", "src.inference_api:app", "--host", "0.0.0.0", "--port", "5050", "--workers", "1"]
