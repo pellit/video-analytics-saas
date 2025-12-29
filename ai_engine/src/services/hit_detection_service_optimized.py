@@ -255,7 +255,7 @@ class HitDetectionServiceOptimized:
         depth_every_n: int = 5,            # si enable_depth=True, computa cada N frames
         midas_size: int = 256              # 256 ok; si querés más FPS: 192
     ):
-        self.models_dir = "/app/ai_engine/models"
+        self.models_dir = os.getenv("MODELS_DIR", "/app/models")
 
         yolo_size = int(os.getenv("YOLO_SIZE", 320))
         assert yolo_size in (320, 416, 640), f"YOLO_SIZE inválido: {yolo_size}"

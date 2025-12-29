@@ -7,27 +7,24 @@ services:
       dockerfile: Dockerfile.jetson
     image: video-analytics-inference:jetson
     container_name: jetson_inference
-    # IMPORTANTE: Esto asegura que arranque solo al reiniciar la Jetson
-    restart: always 
-    
-    command: uvicorn src.inference_api:app --host 0.0.0.0 --port 5050 --workers 1
-    
+    restart: always
+
+    command: python3.11 -m uvicorn src.inference_api:app --host 0.0.0.0 --port 5050 --workers 1
+
     environment:
       - DEVICE_NAME=jetson-nano
       - PYTHONUNBUFFERED=1
-      - DETECTION_MODEL=nanodet
-      - ACTIONNET_MODEL=resnet18
-      - DEPTHNET_MODEL=resnet18
       - ENABLE_CUDA=true
       - CUDA_VISIBLE_DEVICES=0
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=compute,video,utility
       - JETSON_DATA_DIR_OVERRIDE=/usr/local/bin
       - YOLO_SIZE=320
-      
+      - MODELS_DIR=/app/models
+
     ports:
       - "5050:5050"
-    
+
     volumes:
       - jetson_models:/app/models
       - jetson_tensorrt_cache:/root/.cache/tensorrt
@@ -36,6 +33,7 @@ services:
       - ${JETSON_HOST_NETWORKS_DIR:-./data/networks}:/usr/local/bin/networks
       - ${JETSON_HOST_NETWORKS_DIR:-./data/networks}/models.json:/jetson-inference/data/networks/models.json
       - ./ai_engine/src:/app/src
+
     logging:
       driver: "json-file"
       options:
