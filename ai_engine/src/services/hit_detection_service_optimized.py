@@ -11,7 +11,6 @@ from .video_io import read_frame_at
 # Helpers
 # ---------------------------
 def smooth_signal(data_list, window_size=5):
-    """Suaviza una lista de números usando media móvil."""
     if len(data_list) < window_size:
         return data_list
     return np.convolve(data_list, np.ones(window_size) / window_size, mode="same").tolist()
@@ -19,55 +18,41 @@ def smooth_signal(data_list, window_size=5):
 def _clamp_int(v: int, lo: int, hi: int) -> int:
     return max(lo, min(v, hi))
 
-def _safe_crop_bounds(x1, y1, x2, y2, w, h):
-    x1 = _clamp_int(int(x1), 0, w - 1)
-    y1 = _clamp_int(int(y1), 0, h - 1)
-    x2 = _clamp_int(int(x2), 0, w)
-    y2 = _clamp_int(int(y2), 0, h)
-    if x2 <= x1 or y2 <= y1:
-        return None
-    return x1, y1, x2, y2
-
 # ==========================================
-# 1. SISTEMA DE CALIBRACIÓN AUTÓNOMA
+# 1. SISTEMA DE CALIBRACIÓN
 # ==========================================
 class BallCalibrator:
     def __init__(self):
         self.SIZES = {3: 18.0, 4: 20.0, 5: 22.0}
-        self.samples = []
+        self.samples = [] 
         self.is_calibrated = False
         self.selected_size_id = 5
         self.real_diameter_cm = 22.0
-        self.px_per_cm = 2.0
+        self.px_per_cm = 2.0 
 
     def add_sample(self, width_px):
-        if 10 < width_px < 200:
+        if 10 < width_px < 200: 
             self.samples.append(width_px)
 
     def finalize(self, player_h_px):
-        if not self.samples:
-            return
+        if not self.samples: return
         median_px = float(np.median(self.samples))
-        if median_px == 0:
-            return
+        if median_px == 0: return
 
         scale_t5 = median_px / 22.0
         h_hyp = player_h_px / scale_t5
-
-        if h_hyp > 155:
-            self.selected_size_id = 5
-        elif 135 < h_hyp <= 155:
-            self.selected_size_id = 4
-        else:
-            self.selected_size_id = 3
-
+        
+        if h_hyp > 155: self.selected_size_id = 5
+        elif 135 < h_hyp <= 155: self.selected_size_id = 4
+        else: self.selected_size_id = 3
+            
         self.real_diameter_cm = self.SIZES[self.selected_size_id]
         raw_scale = median_px / self.real_diameter_cm
         self.px_per_cm = max(0.5, min(raw_scale, 10.0))
         self.is_calibrated = True
 
 # ==========================================
-# 2. MODELOS IA (WRAPPERS)
+# 2. MODELOS IA (WRAPPERS 416 OPTIMIZADOS)
 # ==========================================
 class YoloBaseWrapper:
     def __init__(self, model_path: str, input_size: Tuple[int, int] = (416, 416), fp16: bool = True):
@@ -78,133 +63,90 @@ class YoloBaseWrapper:
 
     def load(self) -> bool:
         if not os.path.exists(self.model_path):
-            print(f"❌ Modelo no encontrado en: {self.model_path}")
+            print(f"❌ Modelo no encontrado: {self.model_path}")
             return False
         try:
             self.net = cv2.dnn.readNet(self.model_path)
             self.net.setPreferableBackend(cv2.dnn.DNN_BACKEND_CUDA)
-            
-            if self.fp16 and hasattr(cv2.dnn, "DNN_TARGET_CUDA_FP16"):
-                self.net.setPreferableTarget(cv2.dnn.DNN_TARGET_CUDA_FP16)
-            else:
-                self.net.setPreferableTarget(cv2.dnn.DNN_TARGET_CUDA)
-                
-            print(f"✅ Modelo cargado: {os.path.basename(self.model_path)} | Size: {self.input_size} | FP16: {self.fp16}")
+            if self.fp16: self.net.setPreferableTarget(cv2.dnn.DNN_TARGET_CUDA_FP16)
+            else: self.net.setPreferableTarget(cv2.dnn.DNN_TARGET_CUDA)
+            print(f"✅ Cargado: {os.path.basename(self.model_path)} | Size: {self.input_size}")
             return True
         except Exception as e:
-            print(f"❌ Error cargando {self.model_path}: {e}")
-            self.net = None
+            print(f"❌ Error carga: {e}")
             return False
 
     def preprocess(self, img: np.ndarray) -> np.ndarray:
-        return cv2.dnn.blobFromImage(
-            img, 1 / 255.0, self.input_size, mean=(0, 0, 0), swapRB=True, crop=False
-        )
+        return cv2.dnn.blobFromImage(img, 1/255.0, self.input_size, swapRB=True, crop=False)
 
 class YoloDetWrapper(YoloBaseWrapper):
-    def detect(self, img: np.ndarray, conf: float = 0.25):
-        if self.net is None: return []
-
+    def detect(self, img: np.ndarray, conf: float = 0.15):
+        if not self.net: return []
         h, w = img.shape[:2]
         self.net.setInput(self.preprocess(img))
         preds = np.squeeze(self.net.forward()).T
-
+        
         if preds.ndim < 2 or preds.shape[1] <= 36: return []
-
-        # YOLOv8 COCO: Index 32+4 = 36 es 'sports ball'
+        
         scores = preds[:, 36] 
         keep = scores > conf
-        
         if not np.any(keep): return []
-
-        preds = preds[keep]
-        scores = scores[keep]
+        
+        preds, scores = preds[keep], scores[keep]
         boxes = preds[:, :4].copy()
+        boxes[:, 0] -= boxes[:, 2]/2
+        boxes[:, 1] -= boxes[:, 3]/2
         
-        boxes[:, 0] -= boxes[:, 2] / 2
-        boxes[:, 1] -= boxes[:, 3] / 2
-
-        indices = cv2.dnn.NMSBoxes(
-            bboxes=boxes.tolist(), scores=scores.tolist(), score_threshold=conf, nms_threshold=0.45
-        )
-        
+        indices = cv2.dnn.NMSBoxes(boxes.tolist(), scores.tolist(), conf, 0.45)
         if len(indices) == 0: return []
-
+        
         sx, sy = w / self.input_size[0], h / self.input_size[1]
         res = []
         for i in indices.flatten():
             b = boxes[i]
-            res.append([
-                int(b[0] * sx), int(b[1] * sy), int(b[2] * sx), int(b[3] * sy), float(scores[i])
-            ])
-        
+            res.append([int(b[0]*sx), int(b[1]*sy), int(b[2]*sx), int(b[3]*sy), float(scores[i])])
         return sorted(res, key=lambda x: x[4])[-1:]
 
 class YoloPoseWrapper(YoloBaseWrapper):
-    def detect(self, img: np.ndarray, conf: float = 0.5):
-        if self.net is None: return []
-
+    def detect(self, img: np.ndarray, conf: float = 0.4):
+        if not self.net: return []
         h, w = img.shape[:2]
         self.net.setInput(self.preprocess(img))
         preds = np.squeeze(self.net.forward()).T
-
+        
         if preds.ndim < 2: return []
-
         scores = preds[:, 4]
         keep = scores > conf
-        
         if not np.any(keep): return []
-
-        preds = preds[keep]
-        scores = scores[keep]
-        kpts_raw = preds[:, 5:]
-
-        indices = cv2.dnn.NMSBoxes(
-            bboxes=preds[:, :4].tolist(), scores=scores.tolist(), score_threshold=conf, nms_threshold=0.5
-        )
         
+        preds, scores = preds[keep], scores[keep]
+        kpts_raw = preds[:, 5:]
+        
+        indices = cv2.dnn.NMSBoxes(preds[:, :4].tolist(), scores.tolist(), conf, 0.5)
         if len(indices) == 0: return []
-
+        
         sx, sy = w / self.input_size[0], h / self.input_size[1]
         res = []
-        
         for i in indices.flatten():
             pk = kpts_raw[i].reshape(-1, 3)
-            kpts = [{"x": int(p[0] * sx), "y": int(p[1] * sy), "conf": float(p[2])} for p in pk]
-            
+            kpts = [{"x": int(p[0]*sx), "y": int(p[1]*sy), "conf": float(p[2])} for p in pk]
             box = preds[i, :4]
-            bbox = [
-                int((box[0] - box[2] / 2) * sx),
-                int((box[1] - box[3] / 2) * sy),
-                int(box[2] * sx),
-                int(box[3] * sy),
-            ]
-            area = bbox[2] * bbox[3]
+            bbox = [int((box[0]-box[2]/2)*sx), int((box[1]-box[3]/2)*sy), int(box[2]*sx), int(box[3]*sy)]
+            area = bbox[2]*bbox[3]
             res.append({"kpts": kpts, "box": bbox, "area": area})
-            
         return sorted(res, key=lambda x: x["area"])[-1:]
 
 # ==========================================
-# 3. SERVICIO OPTIMIZADO
+# 3. SERVICIO OPTIMIZADO + VISUALES + FACE CHECK
 # ==========================================
 class HitDetectionServiceOptimized:
-    def __init__(
-        self,
-        default_model_dirs: List[str] = None,
-        segment_floor_fn: Optional[Callable] = None,
-        face_compare_fn: Optional[Callable] = None,
-        # CAMBIO CRÍTICO: 416 por defecto (para usar el modelo que ya generaste)
-        yolo_size: int = 416, 
-        use_fp16: bool = True,
-        enable_depth: bool = False,
-        midas_size: int = 256
-    ):
-        self.models_dir = "/app/ai_engine/models"
+    def __init__(self, default_model_dirs=None, segment_floor_fn=None, face_compare_fn=None,
+                 yolo_size=416, use_fp16=True, enable_depth=False, midas_size=256):
         
+        self.models_dir = "/app/ai_engine/models"
         env_size = os.getenv("YOLO_SIZE")
         self.yolo_size = int(env_size) if env_size else yolo_size
 
-        # Busca explícitamente los modelos _416.onnx
         self.paths = {
             "det": os.path.join(self.models_dir, f"yolov8n_{self.yolo_size}.onnx"),
             "pose": os.path.join(self.models_dir, f"yolov8n-pose_{self.yolo_size}.onnx"), 
@@ -222,31 +164,24 @@ class HitDetectionServiceOptimized:
         self.use_fp16 = use_fp16
         self.enable_depth = enable_depth
         self.midas_size = midas_size
-
+        
         self._setup_models()
         self.calibrator = BallCalibrator()
         self.skeleton_links = [(0,5),(0,6),(5,7),(7,9),(6,8),(8,10),(5,11),(6,12),(11,12),(5,6),(11,13),(13,15),(12,14),(14,16)]
 
     def _setup_models(self):
         os.makedirs(self.models_dir, exist_ok=True)
-        
         for k, path in self.paths.items():
             if not os.path.exists(path) or os.path.getsize(path) < 1000:
                 if k in self.urls:
-                    try:
-                        print(f"⬇️ Descargando modelo faltante: {k} -> {path}")
-                        urllib.request.urlretrieve(self.urls[k], path)
+                    try: urllib.request.urlretrieve(self.urls[k], path)
                     except: pass
-
-        # Usa el tamaño correcto (416) para inicializar la red
-        size = (self.yolo_size, self.yolo_size)
         
+        size = (self.yolo_size, self.yolo_size)
         self.det = YoloDetWrapper(self.paths["det"], input_size=size, fp16=self.use_fp16)
         self.pose = YoloPoseWrapper(self.paths["pose"], input_size=size, fp16=self.use_fp16)
+        self.det.load(); self.pose.load()
         
-        self.det.load()
-        self.pose.load()
-
         self.midas = None
         if self.enable_depth and os.path.exists(self.paths["midas"]):
             try:
@@ -256,22 +191,75 @@ class HitDetectionServiceOptimized:
                 else: self.midas.setPreferableTarget(cv2.dnn.DNN_TARGET_CUDA)
             except: pass
 
-    def get_depth(self, frame: np.ndarray):
-        if self.midas is None: return None
+    def get_depth(self, frame):
+        if not self.midas: return None
         h, w = frame.shape[:2]
         blob = cv2.dnn.blobFromImage(frame, 1/255.0, (self.midas_size, self.midas_size), mean=(123.675, 116.28, 103.53), swapRB=True, crop=False)
         self.midas.setInput(blob)
         d = self.midas.forward()
-        depth = cv2.resize(d[0, 0], (w, h))
-        return cv2.normalize(depth, None, 0, 255, cv2.NORM_MINMAX, cv2.CV_8U)
+        return cv2.normalize(cv2.resize(d[0,0], (w, h)), None, 0, 255, cv2.NORM_MINMAX, cv2.CV_8U)
 
-    def _infer_floor_y(self, frame: np.ndarray) -> int:
-        if self.segment_floor_fn:
-            try:
-                res = self.segment_floor_fn(frame)
-                return int(res.get("floor_y", 0)) if isinstance(res, dict) else int(res)
-            except: pass
-        return int(frame.shape[0] * 0.9)
+    # --- NUEVOS MÉTODOS DE CARA (Restaurados) ---
+    def _extract_face_b64(self, frame, kpts):
+        pts = [kpts[i] for i in range(5) if kpts[i]['conf']>0.4]
+        if len(pts)<3: return None
+        xs, ys = [p['x'] for p in pts], [p['y'] for p in pts]
+        x1, y1 = max(0, min(xs)-40), max(0, min(ys)-80)
+        x2, y2 = min(frame.shape[1], max(xs)+40), min(frame.shape[0], max(ys)+40)
+        if x2-x1>20:
+            _, b = cv2.imencode('.jpg', frame[y1:y2, x1:x2])
+            return base64.b64encode(b).decode('utf-8')
+        return None
+
+    def _build_sample_indices(self, frame_count: int, sample_interval_pct: int) -> List[int]:
+        if frame_count <= 0: return []
+        interval = max(1, min(sample_interval_pct, 100))
+        percents = list(range(0, 101, interval))
+        if percents[-1] != 100: percents.append(100)
+        indices = []
+        for pct in percents:
+            idx = int(round((frame_count - 1) * (pct / 100.0)))
+            indices.append(max(0, min(idx, frame_count - 1)))
+        return sorted(list(set(indices)))
+
+    def _encode_frame_b64(self, frame: np.ndarray) -> Optional[str]:
+        if frame is None: return None
+        ok, buf = cv2.imencode('.jpg', frame)
+        return base64.b64encode(buf).decode('utf-8') if ok else None
+
+    def _evaluate_face_consistency(self, video_path: str, sample_interval_pct: int = 20) -> Dict[str, Any]:
+        if not self.face_compare_fn:
+            return {"consistent": False, "note": "face_compare_fn_unavailable"}
+
+        cap = cv2.VideoCapture(video_path)
+        if not cap.isOpened(): return {"consistent": False}
+        frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+        cap.release()
+        
+        indices = self._build_sample_indices(frame_count, sample_interval_pct)
+        samples = []
+        reference_b64 = None
+
+        for idx in indices:
+            frame = read_frame_at(video_path, int(idx))
+            if frame is None: continue
+            b64 = self._encode_frame_b64(frame)
+            if not b64: continue
+
+            if reference_b64 is None:
+                reference_b64 = b64
+                samples.append({"frame": idx, "match": True, "reference": True})
+            else:
+                try:
+                    res = self.face_compare_fn(reference_b64, b64)
+                    match = res.get("match", False) if isinstance(res, dict) else bool(res)
+                    samples.append({"frame": idx, "match": match})
+                except:
+                    samples.append({"frame": idx, "match": False, "error": "compare_fail"})
+
+        consistent = (len(samples) > 1) and all(s["match"] for s in samples if not s.get("reference"))
+        return {"consistent": consistent, "samples": samples}
+    # --------------------------------------------
 
     def extract_trajectory(self, video_path, stride=3, max_frames=300):
         cap = cv2.VideoCapture(video_path)
@@ -279,7 +267,7 @@ class HitDetectionServiceOptimized:
         frames_meta = [] 
         processed = 0
         idx = 0
-        floor_y = None
+        faces_start, faces_mid = [], [] # Restaurado
         
         while processed < max_frames:
             ret, frame = cap.read()
@@ -287,23 +275,21 @@ class HitDetectionServiceOptimized:
             if idx % stride != 0: 
                 idx += 1; continue
             
-            if processed == 5: floor_y = self._infer_floor_y(frame)
-
             ball = self.det.detect(frame)
             person = self.pose.detect(frame)
             
-            frame_data = {"idx": idx, "time": idx/fps, "ball": None, "feet": None, "floor_y": floor_y}
+            frame_data = {"idx": idx, "time": idx/fps, "ball": None, "feet": None, "floor_y": int(frame.shape[0]*0.9)}
 
             if ball and person:
                 b = ball[0]; p = person[0]
                 depth = self.get_depth(frame) if self.enable_depth else None
                 
                 bx, by, bw, bh = b[:4]
+                bz = 128
                 if depth is not None:
                     cx = _clamp_int(bx+bw//2, 0, depth.shape[1]-1)
                     cy = _clamp_int(by+bh//2, 0, depth.shape[0]-1)
                     bz = depth[cy, cx]
-                else: bz = 128
                 
                 frame_data["ball"] = {"x": bx+bw//2, "y": by+bh, "z": int(bz), "w": bw}
                 
@@ -316,12 +302,20 @@ class HitDetectionServiceOptimized:
                 frame_data["kpts"] = p["kpts"]
                 frame_data["ball_box"] = b
 
+                # Extracción de caras (Restaurado)
+                if processed < 50 and len(faces_start) < 3:
+                    f = self._extract_face_b64(frame, p["kpts"])
+                    if f: faces_start.append(f)
+                elif processed > (max_frames/2) and len(faces_mid) < 3:
+                    f = self._extract_face_b64(frame, p["kpts"])
+                    if f: faces_mid.append(f)
+
             frames_meta.append(frame_data)
             processed += 1
             idx += 1
             
         cap.release()
-        return frames_meta, [], [], fps
+        return frames_meta, faces_start, faces_mid, fps
 
     def analyze_trajectory(self, frames_meta):
         widths, heights = [], []
@@ -355,12 +349,13 @@ class HitDetectionServiceOptimized:
             
             full_trajectory.append({"f": f["idx"], "x": f["ball"]["x"], "y": int(ball_y), "z": f["ball"]["z"]})
             
-            floor = f["floor_y"] if f["floor_y"] else 1000
+            floor = f["floor_y"]
             height_cm = (floor - ball_y) / scale
             
             if height_cm > 15:
                 is_contact = vel_y < -2.0
-                hit_L, hit_R = False, False
+                hit_L = False
+                hit_R = False
                 
                 if f["feet"]["L"]["conf"] > 0.5:
                     dx = abs(f["feet"]["L"]["x"] - f["ball"]["x"]) / scale
@@ -376,11 +371,9 @@ class HitDetectionServiceOptimized:
                     juggles += 1
                     last_hit_frame = f["idx"]
                     leg = "Simul" if (hit_L and hit_R) else ("Izq" if hit_L else "Der")
-                    
                     if leg == "Simul": stats["simultaneous"] += 1
                     elif leg == "Izq": stats["left"] += 1
                     else: stats["right"] += 1
-                    
                     stats["total"] = juggles
                     events_log.append({"idx": f["idx"], "type": "JUGGLE", "hit_leg": leg})
             else:
@@ -391,19 +384,101 @@ class HitDetectionServiceOptimized:
         return events_log, stats, dribble_state, full_trajectory
 
     def generate_visuals(self, video_path, events_log, frames_meta):
-        return []
+        event_map = {e["idx"]: e for e in events_log}
+        target_indices = set(e["idx"] for e in events_log)
+        for f in frames_meta:
+            if f["idx"] % 30 == 0: target_indices.add(f["idx"])
+            
+        cap = cv2.VideoCapture(video_path)
+        images_out = []
+        curr_frame = 0
+        
+        while True:
+            ret, frame = cap.read()
+            if not ret: break
+            
+            if curr_frame in target_indices:
+                meta = next((m for m in frames_meta if m["idx"] == curr_frame), None)
+                if meta and meta["ball"]:
+                    evt = event_map.get(curr_frame, {})
+                    txt = evt.get("type", "")
+                    cnt = evt.get("count", meta.get("last_count", 0))
+                    is_hit = "JUGGLE" in txt
+                    hit_leg = evt.get("hit_leg", "")
+                    
+                    depth_map = self.get_depth(frame) if self.enable_depth else None
+                    vis = self._draw_panel(frame, meta, depth_map, txt, cnt, is_hit, hit_leg)
+                    
+                    _, b = cv2.imencode('.jpg', vis)
+                    b64 = base64.b64encode(b).decode('utf-8')
+                    images_out.append({"image_id": str(curr_frame), "image_base64": f"data:image/jpeg;base64,{b64}"})
+                    if len(images_out) >= 60: break
+            curr_frame += 1
+        cap.release()
+        return images_out
 
-    def run_on_video(self, video_path, frame_stride=3, max_frames=300, hit_threshold=0.4, return_images=True):
+    def _draw_panel(self, frame, meta, depth_map, event_txt, count, is_hit, hit_leg):
+        h, w = frame.shape[:2]
+        panel = np.zeros((h, 320, 3), dtype=np.uint8); panel[:] = (30,30,30)
+        ball = meta["ball"]
+        kpts = meta["kpts"]
+        
+        def to_p(x, y): return (20 + int(x/w*280), 20 + int(y/h*(h-40)))
+        
+        c_bone = (100, 100, 100)
+        c_hit = (0, 255, 255)
+        base_ball_color = c_hit if is_hit else (0, 140, 255) 
+
+        for a, b in self.skeleton_links:
+            ka, kb = kpts[a], kpts[b]
+            if ka['conf'] > 0.4 and kb['conf'] > 0.4:
+                pa, pb = to_p(ka['x'], ka['y']), to_p(kb['x'], kb['y'])
+                col, thick = c_bone, 2
+                if is_hit:
+                    check_L = (hit_leg in ["Izq", "Simul"]) and (a in [11,13,15] and b in [11,13,15])
+                    check_R = (hit_leg in ["Der", "Simul"]) and (a in [12,14,16] and b in [12,14,16])
+                    if check_L or check_R: col, thick = c_hit, 3
+                cv2.line(panel, pa, pb, col, thick)
+
+        for i, kp in enumerate(kpts):
+            if kp['conf'] > 0.4:
+                cv2.circle(panel, to_p(kp['x'], kp['y']), 3, (0,200,0), -1)
+
+        bc = to_p(ball["x"], ball["y"] - ball["w"]//2)
+        cv2.circle(panel, bc, 6, base_ball_color, -1)
+
+        cv2.putText(panel, f"Juggl: {count}", (10, 450), cv2.FONT_HERSHEY_SIMPLEX, 1, (0,255,255), 2)
+        if event_txt: cv2.putText(panel, event_txt, (10, 490), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0,255,0), 2)
+        
+        return np.hstack((frame, panel))
+
+    def run_on_video(self, video_path, frame_stride=3, max_frames=300, hit_threshold=0.4, return_images=True, face_sample_interval_pct=20):
         t0 = time.time()
-        meta, _, _, fps = self.extract_trajectory(video_path, stride=frame_stride, max_frames=max_frames)
+        meta, f_start, f_mid, fps = self.extract_trajectory(video_path, stride=frame_stride, max_frames=max_frames)
         logs, stats, end_state, traj = self.analyze_trajectory(meta)
         
+        # Imágenes
+        hit_imgs = []
+        if return_images: hit_imgs = self.generate_visuals(video_path, logs, meta)
+            
+        # 1. Comparación simple (Start vs Mid)
+        face_res = "N/A"
+        if self.face_compare_fn and f_start and f_mid:
+            try: face_res = self.face_compare_fn(f_start[0], f_mid[0])
+            except: pass
+
+        # 2. Consistencia Avanzada (Sampling)
+        face_consistency = "N/A"
+        if self.face_compare_fn:
+            try: face_consistency = self._evaluate_face_consistency(video_path, sample_interval_pct=face_sample_interval_pct)
+            except: pass
+
         total_t = time.time() - t0
         last_leg = logs[-1]["hit_leg"] if logs else "N/A"
         
         return {
             "id": int(time.time()),
-            "hit_images": [],
+            "hit_images": hit_imgs,
             "trajectory": traj,
             "meta": {
                 "performance": {"total_time_s": round(total_t, 2), "frames_analyzed": len(meta)},
@@ -416,6 +491,7 @@ class HitDetectionServiceOptimized:
                     "final_state": end_state,
                     "ball_size": f"N {self.calibrator.selected_size_id}"
                 },
-                "face_verification": "N/A"
+                "face_verification": face_res,
+                "face_consistency": face_consistency
             }
         }
