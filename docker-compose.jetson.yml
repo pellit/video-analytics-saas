@@ -19,14 +19,23 @@ services:
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=compute,video,utility
       - JETSON_DATA_DIR_OVERRIDE=/usr/local/bin
+      # Forzamos las variables aquí también por seguridad
       - YOLO_SIZE=416
-      - MODELS_DIR=/app/models
+      - MODELS_DIR=/app/ai_engine/models 
 
     ports:
       - "5050:5050"
 
     volumes:
-      - jetson_models:/app/models
+      # -----------------------------------------------------------
+      # 🔥 SOLUCIÓN DEFINITIVA: 
+      # Mapeamos tu carpeta local "onnx" (donde están los modelos 416 buenos)
+      # directamente a donde el código busca los modelos.
+      # Esto SOBRESCRIBE cualquier cosa que el Dockerfile haya intentado descargar.
+      # -----------------------------------------------------------
+      - ./ai_engine/onnx:/app/ai_engine/models
+
+      # Volúmenes existentes (mantener)
       - jetson_tensorrt_cache:/root/.cache/tensorrt
       - /tmp/argus_socket:/tmp/argus_socket
       - ${JETSON_HOST_NETWORKS_DIR:-./data/networks}:/app/data/networks:ro
@@ -42,4 +51,4 @@ services:
 
 volumes:
   jetson_tensorrt_cache:
-  jetson_models:
+  # jetson_models:  <-- YA NO LO NECESITAS, el bind mount ./ai_engine/onnx es mejor.

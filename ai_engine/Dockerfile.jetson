@@ -162,20 +162,20 @@ RUN ${PYTHON_BIN} -m pip install --no-cache-dir --upgrade pip setuptools wheel &
     fi
 
 # Descargamos los modelos recomendados (NanoDet, MiDaS, etc.)
-RUN mkdir -p /app/models && \
-    curl -L -o /app/models/face_detection_yunet_2023mar.onnx https://github.com/opencv/opencv_zoo/raw/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx && \
-    curl -L -o /app/models/face_recognition_sface_2021dec.onnx https://github.com/opencv/opencv_zoo/raw/main/models/face_recognition_sface/face_recognition_sface_2021dec.onnx && \
-    curl -L -o /app/models/ESPCN_x4.pb https://github.com/Saafke/EDSR_Tensorflow/raw/master/models/ESPCN_x4.pb && \
-    curl -L -o /app/models/FSRCNN_x4.pb https://github.com/Saafke/FSRCNN_Tensorflow/raw/master/models/FSRCNN_x4.pb && \
-    curl -L -o /app/models/nanodet-plus-m_416.onnx https://github.com/RangiLyu/nanodet/releases/download/v1.0.0-alpha/nanodet-plus-m_416.onnx && \
-    curl -L -o /app/models/midas_v21_small.onnx https://github.com/isl-org/MiDaS/releases/download/v2_1/model-small.onnx
+# RUN mkdir -p /app/models && \
+#     curl -L -o /app/models/face_detection_yunet_2023mar.onnx https://github.com/opencv/opencv_zoo/raw/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx && \
+#     curl -L -o /app/models/face_recognition_sface_2021dec.onnx https://github.com/opencv/opencv_zoo/raw/main/models/face_recognition_sface/face_recognition_sface_2021dec.onnx && \
+#     curl -L -o /app/models/ESPCN_x4.pb https://github.com/Saafke/EDSR_Tensorflow/raw/master/models/ESPCN_x4.pb && \
+#     curl -L -o /app/models/FSRCNN_x4.pb https://github.com/Saafke/FSRCNN_Tensorflow/raw/master/models/FSRCNN_x4.pb && \
+#     curl -L -o /app/models/nanodet-plus-m_416.onnx https://github.com/RangiLyu/nanodet/releases/download/v1.0.0-alpha/nanodet-plus-m_416.onnx && \
+#     curl -L -o /app/models/midas_v21_small.onnx https://github.com/isl-org/MiDaS/releases/download/v2_1/model-small.onnx
 
 # Copiamos el código fuente
 COPY . /app
 
 # Movemos los modelos a la carpeta final de ejecución
-RUN mkdir -p /app/ai_engine/models && \
-    cp /app/models/* /app/ai_engine/models/
+# RUN mkdir -p /app/ai_engine/models && \
+#     cp /app/models/* /app/ai_engine/models/
 
 # Variables de entorno para los modelos
 ENV SUPERRES_MODEL_PATH=/app/ai_engine/models/ESPCN_x4.pb
