@@ -11,6 +11,7 @@ from .video_io import read_frame_at
 # Helpers
 # ---------------------------
 def smooth_signal(data_list, window_size=5):
+    """Suaviza una lista de números usando media móvil."""
     if len(data_list) < window_size:
         return data_list
     return np.convolve(data_list, np.ones(window_size) / window_size, mode="same").tolist()
@@ -81,10 +82,9 @@ class YoloBaseWrapper:
             return False
         try:
             self.net = cv2.dnn.readNet(self.model_path)
-            # Backend CUDA obligatorio para rendimiento
             self.net.setPreferableBackend(cv2.dnn.DNN_BACKEND_CUDA)
             
-            if self.fp16:
+            if self.fp16 and hasattr(cv2.dnn, "DNN_TARGET_CUDA_FP16"):
                 self.net.setPreferableTarget(cv2.dnn.DNN_TARGET_CUDA_FP16)
             else:
                 self.net.setPreferableTarget(cv2.dnn.DNN_TARGET_CUDA)
@@ -121,7 +121,6 @@ class YoloDetWrapper(YoloBaseWrapper):
         scores = scores[keep]
         boxes = preds[:, :4].copy()
         
-        # xywh a xyxy centrado
         boxes[:, 0] -= boxes[:, 2] / 2
         boxes[:, 1] -= boxes[:, 3] / 2
 
@@ -135,12 +134,10 @@ class YoloDetWrapper(YoloBaseWrapper):
         res = []
         for i in indices.flatten():
             b = boxes[i]
-            # [x, y, w, h, score]
             res.append([
                 int(b[0] * sx), int(b[1] * sy), int(b[2] * sx), int(b[3] * sy), float(scores[i])
             ])
         
-        # Retornamos la detección con mayor confianza
         return sorted(res, key=lambda x: x[4])[-1:]
 
 class YoloPoseWrapper(YoloBaseWrapper):
@@ -153,7 +150,6 @@ class YoloPoseWrapper(YoloBaseWrapper):
 
         if preds.ndim < 2: return []
 
-        # Index 4 es la confianza de "persona" en YOLOv8-Pose
         scores = preds[:, 4]
         keep = scores > conf
         
@@ -186,7 +182,6 @@ class YoloPoseWrapper(YoloBaseWrapper):
             area = bbox[2] * bbox[3]
             res.append({"kpts": kpts, "box": bbox, "area": area})
             
-        # Retornamos la persona más grande (asumiendo jugador principal)
         return sorted(res, key=lambda x: x["area"])[-1:]
 
 # ==========================================
@@ -198,7 +193,7 @@ class HitDetectionServiceOptimized:
         default_model_dirs: List[str] = None,
         segment_floor_fn: Optional[Callable] = None,
         face_compare_fn: Optional[Callable] = None,
-        # CORRECCIÓN: Default 416 para coincidir con tu generación
+        # CAMBIO CRÍTICO: 416 por defecto (para usar el modelo que ya generaste)
         yolo_size: int = 416, 
         use_fp16: bool = True,
         enable_depth: bool = False,
@@ -206,19 +201,18 @@ class HitDetectionServiceOptimized:
     ):
         self.models_dir = "/app/ai_engine/models"
         
-        # Forzamos 416 si no viene en env, porque es lo que generaste
         env_size = os.getenv("YOLO_SIZE")
         self.yolo_size = int(env_size) if env_size else yolo_size
 
+        # Busca explícitamente los modelos _416.onnx
         self.paths = {
             "det": os.path.join(self.models_dir, f"yolov8n_{self.yolo_size}.onnx"),
-            "pose": os.path.join(self.models_dir, "yolov8n-pose.onnx"), # Pose suele funcionar dinámico
+            "pose": os.path.join(self.models_dir, f"yolov8n-pose_{self.yolo_size}.onnx"), 
             "midas": os.path.join(self.models_dir, "midas_v21_small.onnx"),
         }
         
-        # URLs de respaldo (Solo si faltan archivos)
         self.urls = {
-            "det": "https://github.com/pellit/video-analytics-saas/raw/main/ai_engine/yolov8n.onnx", # Fallback genérico
+            "det": "https://github.com/pellit/video-analytics-saas/raw/main/ai_engine/yolov8n.onnx",
             "pose": "https://huggingface.co/Xenova/yolov8-pose-onnx/resolve/main/yolov8n-pose.onnx?download=true",
             "midas": "https://github.com/isl-org/MiDaS/releases/download/v2_1/model-small.onnx"
         }
@@ -236,23 +230,18 @@ class HitDetectionServiceOptimized:
     def _setup_models(self):
         os.makedirs(self.models_dir, exist_ok=True)
         
-        # Descarga de fallbacks
         for k, path in self.paths.items():
             if not os.path.exists(path) or os.path.getsize(path) < 1000:
-                # Solo descargamos si es estrictamente necesario
                 if k in self.urls:
                     try:
                         print(f"⬇️ Descargando modelo faltante: {k} -> {path}")
                         urllib.request.urlretrieve(self.urls[k], path)
                     except: pass
 
-        # Inicialización de Wrappers
-        # NOTA: Usamos yolo_size para input_size
+        # Usa el tamaño correcto (416) para inicializar la red
         size = (self.yolo_size, self.yolo_size)
         
         self.det = YoloDetWrapper(self.paths["det"], input_size=size, fp16=self.use_fp16)
-        
-        # Pose: Intentamos cargar el ONNX. Si es el estándar dinámico, 416 le va bien.
         self.pose = YoloPoseWrapper(self.paths["pose"], input_size=size, fp16=self.use_fp16)
         
         self.det.load()
@@ -303,19 +292,13 @@ class HitDetectionServiceOptimized:
             ball = self.det.detect(frame)
             person = self.pose.detect(frame)
             
-            # --- DEBUG LOGGING (Temporal para verificar detección) ---
-            # if processed % 30 == 0:
-            #     print(f"Frame {idx}: Ball={len(ball)}, Person={len(person)}")
-
             frame_data = {"idx": idx, "time": idx/fps, "ball": None, "feet": None, "floor_y": floor_y}
 
             if ball and person:
                 b = ball[0]; p = person[0]
-                # Profundidad desactivada por defecto para velocidad máxima, se usa 128
                 depth = self.get_depth(frame) if self.enable_depth else None
                 
                 bx, by, bw, bh = b[:4]
-                # Muestreo Z seguro
                 if depth is not None:
                     cx = _clamp_int(bx+bw//2, 0, depth.shape[1]-1)
                     cy = _clamp_int(by+bh//2, 0, depth.shape[0]-1)
@@ -324,15 +307,14 @@ class HitDetectionServiceOptimized:
                 
                 frame_data["ball"] = {"x": bx+bw//2, "y": by+bh, "z": int(bz), "w": bw}
                 
-                f_l = p["kpts"][15]; f_r = p["kpts"][16] # Tobillos
-                # Asumimos Z=128 si no hay depth
+                f_l = p["kpts"][15]; f_r = p["kpts"][16]
                 frame_data["feet"] = {
                     "L": {"x": f_l["x"], "y": f_l["y"], "z": 128, "conf": f_l["conf"]},
                     "R": {"x": f_r["x"], "y": f_r["y"], "z": 128, "conf": f_r["conf"]}
                 }
                 frame_data["person_h"] = p["box"][3]
                 frame_data["kpts"] = p["kpts"]
-                frame_data["ball_box"] = b # Para visualizacion
+                frame_data["ball_box"] = b
 
             frames_meta.append(frame_data)
             processed += 1
@@ -342,7 +324,6 @@ class HitDetectionServiceOptimized:
         return frames_meta, [], [], fps
 
     def analyze_trajectory(self, frames_meta):
-        # 1. Calibración
         widths, heights = [], []
         for f in frames_meta:
             if f["ball"] and f["feet"]:
@@ -355,7 +336,6 @@ class HitDetectionServiceOptimized:
         if heights: self.calibrator.finalize(np.median(heights))
         scale = self.calibrator.px_per_cm
 
-        # 2. Suavizado
         raw_y = [(f["ball"]["y"] if f["ball"] else 0) for f in frames_meta]
         smooth_y = smooth_signal(raw_y, 5)
 
@@ -378,19 +358,15 @@ class HitDetectionServiceOptimized:
             floor = f["floor_y"] if f["floor_y"] else 1000
             height_cm = (floor - ball_y) / scale
             
-            # LOGICA JUGGLE
             if height_cm > 15:
-                # Contacto: Pelota sube (vel < -2)
                 is_contact = vel_y < -2.0
                 hit_L, hit_R = False, False
                 
-                # Check Pie Izq
                 if f["feet"]["L"]["conf"] > 0.5:
                     dx = abs(f["feet"]["L"]["x"] - f["ball"]["x"]) / scale
                     dy = abs(f["feet"]["L"]["y"] - ball_y) / scale
                     if (is_contact and dx < 25 and dy < 30) or (dx < 15 and dy < 10): hit_L = True
                 
-                # Check Pie Der
                 if f["feet"]["R"]["conf"] > 0.5:
                     dx = abs(f["feet"]["R"]["x"] - f["ball"]["x"]) / scale
                     dy = abs(f["feet"]["R"]["y"] - ball_y) / scale
@@ -407,8 +383,6 @@ class HitDetectionServiceOptimized:
                     
                     stats["total"] = juggles
                     events_log.append({"idx": f["idx"], "type": "JUGGLE", "hit_leg": leg})
-            
-            # LOGICA DRIBBLE (Suelo)
             else:
                 d_l = np.hypot(f["feet"]["L"]["x"]-f["ball"]["x"], f["feet"]["L"]["y"]-ball_y) / scale
                 d_r = np.hypot(f["feet"]["R"]["x"]-f["ball"]["x"], f["feet"]["R"]["y"]-ball_y) / scale
@@ -417,7 +391,7 @@ class HitDetectionServiceOptimized:
         return events_log, stats, dribble_state, full_trajectory
 
     def generate_visuals(self, video_path, events_log, frames_meta):
-        return [] # Desactivado para velocidad
+        return []
 
     def run_on_video(self, video_path, frame_stride=3, max_frames=300, hit_threshold=0.4, return_images=True):
         t0 = time.time()
