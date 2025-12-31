@@ -190,13 +190,14 @@ RUN ln -sf /usr/local/bin/python3.11 /usr/local/bin/python3 && \
     python3.11 -c "import sys; print('Runtime Python:', sys.version)" && \
     python3.11 -c "import cv2; print('Runtime OpenCV:', cv2.__version__)"
 
-# Copiar ONNX versionados del repo al directorio de modelos persistente
+# Copiar ONNX y ENGINES versionados del repo al directorio de modelos persistente
 RUN mkdir -p /app/models && \
     if [ -d /app/onnx ]; then \
-      echo "📦 Copiando ONNX desde /app/onnx a /app/models"; \
+      echo "📦 Copiando Modelos (ONNX + ENGINE) desde /app/onnx a /app/models"; \
       cp -n /app/onnx/*.onnx /app/models/ 2>/dev/null || true; \
+      cp -n /app/onnx/*.engine /app/models/ 2>/dev/null || true; \
     else \
-      echo "⚠️ No existe /app/onnx (saltando copia de ONNX)"; \
+      echo "⚠️ No existe /app/onnx (saltando copia de modelos)"; \
     fi
 
 
