@@ -68,8 +68,16 @@ class YoloBaseWrapper:
         try:
             self.net = cv2.dnn.readNet(self.model_path)
             self.net.setPreferableBackend(cv2.dnn.DNN_BACKEND_CUDA)
-            if self.fp16: self.net.setPreferableTarget(cv2.dnn.DNN_TARGET_CUDA_FP16)
-            else: self.net.setPreferableTarget(cv2.dnn.DNN_TARGET_CUDA)
+            
+            # Si es .engine (TensorRT), OpenCV suele manejarlo automáticamente con el backend CUDA
+            if self.model_path.endswith(".engine"):
+                print(f"🚀 Cargando Motor TensorRT: {os.path.basename(self.model_path)}")
+                self.net.setPreferableTarget(cv2.dnn.DNN_TARGET_CUDA) 
+            elif self.fp16:
+                self.net.setPreferableTarget(cv2.dnn.DNN_TARGET_CUDA_FP16)
+            else:
+                self.net.setPreferableTarget(cv2.dnn.DNN_TARGET_CUDA)
+                
             print(f"✅ Cargado: {os.path.basename(self.model_path)} | Size: {self.input_size}")
             return True
         except Exception as e:
@@ -147,9 +155,14 @@ class HitDetectionServiceOptimized:
         env_size = os.getenv("YOLO_SIZE")
         self.yolo_size = int(env_size) if env_size else yolo_size
 
+        # Definimos nombres base
+        det_base = f"yolov8n_{self.yolo_size}"
+        pose_base = f"yolov8n-pose_{self.yolo_size}"
+        
+        # Lógica de prioridad: .engine > .onnx
         self.paths = {
-            "det": os.path.join(self.models_dir, f"yolov8n_{self.yolo_size}.onnx"),
-            "pose": os.path.join(self.models_dir, f"yolov8n-pose_{self.yolo_size}.onnx"), 
+            "det": self._get_best_model(det_base),
+            "pose": self._get_best_model(pose_base),
             "midas": os.path.join(self.models_dir, "midas_v21_small.onnx"),
         }
         
@@ -169,12 +182,30 @@ class HitDetectionServiceOptimized:
         self.calibrator = BallCalibrator()
         self.skeleton_links = [(0,5),(0,6),(5,7),(7,9),(6,8),(8,10),(5,11),(6,12),(11,12),(5,6),(11,13),(13,15),(12,14),(14,16)]
 
+    def _get_best_model(self, base_name):
+        """Busca primero .engine, luego .onnx"""
+        engine_path = os.path.join(self.models_dir, f"{base_name}.engine")
+        onnx_path = os.path.join(self.models_dir, f"{base_name}.onnx")
+        
+        if os.path.exists(engine_path):
+            return engine_path
+        return onnx_path
+
     def _setup_models(self):
         os.makedirs(self.models_dir, exist_ok=True)
+        
+        # Descarga solo si no existe NINGUNA versión (ni engine ni onnx)
         for k, path in self.paths.items():
-            if not os.path.exists(path) or os.path.getsize(path) < 1000:
-                if k in self.urls:
-                    try: urllib.request.urlretrieve(self.urls[k], path)
+            # Si el path resuelto no existe, intentamos descargar el ONNX fallback
+            if not os.path.exists(path):
+                # Volvemos al nombre onnx para descargar
+                fallback_path = path.replace(".engine", ".onnx")
+                if not os.path.exists(fallback_path) and k in self.urls:
+                    try: 
+                        print(f"⬇️ Descargando modelo base: {k}")
+                        urllib.request.urlretrieve(self.urls[k], fallback_path)
+                        # Actualizamos el path a usar
+                        self.paths[k] = fallback_path 
                     except: pass
         
         size = (self.yolo_size, self.yolo_size)
