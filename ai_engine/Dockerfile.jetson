@@ -150,12 +150,12 @@ WORKDIR /app
 COPY requirements.jetson.txt /app/requirements.txt
 
 # Instalamos dependencias (Mantenemos onnxslim instalado por si lo necesitas manualmente)
+# ⚠️ NO instalamos TensorRT aquí - Jetson ya lo tiene en el sistema
 RUN ${PYTHON_BIN} -m pip install --no-cache-dir --upgrade pip setuptools wheel && \
     ${PYTHON_BIN} -m pip install --no-cache-dir Cython && \
     ${PYTHON_BIN} -m pip install --no-cache-dir "httptools>=0.6.0" "uvloop>=0.17.0" "websockets>=11.0" && \
     ${PYTHON_BIN} -m pip install --no-cache-dir onnxslim && \
     ${PYTHON_BIN} -m pip install --no-cache-dir --ignore-installed PyYAML && \
-    ${PYTHON_BIN} -m pip install --no-cache-dir tensorrt pycuda && \
     cat requirements.txt | grep -v "opencv-python" > requirements_filtered.txt && \
     ${PYTHON_BIN} -m pip install --no-cache-dir -r requirements_filtered.txt && \
     if [ -d /opt/jetson-inference/python/training/classification ]; then \

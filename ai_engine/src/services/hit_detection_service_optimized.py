@@ -7,14 +7,13 @@ import base64
 from typing import Any, Callable, Dict, List, Optional, Tuple
 from .video_io import read_frame_at
 
-# TensorRT support (optional, fallback to ONNX if not available)
+# TensorRT support (opcional - Jetson ya lo tiene preinstalado en el sistema)
 try:
     import tensorrt as trt
-    import pycuda.driver as cuda
     TENSORRT_AVAILABLE = True
 except ImportError:
     TENSORRT_AVAILABLE = False
-    print("⚠️ TensorRT no disponible, usando fallback ONNX")
+    # Esto es normal en desarrollo - TensorRT estará en Jetson
 
 # ---------------------------
 # Helpers
