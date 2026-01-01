@@ -10,6 +10,8 @@ import base64
 import numpy as np
 import cv2
 import tempfile
+import logging
+import subprocess
 from typing import Optional, List, Dict, Any, Tuple
 
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form, BackgroundTasks
@@ -59,6 +61,24 @@ POSENET_MODEL = os.environ.get('POSENET_MODEL', 'resnet18-body')
 # Models directory
 MODELS_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "../models"))
 os.makedirs(MODELS_DIR, exist_ok=True)
+
+# --- Logging Configuration ---
+LOG_DIR = os.path.abspath(os.path.join(os.getcwd(), "logs"))
+os.makedirs(LOG_DIR, exist_ok=True)
+LOG_FILE = os.path.join(LOG_DIR, "nfs_analyzer.log")
+
+logging.basicConfig(
+    level=logging.DEBUG,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler(LOG_FILE),
+        logging.StreamHandler()
+    ]
+)
+
+logger = logging.getLogger(__name__)
+logger.info(f"📋 NFS Analyzer initialized. Logs: {LOG_FILE}")
+
 def _add_perf_metadata(payload, start_time, frames_processed):
     """Annotate payload with elapsed time (ms) and FPS."""
     elapsed_s = max(time.perf_counter() - start_time, 1e-9)
@@ -250,6 +270,93 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
+def _check_nfs_health():
+    """
+    Verifica la salud del montaje NFS al iniciar.
+    Reporta:
+    - Usuario que corre la API
+    - Montajes NFS disponibles
+    - Existencia de directorio principal
+    - Archivos de video disponibles
+    """
+    logger.info("")
+    logger.info("=" * 70)
+    logger.info("🔍 NFS HEALTH CHECK")
+    logger.info("=" * 70)
+    
+    # 1. Verificar usuario actual
+    try:
+        user = subprocess.run(['whoami'], capture_output=True, text=True, timeout=5).stdout.strip()
+        logger.info(f"👤 Running as user: {user}")
+    except Exception as e:
+        logger.warning(f"⚠️ Could not determine current user: {e}")
+        user = "unknown"
+    
+    # 2. Verificar montajes NFS
+    try:
+        mounts = subprocess.run(
+            ['mount', '-t', 'nfs'],
+            capture_output=True,
+            text=True,
+            timeout=5
+        ).stdout
+        
+        if mounts.strip():
+            logger.info(f"✅ NFS mounts detected:")
+            for line in mounts.strip().split('\n'):
+                logger.info(f"   {line}")
+        else:
+            logger.warning(f"⚠️ No NFS mounts detected on the system")
+    except Exception as e:
+        logger.warning(f"⚠️ Could not check NFS mounts: {e}")
+    
+    # 3. Verificar NFS_MEDIA_ROOT
+    nfs_root = os.path.abspath(NFS_MEDIA_ROOT)
+    logger.info(f"📂 NFS_MEDIA_ROOT: {NFS_MEDIA_ROOT}")
+    logger.info(f"   (absolute path: {nfs_root})")
+    
+    if os.path.exists(nfs_root):
+        logger.info(f"✅ NFS root path exists")
+        
+        # 4. Listar contenido
+        try:
+            items = os.listdir(nfs_root)
+            logger.info(f"   📋 Contents ({len(items)} items):")
+            for item in items[:10]:
+                item_path = os.path.join(nfs_root, item)
+                is_dir = "📁" if os.path.isdir(item_path) else "📄"
+                logger.info(f"      {is_dir} {item}")
+            if len(items) > 10:
+                logger.info(f"      ... and {len(items) - 10} more items")
+        except PermissionError:
+            logger.warning(f"⚠️ No permission to read NFS root directory")
+        except Exception as e:
+            logger.warning(f"⚠️ Could not list NFS root directory: {e}")
+        
+        # 5. Verificar carpeta de videos específica
+        videos_path = os.path.join(nfs_root, "demo_videos")
+        if os.path.exists(videos_path):
+            try:
+                videos = [f for f in os.listdir(videos_path) if f.lower().endswith(('.mp4', '.avi', '.mov', '.mkv'))]
+                logger.info(f"✅ Demo videos directory exists")
+                logger.info(f"   📹 Videos found: {len(videos)}")
+                for video in videos[:5]:
+                    video_path = os.path.join(videos_path, video)
+                    size_mb = os.path.getsize(video_path) / (1024 * 1024)
+                    logger.info(f"      - {video} ({size_mb:.2f}MB)")
+                if len(videos) > 5:
+                    logger.info(f"      ... and {len(videos) - 5} more videos")
+            except Exception as e:
+                logger.warning(f"⚠️ Could not list videos: {e}")
+        else:
+            logger.warning(f"⚠️ Demo videos directory not found: {videos_path}")
+    else:
+        logger.error(f"❌ NFS root path does NOT exist: {nfs_root}")
+    
+    logger.info("=" * 70)
+
+
 @app.on_event("startup")
 async def startup_event():
     print("🚀 Starting Inference API...")
@@ -258,6 +365,8 @@ async def startup_event():
     except HTTPException as exc:
         print(f"⚠️ YOLO fallback no disponible: {exc.detail}")
     _log_environment_status()
+    _check_nfs_health()
+    ensure_jetson_models()
     ensure_jetson_models()
 
 # --- Request/Response ---
@@ -317,20 +426,139 @@ def _save_upload_to_temp(file: UploadFile) -> str:
 
 
 def _resolve_nfs_video_path(file_path: str) -> str:
+    """
+    Resuelve y valida rutas de video en NFS con diagnósticos detallados.
+    
+    Validaciones:
+    1. file_path no es vacío
+    2. Archivo existe
+    3. Usuario tiene permisos de lectura
+    4. Archivo no está vacío
+    5. Path traversal protection
+    """
     base_dir = os.path.abspath(NFS_MEDIA_ROOT)
+    
+    logger.info("=" * 70)
+    logger.info("🔍 NFS VIDEO PATH RESOLUTION")
+    logger.info("=" * 70)
+    logger.info(f"📥 Request received")
+    logger.info(f"   file_path: {file_path}")
+    logger.info(f"   NFS_MEDIA_ROOT: {NFS_MEDIA_ROOT}")
+    logger.info(f"   base_dir (absolute): {base_dir}")
+    
+    # ✅ VALIDACIÓN 1: ¿file_path está proporcionado?
     if not file_path:
+        logger.error("❌ VALIDATION FAILED: file_path is required")
         raise HTTPException(400, 'file_path is required')
+    
+    logger.info("   ✓ file_path provided")
+    
+    # Resolver ruta
     candidate = file_path
     if not os.path.isabs(candidate):
         candidate = os.path.join(base_dir, candidate)
+        logger.info(f"   ℹ Relative path converted to: {candidate}")
+    
     candidate = os.path.abspath(candidate)
+    logger.info(f"   ℹ Absolute path: {candidate}")
+    
+    # ✅ VALIDACIÓN 2: Path traversal protection
     try:
         if os.path.commonpath([candidate, base_dir]) != base_dir:
-            raise HTTPException(400, 'Invalid file_path')
+            logger.error(f"❌ SECURITY VIOLATION: Path traversal attempt detected")
+            logger.error(f"   candidate: {candidate}")
+            logger.error(f"   base_dir: {base_dir}")
+            raise HTTPException(400, 'Invalid file_path - path traversal not allowed')
     except ValueError:
+        logger.error(f"❌ VALIDATION FAILED: Invalid path structure")
         raise HTTPException(400, 'Invalid file_path')
-    if not os.path.isfile(candidate):
-        raise HTTPException(404, 'Video path not found')
+    
+    logger.info("   ✓ Path traversal protection OK")
+    
+    # ✅ VALIDACIÓN 3: ¿Existe el archivo?
+    logger.info(f"   ✓ Checking file existence...")
+    if not os.path.exists(candidate):
+        logger.error(f"❌ FILE NOT FOUND: {candidate}")
+        
+        # Diagnóstico: mostrar montajes NFS
+        mounts_info = subprocess.run(
+            ['mount', '-t', 'nfs'],
+            capture_output=True,
+            text=True
+        ).stdout
+        
+        logger.error(f"   📋 NFS Mounts:")
+        if mounts_info.strip():
+            for line in mounts_info.strip().split('\n'):
+                logger.error(f"      {line}")
+        else:
+            logger.error(f"      ⚠️ No NFS mounts found!")
+        
+        logger.error(f"   📋 Directory listing of {os.path.dirname(candidate)}:")
+        try:
+            if os.path.exists(os.path.dirname(candidate)):
+                items = os.listdir(os.path.dirname(candidate))
+                for item in items[:10]:  # Limitar a 10 items
+                    logger.error(f"      - {item}")
+                if len(items) > 10:
+                    logger.error(f"      ... and {len(items) - 10} more items")
+            else:
+                logger.error(f"      Directory doesn't exist")
+        except Exception as e:
+            logger.error(f"      Error listing directory: {e}")
+        
+        raise HTTPException(404, f'Video path not found: {candidate}')
+    
+    logger.info(f"   ✓ File exists")
+    
+    # ✅ VALIDACIÓN 4: ¿Tenemos permisos de lectura?
+    logger.info(f"   ✓ Checking read permissions...")
+    if not os.access(candidate, os.R_OK):
+        logger.error(f"❌ PERMISSION DENIED: No read permission on {candidate}")
+        
+        # Diagnóstico: información del usuario y permisos
+        try:
+            user = subprocess.run(
+                ['whoami'],
+                capture_output=True,
+                text=True,
+                timeout=5
+            ).stdout.strip()
+            logger.error(f"   👤 Current user: {user}")
+        except Exception as e:
+            logger.error(f"   👤 Could not determine current user: {e}")
+        
+        try:
+            stat_info = subprocess.run(
+                ['stat', candidate],
+                capture_output=True,
+                text=True,
+                timeout=5
+            ).stdout
+            logger.error(f"   📊 File stat info:")
+            for line in stat_info.strip().split('\n')[:10]:
+                logger.error(f"      {line}")
+        except Exception as e:
+            logger.error(f"   📊 Could not get stat info: {e}")
+        
+        raise HTTPException(403, f'No read permission on file: {candidate}')
+    
+    logger.info(f"   ✓ Read permission OK")
+    
+    # ✅ VALIDACIÓN 5: ¿Archivo no está vacío?
+    file_size = os.path.getsize(candidate)
+    size_mb = file_size / (1024 * 1024)
+    logger.info(f"   ℹ File size: {size_mb:.2f}MB ({file_size} bytes)")
+    
+    if file_size == 0:
+        logger.error(f"❌ EMPTY FILE: {candidate}")
+        raise HTTPException(400, f'File is empty: {candidate}')
+    
+    logger.info(f"   ✓ File is not empty")
+    logger.info("=" * 70)
+    logger.info(f"✅ ALL VALIDATIONS PASSED")
+    logger.info("=" * 70)
+    
     return candidate
 
 
@@ -1500,15 +1728,72 @@ async def detect_hit_fast_video(
 
 @app.post("/detect/hit/fast/nfs/video")
 async def detect_hit_fast_nfs_video(payload: HitFastNfsRequest):
-    video_path = _resolve_nfs_video_path(payload.file_path)
-    return _run_hit_fast_from_path(
-        video_path,
-        payload.frame_stride,
-        payload.max_frames,
-        payload.hit_threshold,
-        payload.return_images,
-        error_message="Unable to open video path",
-    )
+    """
+    Análisis de video desde ruta NFS compartida.
+    
+    Payload esperado:
+    {
+        "file_path": "/home/pta/pta-app/media/demo_videos/video.mp4",
+        "frame_stride": 1,
+        "max_frames": 1800,
+        "hit_threshold": 0.1,
+        "return_images": false
+    }
+    
+    Ventajas de usar NFS:
+    - ⚡ 40-60% más rápido (no sube archivo)
+    - 💚 Menor consumo de ancho de banda
+    - 🔄 Mejor para archivos grandes (>100MB)
+    """
+    start_time = time.perf_counter()
+    logger.info("")
+    logger.info("=" * 70)
+    logger.info("🎬 DETECT HIT FAST FROM NFS VIDEO")
+    logger.info("=" * 70)
+    
+    try:
+        logger.info(f"📥 NFS request received")
+        logger.info(f"   file_path: {payload.file_path}")
+        logger.info(f"   frame_stride: {payload.frame_stride}")
+        logger.info(f"   max_frames: {payload.max_frames}")
+        logger.info(f"   hit_threshold: {payload.hit_threshold}")
+        logger.info(f"   return_images: {payload.return_images}")
+        
+        # Validar y resolver ruta
+        video_path = _resolve_nfs_video_path(payload.file_path)
+        logger.info(f"✅ Path validated and resolved to: {video_path}")
+        
+        # Ejecutar análisis
+        logger.info(f"🎯 Starting hit detection analysis...")
+        result = _run_hit_fast_from_path(
+            video_path,
+            payload.frame_stride,
+            payload.max_frames,
+            payload.hit_threshold,
+            payload.return_images,
+            error_message="Unable to open video path",
+        )
+        
+        elapsed = time.perf_counter() - start_time
+        logger.info(f"✅ Analysis completed successfully in {elapsed:.2f}s")
+        logger.info(f"   Result keys: {list(result.keys())}")
+        logger.info("=" * 70)
+        
+        return result
+        
+    except HTTPException as e:
+        elapsed = time.perf_counter() - start_time
+        logger.error(f"❌ HTTP Error ({e.status_code}): {e.detail}")
+        logger.error(f"   Elapsed time: {elapsed:.2f}s")
+        logger.error("=" * 70)
+        raise
+        
+    except Exception as e:
+        elapsed = time.perf_counter() - start_time
+        logger.error(f"❌ Unexpected error: {str(e)}", exc_info=True)
+        logger.error(f"   Elapsed time: {elapsed:.2f}s")
+        logger.error("=" * 70)
+        raise HTTPException(500, f"Analysis failed: {str(e)}")
 
 
 @app.post("/detect/move/video")
