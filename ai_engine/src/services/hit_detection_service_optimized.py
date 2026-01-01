@@ -7,6 +7,15 @@ import base64
 from typing import Any, Callable, Dict, List, Optional, Tuple
 from .video_io import read_frame_at
 
+# TensorRT support (optional, fallback to ONNX if not available)
+try:
+    import tensorrt as trt
+    import pycuda.driver as cuda
+    TENSORRT_AVAILABLE = True
+except ImportError:
+    TENSORRT_AVAILABLE = False
+    print("⚠️ TensorRT no disponible, usando fallback ONNX")
+
 # ---------------------------
 # Helpers
 # ---------------------------
@@ -52,7 +61,7 @@ class BallCalibrator:
         self.is_calibrated = True
 
 # ==========================================
-# 2. MODELOS IA (WRAPPERS 416 OPTIMIZADOS)
+# 2. MODELOS IA (WRAPPERS TENSORRT + ONNX)
 # ==========================================
 class YoloBaseWrapper:
     def __init__(self, model_path: str, input_size: Tuple[int, int] = (416, 416), fp16: bool = True):
@@ -60,28 +69,54 @@ class YoloBaseWrapper:
         self.net = None
         self.input_size = input_size
         self.fp16 = fp16
+        self.use_tensorrt = False
 
     def load(self) -> bool:
         if not os.path.exists(self.model_path):
             print(f"❌ Modelo no encontrado: {self.model_path}")
             return False
         try:
-            # Detectar si es TensorRT Engine o ONNX
+            # Prioridad 1: TensorRT Engine (.engine)
             if self.model_path.endswith(".engine"):
-                print(f"🚀 Cargando Motor TensorRT: {os.path.basename(self.model_path)}")
-                self.net = cv2.dnn.readNetFromModelOptimizer(self.model_path) if hasattr(cv2.dnn, "readNetFromModelOptimizer") else cv2.dnn.readNet(self.model_path)
-                self.net.setPreferableBackend(cv2.dnn.DNN_BACKEND_CUDA)
-                self.net.setPreferableTarget(cv2.dnn.DNN_TARGET_CUDA)
+                if TENSORRT_AVAILABLE:
+                    print(f"🚀 Cargando TensorRT Engine (API nativa): {os.path.basename(self.model_path)}")
+                    # Usar TensorRT Python API (no cv2.dnn)
+                    # Esto se hará en las clases derivadas (YoloDetWrapper, YoloPoseWrapper)
+                    self.use_tensorrt = True
+                    return True
+                else:
+                    # Fallback: si TensorRT no disponible, convertir a ONNX
+                    print(f"⚠️ TensorRT no disponible, buscando ONNX equivalente...")
+                    onnx_path = self.model_path.replace(".engine", ".onnx")
+                    if os.path.exists(onnx_path):
+                        print(f"📦 Usando ONNX fallback: {os.path.basename(onnx_path)}")
+                        self.model_path = onnx_path
+                        return self._load_onnx()
+                    else:
+                        print(f"❌ No se encontró ONNX equivalente: {onnx_path}")
+                        return False
+            # Prioridad 2: ONNX
             else:
-                self.net = cv2.dnn.readNet(self.model_path)
-                self.net.setPreferableBackend(cv2.dnn.DNN_BACKEND_CUDA)
-                if self.fp16: self.net.setPreferableTarget(cv2.dnn.DNN_TARGET_CUDA_FP16)
-                else: self.net.setPreferableTarget(cv2.dnn.DNN_TARGET_CUDA)
+                return self._load_onnx()
                 
-            print(f"✅ Cargado: {os.path.basename(self.model_path)} | Size: {self.input_size}")
-            return True
         except Exception as e:
             print(f"❌ Error carga: {e}")
+            return False
+
+    def _load_onnx(self) -> bool:
+        """Carga modelo ONNX con OpenCV DNN"""
+        try:
+            self.net = cv2.dnn.readNet(self.model_path)
+            self.net.setPreferableBackend(cv2.dnn.DNN_BACKEND_CUDA)
+            if self.fp16:
+                self.net.setPreferableTarget(cv2.dnn.DNN_TARGET_CUDA_FP16)
+            else:
+                self.net.setPreferableTarget(cv2.dnn.DNN_TARGET_CUDA)
+            
+            print(f"✅ Cargado ONNX: {os.path.basename(self.model_path)} | Size: {self.input_size}")
+            return True
+        except Exception as e:
+            print(f"❌ Error cargando ONNX: {e}")
             return False
 
     def preprocess(self, img: np.ndarray) -> np.ndarray:

@@ -20,7 +20,7 @@ services:
       - NVIDIA_DRIVER_CAPABILITIES=compute,video,utility
       - JETSON_DATA_DIR_OVERRIDE=/usr/local/bin
       # Forzamos las variables aquí también por seguridad
-      - YOLO_SIZE=640
+      - YOLO_SIZE=416
       - MODELS_DIR=/app/ai_engine/models
       # 📂 NFS Configuration
       - NFS_MEDIA_ROOT=/home/pta/pta-app/media 
@@ -37,8 +37,8 @@ services:
       # -----------------------------------------------------------
       - ./ai_engine/onnx:/app/ai_engine/models
 
-      # 📂 NFS Media Folder (lectura)
-      - /home/pta/pta-app/media:/home/pta/pta-app/media:ro
+      # 📂 NFS Media Folder (acceso completo al servidor principal)
+      - /home/pta/pta-app/media:/home/pta/pta-app/media
 
       # Volúmenes existentes (mantener)
       - jetson_tensorrt_cache:/root/.cache/tensorrt
