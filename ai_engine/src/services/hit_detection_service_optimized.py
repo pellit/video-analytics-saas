@@ -66,17 +66,17 @@ class YoloBaseWrapper:
             print(f"❌ Modelo no encontrado: {self.model_path}")
             return False
         try:
-            self.net = cv2.dnn.readNet(self.model_path)
-            self.net.setPreferableBackend(cv2.dnn.DNN_BACKEND_CUDA)
-            
-            # Si es .engine (TensorRT), OpenCV suele manejarlo automáticamente con el backend CUDA
+            # Detectar si es TensorRT Engine o ONNX
             if self.model_path.endswith(".engine"):
                 print(f"🚀 Cargando Motor TensorRT: {os.path.basename(self.model_path)}")
-                self.net.setPreferableTarget(cv2.dnn.DNN_TARGET_CUDA) 
-            elif self.fp16:
-                self.net.setPreferableTarget(cv2.dnn.DNN_TARGET_CUDA_FP16)
-            else:
+                self.net = cv2.dnn.readNetFromModelOptimizer(self.model_path) if hasattr(cv2.dnn, "readNetFromModelOptimizer") else cv2.dnn.readNet(self.model_path)
+                self.net.setPreferableBackend(cv2.dnn.DNN_BACKEND_CUDA)
                 self.net.setPreferableTarget(cv2.dnn.DNN_TARGET_CUDA)
+            else:
+                self.net = cv2.dnn.readNet(self.model_path)
+                self.net.setPreferableBackend(cv2.dnn.DNN_BACKEND_CUDA)
+                if self.fp16: self.net.setPreferableTarget(cv2.dnn.DNN_TARGET_CUDA_FP16)
+                else: self.net.setPreferableTarget(cv2.dnn.DNN_TARGET_CUDA)
                 
             print(f"✅ Cargado: {os.path.basename(self.model_path)} | Size: {self.input_size}")
             return True
@@ -159,7 +159,7 @@ class HitDetectionServiceOptimized:
         det_base = f"yolov8n_{self.yolo_size}"
         pose_base = f"yolov8n-pose_{self.yolo_size}"
         
-        # Lógica de prioridad: .engine > .onnx
+        # 1. Determinar rutas (Prioridad: Engine > ONNX)
         self.paths = {
             "det": self._get_best_model(det_base),
             "pose": self._get_best_model(pose_base),
@@ -183,7 +183,7 @@ class HitDetectionServiceOptimized:
         self.skeleton_links = [(0,5),(0,6),(5,7),(7,9),(6,8),(8,10),(5,11),(6,12),(11,12),(5,6),(11,13),(13,15),(12,14),(14,16)]
 
     def _get_best_model(self, base_name):
-        """Busca primero .engine, luego .onnx"""
+        """Busca primero .engine, si no existe retorna ruta .onnx"""
         engine_path = os.path.join(self.models_dir, f"{base_name}.engine")
         onnx_path = os.path.join(self.models_dir, f"{base_name}.onnx")
         
@@ -194,18 +194,22 @@ class HitDetectionServiceOptimized:
     def _setup_models(self):
         os.makedirs(self.models_dir, exist_ok=True)
         
-        # Descarga solo si no existe NINGUNA versión (ni engine ni onnx)
         for k, path in self.paths.items():
-            # Si el path resuelto no existe, intentamos descargar el ONNX fallback
+            # Si el path (sea engine u onnx) no existe, intentamos recuperar el ONNX
             if not os.path.exists(path):
-                # Volvemos al nombre onnx para descargar
-                fallback_path = path.replace(".engine", ".onnx")
-                if not os.path.exists(fallback_path) and k in self.urls:
-                    try: 
-                        print(f"⬇️ Descargando modelo base: {k}")
-                        urllib.request.urlretrieve(self.urls[k], fallback_path)
-                        # Actualizamos el path a usar
-                        self.paths[k] = fallback_path 
+                # Si era un engine y no está, hacemos fallback a ONNX para descargarlo
+                if path.endswith(".engine"):
+                    fallback_path = path.replace(".engine", ".onnx")
+                    # Si tampoco está el ONNX, descargamos
+                    if not os.path.exists(fallback_path) and k in self.urls:
+                        try: 
+                            print(f"⬇️ Descargando modelo base (fallback): {k}")
+                            urllib.request.urlretrieve(self.urls[k], fallback_path)
+                            self.paths[k] = fallback_path # Actualizamos a usar ONNX
+                        except: pass
+                # Si era ONNX y no está, descargamos
+                elif k in self.urls:
+                    try: urllib.request.urlretrieve(self.urls[k], path)
                     except: pass
         
         size = (self.yolo_size, self.yolo_size)
@@ -230,7 +234,7 @@ class HitDetectionServiceOptimized:
         d = self.midas.forward()
         return cv2.normalize(cv2.resize(d[0,0], (w, h)), None, 0, 255, cv2.NORM_MINMAX, cv2.CV_8U)
 
-    # --- NUEVOS MÉTODOS DE CARA (Restaurados) ---
+    # --- CARA & HELPERS ---
     def _extract_face_b64(self, frame, kpts):
         pts = [kpts[i] for i in range(5) if kpts[i]['conf']>0.4]
         if len(pts)<3: return None
@@ -290,7 +294,6 @@ class HitDetectionServiceOptimized:
 
         consistent = (len(samples) > 1) and all(s["match"] for s in samples if not s.get("reference"))
         return {"consistent": consistent, "samples": samples}
-    # --------------------------------------------
 
     def extract_trajectory(self, video_path, stride=3, max_frames=300):
         cap = cv2.VideoCapture(video_path)
@@ -298,7 +301,7 @@ class HitDetectionServiceOptimized:
         frames_meta = [] 
         processed = 0
         idx = 0
-        faces_start, faces_mid = [], [] # Restaurado
+        faces_start, faces_mid = [], []
         
         while processed < max_frames:
             ret, frame = cap.read()
@@ -333,7 +336,6 @@ class HitDetectionServiceOptimized:
                 frame_data["kpts"] = p["kpts"]
                 frame_data["ball_box"] = b
 
-                # Extracción de caras (Restaurado)
                 if processed < 50 and len(faces_start) < 3:
                     f = self._extract_face_b64(frame, p["kpts"])
                     if f: faces_start.append(f)
@@ -456,8 +458,7 @@ class HitDetectionServiceOptimized:
         
         def to_p(x, y): return (20 + int(x/w*280), 20 + int(y/h*(h-40)))
         
-        c_bone = (100, 100, 100)
-        c_hit = (0, 255, 255)
+        c_bone, c_hit = (100, 100, 100), (0, 255, 255)
         base_ball_color = c_hit if is_hit else (0, 140, 255) 
 
         for a, b in self.skeleton_links:
@@ -488,17 +489,14 @@ class HitDetectionServiceOptimized:
         meta, f_start, f_mid, fps = self.extract_trajectory(video_path, stride=frame_stride, max_frames=max_frames)
         logs, stats, end_state, traj = self.analyze_trajectory(meta)
         
-        # Imágenes
         hit_imgs = []
         if return_images: hit_imgs = self.generate_visuals(video_path, logs, meta)
             
-        # 1. Comparación simple (Start vs Mid)
         face_res = "N/A"
         if self.face_compare_fn and f_start and f_mid:
             try: face_res = self.face_compare_fn(f_start[0], f_mid[0])
             except: pass
 
-        # 2. Consistencia Avanzada (Sampling)
         face_consistency = "N/A"
         if self.face_compare_fn:
             try: face_consistency = self._evaluate_face_consistency(video_path, sample_interval_pct=face_sample_interval_pct)
@@ -523,6 +521,10 @@ class HitDetectionServiceOptimized:
                     "ball_size": f"N {self.calibrator.selected_size_id}"
                 },
                 "face_verification": face_res,
-                "face_consistency": face_consistency
+                "face_consistency": face_consistency,
+                "models_used": {
+                    "detection": os.path.basename(self.paths["det"]),
+                    "pose": os.path.basename(self.paths["pose"])
+                }
             }
         }
