@@ -21,7 +21,9 @@ services:
       - JETSON_DATA_DIR_OVERRIDE=/usr/local/bin
       # Forzamos las variables aquí también por seguridad
       - YOLO_SIZE=640
-      - MODELS_DIR=/app/ai_engine/models 
+      - MODELS_DIR=/app/ai_engine/models
+      # 📂 NFS Configuration
+      - NFS_MEDIA_ROOT=/home/pta/pta-app/media 
 
     ports:
       - "5050:5050"
@@ -34,6 +36,9 @@ services:
       # Esto SOBRESCRIBE cualquier cosa que el Dockerfile haya intentado descargar.
       # -----------------------------------------------------------
       - ./ai_engine/onnx:/app/ai_engine/models
+
+      # 📂 NFS Media Folder (lectura)
+      - /home/pta/pta-app/media:/home/pta/pta-app/media:ro
 
       # Volúmenes existentes (mantener)
       - jetson_tensorrt_cache:/root/.cache/tensorrt
