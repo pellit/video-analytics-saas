@@ -1,5 +1,5 @@
 import numpy as np
-from typing import Optional, List, Any
+from typing import Optional, List, Any, Dict
 from ..domain.models import FrameData, PlayerState, BallState, AudioState, Point3D
 
 class PhysicsEngine:
