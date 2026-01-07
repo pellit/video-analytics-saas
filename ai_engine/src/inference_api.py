@@ -39,8 +39,10 @@ from .services.superres_service import SuperResolutionService
 from .services.move_detection_service_optimized import MoveDetectionServiceOptimized
 from .services.general_action_service_optimized import GeneralActionService
 from .services.jetson_env import ensure_jetson_models
+from .orchestrator import CoachOrchestrator, ServiceContainer
 
 JETSON_INFERENCE_AVAILABLE = ACTIONNET_AVAILABLE
+services = ServiceContainer()
 
 # --- Configuration ---
 # Default detector: NanoDet-Plus (recommended: NanoDet-Plus-m, 416x416)
@@ -367,7 +369,7 @@ async def startup_event():
     _log_environment_status()
     _check_nfs_health()
     ensure_jetson_models()
-    ensure_jetson_models()
+    services.initialize()
 
 # --- Request/Response ---
 class DetectionRequest(BaseModel):
@@ -2403,6 +2405,51 @@ async def superres_video(
     if background_tasks is not None:
         background_tasks.add_task(os.remove, output_tmp.name)
     return FileResponse(output_tmp.name, media_type="video/mp4", filename=os.path.basename(output_tmp.name))
+
+# --- Coach / Virtual Trainer Endpoints ---
+
+@app.post("/coach/analyze")
+async def analyze_session(
+    file: UploadFile = File(...),
+    mode: str = Form("soccer"),
+    return_images: bool = Form(False),
+    phrase_challenge: Optional[str] = Form(None) 
+):
+    """
+    Endpoint Maestro del Entrenador Virtual.
+    Evalúa al jugador en Técnico, Físico, Táctico y Mental.
+    """
+    tmp_path = save_upload_to_temp(file)
+    try:
+        start_time = time.perf_counter()
+        
+        # Configuración dinámica
+        config = {}
+        if phrase_challenge: config["phrase"] = phrase_challenge
+        
+        # Instanciar Orquestador
+        coach = CoachOrchestrator(mode=mode, config=config, services=services)
+        
+        # Ejecutar análisis
+        results = coach.process_video(tmp_path)
+        
+        # Metadatos de rendimiento
+        elapsed = time.perf_counter() - start_time
+        
+        return {
+            "success": True,
+            "mode": mode,
+            "processing_time_s": round(elapsed, 2),
+            "evaluation": results,
+            "coach_feedback": "Entrenamiento completado. Revisa tus métricas." 
+        }
+        
+    except Exception as e:
+        logger.error(f"Analysis failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
 
 if __name__ == "__main__":
     import uvicorn
