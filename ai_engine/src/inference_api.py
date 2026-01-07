@@ -2418,6 +2418,7 @@ async def analyze_session(
     """
     Endpoint Maestro del Entrenador Virtual.
     Evalúa al jugador en Técnico, Físico, Táctico y Mental.
+    Modos soportados: 'soccer', 'fitness', 'meditation', 'challenge_speech', 'crossfit', 'hyrox'.
     """
     tmp_path = save_upload_to_temp(file)
     try:

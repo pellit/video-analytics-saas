@@ -9,6 +9,7 @@ from .evaluators.technical import TechnicalEvaluator
 from .evaluators.physical import PhysicalEvaluator
 from .evaluators.tactical import TacticalEvaluator
 from .evaluators.mental import MentalEvaluator
+from .evaluators.crossfit import CrossfitEvaluator
 
 # Placeholder imports if they are not strictly needed for this file but expected by the user's design
 # Assuming usage of existing services
@@ -85,6 +86,16 @@ class CoachOrchestrator:
             mental = MentalEvaluator()
             mental.set_mode_speech_challenge(target_phrase=config.get("phrase", ""))
             self.evaluators.append(mental)
+            
+        elif mode == "crossfit":
+            # Crossfit: Reps counting (Squats/Burpees) + Intensity (Physical)
+            self.evaluators.append(CrossfitEvaluator(exercise_type="wod_mix"))
+            self.evaluators.append(PhysicalEvaluator()) # Monitor endurance/speed
+            
+        elif mode == "hyrox":
+            # Hyrox: Functional (Burpees, Wallballs) + Running focus
+            self.evaluators.append(CrossfitEvaluator(exercise_type="hyrox_station"))
+            self.evaluators.append(PhysicalEvaluator())
 
     def process_video(self, video_path: str, frame_stride: int = 2):
         cap = cv2.VideoCapture(video_path)
