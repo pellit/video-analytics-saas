@@ -12,7 +12,7 @@ import cv2
 import tempfile
 import logging
 import subprocess
-from typing import Optional, List, Dict, Any, Tuple
+from typing import Optional, List, Dict, Any, Tuple, Literal
 
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
@@ -2410,10 +2410,12 @@ async def superres_video(
 
 @app.post("/coach/analyze")
 async def analyze_session(
-    file: UploadFile = File(...),
-    mode: str = Form("soccer"),
-    return_images: bool = Form(False),
-    phrase_challenge: Optional[str] = Form(None) 
+    file: UploadFile = File(..., description="Video file to analyze (mp4, mov, etc.)"),
+    mode: Literal["soccer", "fitness", "meditation", "challenge_speech", "crossfit", "hyrox"] = Form(
+        "soccer", description="Analysis mode / skillset to evaluate"
+    ),
+    return_images: bool = Form(False, description="If true, return annotated frames or images (may increase response size)"),
+    phrase_challenge: Optional[str] = Form(None, description="Target phrase for speech challenge mode (comma separated words)")
 ):
     """
     Endpoint Maestro del Entrenador Virtual.
