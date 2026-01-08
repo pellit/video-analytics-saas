@@ -1,6 +1,10 @@
 import os
 import cv2
 import time
+import json
+import wave
+import tempfile
+import subprocess
 import logging
 from typing import Dict, Any, Optional, List
 from .domain.models import FrameData
@@ -10,6 +14,7 @@ from .evaluators.physical import PhysicalEvaluator
 from .evaluators.tactical import TacticalEvaluator
 from .evaluators.mental import MentalEvaluator
 from .evaluators.crossfit import CrossfitEvaluator
+from .services.hit_detection_service_optimized import HitDetectionServiceOptimized
 
 # Placeholder imports if they are not strictly needed for this file but expected by the user's design
 # Assuming usage of existing services
@@ -24,10 +29,19 @@ MODELS_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "../models"
 class ServiceContainer:
     def __init__(self):
         self.nanodet = None
+        self.hit_service = None
+        self.ball_detector = None
+        self.pose_detector = None
         self.face_service = None
         self.superres = None
         # self.pose = None 
-        
+
+    def attach_hit_service(self, hit_service: HitDetectionServiceOptimized):
+        """Allow reusing an already-initialized hit detection service (det + pose)."""
+        self.hit_service = hit_service
+        self.ball_detector = getattr(hit_service, "det", None)
+        self.pose_detector = getattr(hit_service, "pose", None)
+
     def initialize(self):
         logger.info("🚀 Initializing Perception Services...")
         
@@ -39,6 +53,16 @@ class ServiceContainer:
             logger.info("✅ NanoDet-Plus ready.")
         except Exception as e:
             logger.warning(f"⚠️ NanoDet error: {e}")
+
+        # 1b. Detectores YOLOv8 (pose + balón) compartidos con hit_detection_service_optimized
+        if not (self.ball_detector and self.pose_detector):
+            try:
+                self.hit_service = HitDetectionServiceOptimized(enable_depth=False)
+                self.ball_detector = self.hit_service.det
+                self.pose_detector = self.hit_service.pose
+                logger.info("✅ YOLOv8 det/pose ready for coach pipeline.")
+            except Exception as e:
+                logger.warning(f"⚠️ YOLOv8 det/pose unavailable: {e}")
 
         # 2. Servicios de Rostro (Para consistencia)
         try:
@@ -117,14 +141,28 @@ class CoachOrchestrator:
             timestamp = current_frame_count / fps
 
             # 1. PERCEPCIÓN (Obtener datos crudos)
-            raw_det = []
-            if self.services.nanodet:
-                # Assuming detect returns list of detections
-                 dets = self.services.nanodet.detect(frame)
-                 if dets:
-                     raw_det = dets[0]
+            raw_det = None
+            raw_pose = None
 
-            raw_pose = [] # Llamar a self.pose_wrapper.detect(frame)
+            if self.services.ball_detector:
+                try:
+                    dets = self.services.ball_detector.detect(frame)
+                    if dets: raw_det = dets[0]
+                except Exception as e:
+                    logger.debug(f"Ball detector failed: {e}")
+            elif self.services.nanodet:
+                try:
+                    dets = self.services.nanodet.detect(frame)
+                    if dets: raw_det = dets[0]
+                except Exception as e:
+                    logger.debug(f"NanoDet failed: {e}")
+
+            if self.services.pose_detector:
+                try:
+                    poses = self.services.pose_detector.detect(frame)
+                    if poses: raw_pose = poses[0]
+                except Exception as e:
+                    logger.debug(f"Pose detector failed: {e}")
             
             # 2. FÍSICA (Limpiar y normalizar)
             # Simulamos inyección de datos de audio sincronizados
@@ -150,10 +188,59 @@ class CoachOrchestrator:
     def _extract_audio_text(self, video_path) -> Dict[int, Any]:
         """
         Extrae audio, lo pasa a texto (Vosk/Whisper) y devuelve un mapa {segundo: texto}.
-        Aquí iría la implementación real con subprocess ffmpeg.
+        Aquí se intenta Vosk si está disponible; si no, retorna {}.
         """
-        # TODO: Implementar integración real con Vosk
-        return {} 
+        model_path = os.environ.get("VOSK_MODEL_PATH")
+        if not model_path or not os.path.exists(model_path):
+            logger.info("Vosk model path not configured; skipping audio transcript.")
+            return {}
+
+        tmp_wav = None
+        try:
+            tmp_wav = tempfile.NamedTemporaryFile(delete=False, suffix=".wav")
+            tmp_wav.close()
+            
+            cmd = [
+                "ffmpeg",
+                "-y",
+                "-i", video_path,
+                "-ac", "1",
+                "-ar", "16000",
+                "-f", "wav",
+                tmp_wav.name,
+            ]
+            subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
+
+            from vosk import Model, KaldiRecognizer
+
+            wf = wave.open(tmp_wav.name, "rb")
+            model = Model(model_path)
+            rec = KaldiRecognizer(model, wf.getframerate())
+
+            transcript: Dict[int, Any] = {}
+            while True:
+                data = wf.readframes(4000)
+                if len(data) == 0:
+                    break
+                if rec.AcceptWaveform(data):
+                    res = json.loads(rec.Result())
+                    text = res.get("text", "").strip()
+                    if text:
+                        sec = int(wf.tell() / wf.getframerate())
+                        transcript[sec] = {"text": text, "is_speaking": True, "volume": 1.0}
+
+            final = json.loads(rec.FinalResult())
+            if final.get("text"):
+                sec = int(wf.getnframes() / max(wf.getframerate(), 1))
+                transcript.setdefault(sec, {"text": final["text"], "is_speaking": True, "volume": 1.0})
+
+            return transcript
+        except Exception as e:
+            logger.info(f"Audio transcription skipped ({e})")
+            return {}
+        finally:
+            if tmp_wav and os.path.exists(tmp_wav.name):
+                os.remove(tmp_wav.name)
 
     def _compile_results(self):
         results = {}

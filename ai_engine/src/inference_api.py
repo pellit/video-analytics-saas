@@ -231,6 +231,8 @@ hit_detection_service_fast = HitDetectionServiceOptimized(
     face_compare_fn=_compare_faces_for_hit_detection,
 )
 
+services.attach_hit_service(hit_detection_service_fast)
+
 superres_service = SuperResolutionService(SUPERRES_MODEL_DIR, SUPERRES_MODEL_PATH)
 
 # Lazy-loaded optimized move detection service (utiliza _segment_scene y comparador de caras)
