@@ -11,10 +11,11 @@ class Point3D:
 @dataclass
 class PlayerState:
     feet: Dict[str, Point3D]
-    center_of_mass: Point3D  # Clave para meditación (estabilidad)
-    nose: Point3D            # Clave para "mirada al frente"
+    feet_confidence: Dict[str, float] # Nuevo: Confianza de detección
+    center_of_mass: Point3D
+    nose: Point3D
     velocity: float
-    posture_stability: float # 0.0 (moviéndose) a 1.0 (estatua)
+    posture_stability: float
 
 @dataclass
 class BallState:
