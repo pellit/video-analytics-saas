@@ -2412,42 +2412,31 @@ async def superres_video(
 
 @app.post("/coach/analyze")
 async def analyze_session(
-    file: UploadFile = File(..., description="Video file to analyze (mp4, mov, etc.)"),
-    mode: Literal["soccer", "fitness", "meditation", "challenge_speech", "crossfit", "hyrox"] = Form(
-        "soccer", description="Analysis mode / skillset to evaluate"
-    ),
-    return_images: bool = Form(False, description="If true, return annotated frames or images (may increase response size)"),
-    phrase_challenge: Optional[str] = Form(None, description="Target phrase for speech challenge mode (comma separated words)")
+    file: UploadFile = File(...),
+    mode: Literal["soccer", "fitness", "meditation", "challenge_speech"] = Form("soccer"),
+    return_images: bool = Form(False),
+    phrase_challenge: Optional[str] = Form(None)
 ):
-    """
-    Endpoint Maestro del Entrenador Virtual.
-    Evalúa al jugador en Técnico, Físico, Táctico y Mental.
-    Modos soportados: 'soccer', 'fitness', 'meditation', 'challenge_speech', 'crossfit', 'hyrox'.
-    """
     tmp_path = save_upload_to_temp(file)
     try:
         start_time = time.perf_counter()
         
-        # Configuración dinámica
+        # Instanciar Orquestador
         config = {}
         if phrase_challenge: config["phrase"] = phrase_challenge
         
-        # Instanciar Orquestador
         coach = CoachOrchestrator(mode=mode, config=config, services=services)
         
-        # Ejecutar análisis
-        results = coach.process_video(tmp_path)
+        # Procesar
+        response_data = coach.process_video(tmp_path)
         
-        # Metadatos de rendimiento
+        # Inyectar tiempo de performance final
         elapsed = time.perf_counter() - start_time
+        response_data["meta"]["performance"]["total_time_s"] = round(elapsed, 2)
+        response_data["processing_time_s"] = round(elapsed, 2)
+        response_data["mode"] = mode
         
-        return {
-            "success": True,
-            "mode": mode,
-            "processing_time_s": round(elapsed, 2),
-            "evaluation": results,
-            "coach_feedback": "Entrenamiento completado. Revisa tus métricas." 
-        }
+        return response_data
         
     except Exception as e:
         logger.error(f"Analysis failed: {e}", exc_info=True)
