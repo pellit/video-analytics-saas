@@ -66,6 +66,16 @@ class ServiceContainer:
         except Exception as e:
             logger.warning(f"⚠️ Face Service error: {e}")
 
+        # Si el hit_service ya fue creado antes, inyectamos el face_service para comparaciones
+        try:
+            if self.hit_service and self.face_service:
+                try:
+                    self.hit_service.set_face_service(self.face_service)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
         # 3. Super Resolución
         try:
             self.superres = SuperResolutionService(

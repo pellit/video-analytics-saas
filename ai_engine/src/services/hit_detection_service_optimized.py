@@ -208,7 +208,10 @@ class HitDetectionServiceOptimized:
                  model_name_det="yolov8n_640",
                  model_name_pose="yolov8s-pose_640", 
                  model_name_depth="midas_v21_small_640", # <--- NUEVO
-                 yolo_size=640):
+                 yolo_size=640,
+                 face_compare_fn: Optional[Callable] = None,
+                 segment_floor_fn: Optional[Callable] = None,
+                 enable_depth: bool = True):
         
         self.models_dir = models_dir
         self.yolo_size = int(yolo_size)
@@ -229,14 +232,68 @@ class HitDetectionServiceOptimized:
             target_imgsz=self.yolo_size
         )
         
-        # 3. Profundidad (MiDaS)
-        # Nota: SmartModelLoader intentará cargar .engine primero. 
-        # Si falla (porque MiDaS no es YOLO), usará el .onnx automáticamente.
-        self.depth_loader = SmartModelLoader(
-            os.path.join(models_dir, model_name_depth), 
-            task='depth',  # Etiqueta informativa
-            target_imgsz=self.yolo_size
-        )
+        # 3. Profundidad (MiDaS) — opcional
+        self.enable_depth = bool(enable_depth)
+        self.segment_floor_fn = segment_floor_fn
+        self.face_compare_fn = face_compare_fn
+
+        if self.enable_depth:
+            # Nota: SmartModelLoader intentará cargar .engine primero.
+            # Si falla (porque MiDaS no es YOLO), usará el .onnx automáticamente.
+            try:
+                self.depth_loader = SmartModelLoader(
+                    os.path.join(models_dir, model_name_depth), 
+                    task='depth',  # Etiqueta informativa
+                    target_imgsz=self.yolo_size
+                )
+            except Exception:
+                self.depth_loader = None
+        else:
+            self.depth_loader = None
+
+        # Face service placeholder (puede inyectarse desde ServiceContainer)
+        self.face_service = None
+        self.face_compare_fn = face_compare_fn
+
+    def set_face_service(self, face_service):
+        """Inyecta una instancia de `FaceEmbeddingService` para comparaciones locales."""
+        self.face_service = face_service
+
+    def compare_face_base64(self, face_a_b64: str, face_b_b64: str):
+        """Compara dos recortes faciales en base64 usando `face_service` si está disponible.
+
+        Devuelve dict similar a `_compare_faces_for_hit_detection` o None si no disponible.
+        """
+        if not self.face_service:
+            # Si no hay servicio, intentar usar la función callback si se proporcionó
+            if callable(self.face_compare_fn):
+                try:
+                    return self.face_compare_fn(face_a_b64, face_b_b64)
+                except Exception:
+                    return None
+            return None
+
+        # Decodificar base64 a imagen usando OpenCV
+        try:
+            import base64
+            import numpy as np
+            import cv2
+            payload = face_a_b64.split(",")[1] if "," in face_a_b64 else face_a_b64
+            img_a = cv2.imdecode(np.frombuffer(base64.b64decode(payload), np.uint8), cv2.IMREAD_COLOR)
+            payload = face_b_b64.split(",")[1] if "," in face_b_b64 else face_b_b64
+            img_b = cv2.imdecode(np.frombuffer(base64.b64decode(payload), np.uint8), cv2.IMREAD_COLOR)
+        except Exception:
+            return None
+
+        try:
+            fa = self.face_service.get_primary_face_embedding(img_a)
+            fb = self.face_service.get_primary_face_embedding(img_b)
+            if not fa or not fb:
+                return None
+            sim = self.face_service.compare_embeddings(fa['embedding'], fb['embedding'])
+            return {"success": True, "similarity": sim, "match": sim >= 0.6}
+        except Exception:
+            return None
 
     def process_frame(self, frame):
         """
