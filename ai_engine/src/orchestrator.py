@@ -35,8 +35,45 @@ class ServiceContainer:
         self.pose_detector = getattr(hit_service, "pose", None)
 
     def initialize(self):
-        # ... (Tu lógica de inicialización existente se mantiene igual)
-        pass
+        logger.info("🚀 Initializing Perception Services...")
+        
+        # 1. Detección Base (NanoDet o YOLO)
+        try:
+            # Assuming these classes are available and work as expected
+            self.nanodet = NanoDetPlusDetector(device='cpu') # Fallback ligero
+            # self.nanodet.load_model() # Check if load_model is needed or if init does it
+            logger.info("✅ NanoDet-Plus ready.")
+        except Exception as e:
+            logger.warning(f"⚠️ NanoDet error: {e}")
+
+        # 1b. Detectores YOLOv8 (pose + balón) compartidos con hit_detection_service_optimized
+        if not (self.ball_detector and self.pose_detector):
+            try:
+                self.hit_service = HitDetectionServiceOptimized(enable_depth=False)
+                self.ball_detector = self.hit_service.det
+                self.pose_detector = self.hit_service.pose
+                logger.info("✅ YOLOv8 det/pose ready for coach pipeline.")
+            except Exception as e:
+                logger.warning(f"⚠️ YOLOv8 det/pose unavailable: {e}")
+
+        # 2. Servicios de Rostro (Para consistencia)
+        try:
+            self.face_service = FaceEmbeddingService(
+                face_detect_model_path=os.path.join(MODELS_DIR, 'face_detection_yunet_2023mar.onnx'),
+                face_recognition_model_path=os.path.join(MODELS_DIR, 'face_recognition_sface_2021dec.onnx')
+            )
+            logger.info("✅ Face Services ready.")
+        except Exception as e:
+            logger.warning(f"⚠️ Face Service error: {e}")
+
+        # 3. Super Resolución
+        try:
+            self.superres = SuperResolutionService(
+                model_dir=os.path.join(MODELS_DIR),
+                default_model_path=os.path.join(MODELS_DIR, 'ESPCN_x4.pb')
+            )
+        except Exception as e:
+             logger.warning(f"⚠️ SuperRes error: {e}")
 
 class CoachOrchestrator:
     def __init__(self, mode: str, config: dict, services: ServiceContainer):
@@ -85,14 +122,17 @@ class CoachOrchestrator:
             timestamp = current_frame_count / fps
 
             # 1. PERCEPCIÓN
+
             raw_det = None
             raw_pose = None
 
             if self.services.ball_detector:
                 try:
                     dets = self.services.ball_detector.detect(frame)
-                    if dets: raw_det = dets[0]
-                except: pass
+                    if dets: 
+                        raw_det = dets[0] # Ahora es un DetectionObject, no una lista
+                except Exception as e: 
+                    pass
             
             if self.services.pose_detector:
                 try:
