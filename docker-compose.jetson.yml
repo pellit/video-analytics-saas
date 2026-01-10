@@ -6,7 +6,7 @@ services:
       context: ./ai_engine
       dockerfile: Dockerfile.jetson
     image: video-analytics-inference:jetson
-    container_name: jetson_inference
+    container_name: jetson_inference_api
     restart: always
 
     command: python3.11 -m uvicorn src.inference_api:app --host 0.0.0.0 --port 5050 --workers 1
