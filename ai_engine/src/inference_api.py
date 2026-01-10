@@ -2496,10 +2496,24 @@ async def analyze_session(
         config = {}
         if phrase_challenge: config["phrase"] = phrase_challenge
         
+        # Instanciar Coach
         coach = CoachOrchestrator(mode=mode, config=config, services=services)
-        
-        # Procesar
-        response_data = coach.process_video(tmp_path)
+
+        # Soporte para simulación: si se sube un JSON de simulación, usar VirtualProvider
+        from .core.physics_engine import PhysicsEngine
+        from .core.providers import CameraProvider, VirtualProvider
+
+        physics = PhysicsEngine()
+
+        # Detectar si el archivo subido es JSON (simulación) por extensión
+        _, ext = os.path.splitext(tmp_path)
+        if ext.lower() in ('.json',) or (os.path.getsize(tmp_path) < 10 * 1024 and ext == ''):
+            # Tratamos como simulación si es JSON o archivo pequeño
+            provider = VirtualProvider(tmp_path, physics_engine=physics)
+        else:
+            provider = CameraProvider(tmp_path, physics_engine=physics)
+
+        response_data = coach.process_session(provider)
         
         # Inyectar tiempo de performance final
         elapsed = time.perf_counter() - start_time

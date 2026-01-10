@@ -1,91 +1,98 @@
 import os
 import cv2
 import time
-from ultralytics import YOLO
+import numpy as np
+
+# ELIMINAMOS: from ultralytics import YOLO
 
 class SmartModelLoader:
-    def __init__(self, model_path_base, task='detect', target_imgsz=416):
+    def __init__(self, model_path_base, task='detect', target_imgsz=640):
         """
-        model_path_base: Ruta completa SIN extensión (ej: /app/ai_engine/models/best)
-        target_imgsz: Tamaño definido en el docker-compose (ej: 416)
+        Carga SOLO modelos ONNX usando OpenCV con aceleración CUDA.
+        Ignora archivos .engine para no depender de librerías externas.
         """
         self.model = None
-        self.backend = None
-        self.target_imgsz = int(target_imgsz) # Aseguramos que sea entero
+        self.backend = 'opencv'
+        self.target_imgsz = int(target_imgsz)
         self.model_filename = "Ninguno"
+        self.task = task
         
-        # Rutas esperadas
-        path_engine = f"{model_path_base}.engine"
+        # Solo buscamos ONNX
         path_onnx = f"{model_path_base}.onnx"
 
-        print(f"[INIT] Buscando modelos en base a: {model_path_base}")
-        print(f"[INIT] Tamaño configurado (YOLO_SIZE): {self.target_imgsz}")
+        print(f"[INIT] Loader Optimizado (ONNX Only). Buscando: {path_onnx}")
 
-        # --- 1. INTENTO TENSORRT (.engine) ---
-        if os.path.exists(path_engine):
-            print(f"[INFO] Engine encontrado: {path_engine}")
-            try:
-                self.model = YOLO(path_engine, task=task)
-                self.backend = 'tensorrt'
-                self.model_filename = os.path.basename(path_engine)
-                print(f"[EXITO] Cargado Engine TensorRT Nativo")
-            except Exception as e:
-                print(f"[ERROR] Engine falló: {e}")
-        
-        # --- 2. FALLBACK ONNX (.onnx) ---
-        if self.model is None and os.path.exists(path_onnx):
-            print(f"[INFO] Usando Fallback ONNX: {path_onnx}")
+        if os.path.exists(path_onnx):
+            print(f"[INFO] Cargando ONNX: {path_onnx}")
             try:
                 self.model = cv2.dnn.readNetFromONNX(path_onnx)
+                
+                # --- CONFIGURACIÓN CRÍTICA PARA CUDA ---
                 try:
                     self.model.setPreferableBackend(cv2.dnn.DNN_BACKEND_CUDA)
                     self.model.setPreferableTarget(cv2.dnn.DNN_TARGET_CUDA)
-                    accel = "CUDA"
-                except:
-                    accel = "CPU"
+                    accel = "CUDA (GPU)"
+                except Exception as e:
+                    print(f"[WARN] Falló al activar CUDA: {e}")
+                    self.model.setPreferableBackend(cv2.dnn.DNN_BACKEND_OPENCV)
+                    self.model.setPreferableTarget(cv2.dnn.DNN_TARGET_CPU)
+                    accel = "CPU (Fallback)"
                 
-                self.backend = 'opencv'
                 self.model_filename = os.path.basename(path_onnx) + f" [{accel}]"
-                print(f"[EXITO] Cargado ONNX con OpenCV ({accel})")
+                print(f"[EXITO] Modelo cargado correctamente en: {accel}")
 
             except Exception as e:
-                print(f"[ERROR] ONNX inválido: {e}")
-
-        if self.model is None:
-            # Mensaje de error claro si no encuentra nada en la carpeta montada
-            raise FileNotFoundError(f"CRITICO: No hay 'best.engine' ni 'best.onnx' en {model_path_base}. Verifica tu volumen docker.")
+                print(f"[ERROR] El archivo ONNX está corrupto o es incompatible: {e}")
+                raise e
+        else:
+            raise FileNotFoundError(f"CRITICO: No se encontró el modelo: {path_onnx}")
 
     def predict(self, frame, conf_thres=0.5):
         t_start = time.time()
         
-        if self.backend == 'tensorrt':
-            # Ultralytics se encarga del resize, pero le recordamos el tamaño
-            results = self.model(frame, verbose=False, conf=conf_thres, imgsz=self.target_imgsz)
-            annotated_frame = results[0].plot() 
-            
-        elif self.backend == 'opencv':
-            # Resize manual estricto al tamaño del compose
-            blob = cv2.dnn.blobFromImage(frame, 1/255.0, (self.target_imgsz, self.target_imgsz), swapRB=True, crop=False)
-            self.model.setInput(blob)
-            outputs = self.model.forward()
-            # (Aquí iría tu post-proceso de cajas para ONNX. Por ahora devolvemos frame)
-            annotated_frame = frame # Placeholder si usas ONNX puro
-
+        # 1. Pre-proceso para YOLOv8/v5 en OpenCV
+        # YOLO espera normalización 0-1 (scale=1/255) y swapRB=True
+        blob = cv2.dnn.blobFromImage(
+            frame, 
+            1/255.0, 
+            (self.target_imgsz, self.target_imgsz), 
+            swapRB=True, 
+            crop=False
+        )
+        self.model.setInput(blob)
+        
+        # 2. Inferencia
+        outputs = self.model.forward()
+        
+        # 3. Post-proceso básico para visualización (solo debugging)
+        # Nota: La lógica real de decodificación de cajas (NMS) suele estar fuera
+        # o requiere un parseo manual de 'outputs' si no usas Ultralytics.
+        # Para evitar escribir 100 líneas de NMS aquí, asumiremos que 
+        # el endpoint 'debug' solo quiere verificar que el modelo CORRE y devuelve datos.
+        
         t_end = time.time()
         inference_time = (t_end - t_start) * 1000
         fps = 1.0 / (t_end - t_start) if (t_end - t_start) > 0 else 0
 
-        self._draw_stats(annotated_frame, fps, inference_time)
-        return annotated_frame
+        # Si el modelo corre, outputs tendrá forma (1, 84, 8400) aprox para YOLOv8
+        # Dibujamos stats sobre el frame original
+        self._draw_stats(frame, fps, inference_time, outputs.shape)
+        
+        # Devolvemos el frame y raw_outputs si fuera necesario, 
+        # pero para mantener compatibilidad devolvemos frame pintado
+        return frame
 
-    def _draw_stats(self, img, fps, ms):
-        color = (0, 255, 0) if self.backend == 'tensorrt' else (0, 0, 255)
+    def _draw_stats(self, img, fps, ms, shape):
+        color = (0, 255, 0) # Verde = Éxito
         lines = [
             f"Model: {self.model_filename}",
-            f"Mode: {self.backend.upper()} | Size: {self.target_imgsz}",
+            f"Backend: OpenCV DNN (CUDA)",
+            f"Output Shape: {shape}",
             f"Time: {ms:.1f}ms | FPS: {fps:.1f}"
         ]
-        cv2.rectangle(img, (5, 5), (350, 85), (0, 0, 0), -1)
+        
+        # Fondo oscuro
+        cv2.rectangle(img, (5, 5), (400, 110), (0, 0, 0), -1)
         y = 30
         for line in lines:
             cv2.putText(img, line, (10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)

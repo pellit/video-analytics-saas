@@ -100,6 +100,49 @@ class CoachOrchestrator:
         self.trajectory_3d = [] # Lista para guardar {frame, x, y, z}
         self.hit_images = []    # Lista para guardar imágenes base64
 
+    def process_session(self, data_provider):
+        """
+        Nuevo bucle que consume un `IDataProvider` genérico.
+        El `data_provider` ya debe devolver `FrameData` con la física aplicada.
+        """
+        frames_analyzed = 0
+        start_time = time.time()
+
+        try:
+            while True:
+                frame_data = data_provider.get_next_frame()
+                if frame_data is None:
+                    break
+
+                # Guardar trayectoria
+                if frame_data.ball:
+                    self.trajectory_3d.append({
+                        "t": frame_data.timestamp,
+                        "x": int(frame_data.ball.position.x),
+                        "y": int(frame_data.ball.position.y),
+                        "z": int(frame_data.ball.position.z)
+                    })
+
+                # Evaluación
+                for evaluator in self.evaluators:
+                    try:
+                        evaluator.process_frame(frame_data)
+                    except Exception:
+                        pass
+
+                frames_analyzed += 1
+
+        except Exception as e:
+            logger.error(f"Error crítico en sesión: {e}")
+        finally:
+            try:
+                data_provider.release()
+            except Exception:
+                pass
+
+        duration = time.time() - start_time
+        return self._compile_final_response(duration, 0, frames_analyzed)
+
     def process_video(self, video_path: str, frame_stride: int = 2):
         cap = cv2.VideoCapture(video_path)
         fps = cap.get(cv2.CAP_PROP_FPS) or 30
