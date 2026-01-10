@@ -3,6 +3,7 @@ import numpy as np
 import os
 import urllib.request
 from typing import Any, Callable, Dict, List, Optional, Tuple
+from .smart_loader import SmartModelLoader
 
 # --- Clase de Intercambio de Datos ---
 class DetectionObject:
@@ -170,31 +171,107 @@ class YoloPoseWrapper(YoloBaseWrapper):
 # ==========================================
 # 3. SERVICIO OPTIMIZADO
 # ==========================================
+# class HitDetectionServiceOptimized:
+#     def __init__(self, default_model_dirs=None, segment_floor_fn=None, face_compare_fn=None,
+#                  yolo_size=640, use_fp16=True, enable_depth=False, midas_size=256):
+        
+#         self.models_dir = "/app/ai_engine/models"
+#         self.yolo_size = yolo_size
+
+#         self.paths = {
+#             "det": os.path.join(self.models_dir, "yolov8n.onnx"),
+#             "pose": os.path.join(self.models_dir, "yolov8n-pose.onnx"), 
+#             "midas": os.path.join(self.models_dir, "midas_v21_small.onnx"),
+#         }
+        
+#         self.segment_floor_fn = segment_floor_fn
+#         self.face_compare_fn = face_compare_fn
+#         self.use_fp16 = use_fp16
+#         self.enable_depth = enable_depth
+#         self.midas_size = midas_size
+        
+#         self._setup_models()
+#         self.calibrator = BallCalibrator()
+
+#     def _setup_models(self):
+#         os.makedirs(self.models_dir, exist_ok=True)
+#         size = (self.yolo_size, self.yolo_size)
+#         self.det = YoloDetWrapper(self.paths["det"], input_size=size, fp16=self.use_fp16)
+#         self.pose = YoloPoseWrapper(self.paths["pose"], input_size=size, fp16=self.use_fp16)
+#         self.det.load(); self.pose.load()
+
+
+
 class HitDetectionServiceOptimized:
-    def __init__(self, default_model_dirs=None, segment_floor_fn=None, face_compare_fn=None,
-                 yolo_size=640, use_fp16=True, enable_depth=False, midas_size=256):
+    def __init__(self, 
+                 models_dir="/app/ai_engine/models", 
+                 model_name_det="yolov8n_640",
+                 model_name_pose="yolov8s-pose_640", 
+                 model_name_depth="midas_v21_small_640", # <--- NUEVO
+                 yolo_size=640):
         
-        self.models_dir = "/app/ai_engine/models"
-        self.yolo_size = yolo_size
+        self.models_dir = models_dir
+        self.yolo_size = int(yolo_size)
+        
+        print(f"[HIT-SERVICE] Iniciando detección con Size={self.yolo_size}")
 
-        self.paths = {
-            "det": os.path.join(self.models_dir, "yolov8n.onnx"),
-            "pose": os.path.join(self.models_dir, "yolov8n-pose.onnx"), 
-            "midas": os.path.join(self.models_dir, "midas_v21_small.onnx"),
-        }
+        # 1. Detector (Pelota/Jugador)
+        self.det_loader = SmartModelLoader(
+            os.path.join(models_dir, model_name_det), 
+            task='detect', 
+            target_imgsz=self.yolo_size
+        )
         
-        self.segment_floor_fn = segment_floor_fn
-        self.face_compare_fn = face_compare_fn
-        self.use_fp16 = use_fp16
-        self.enable_depth = enable_depth
-        self.midas_size = midas_size
+        # 2. Pose (Esqueleto)
+        self.pose_loader = SmartModelLoader(
+            os.path.join(models_dir, model_name_pose), 
+            task='pose', 
+            target_imgsz=self.yolo_size
+        )
         
-        self._setup_models()
-        self.calibrator = BallCalibrator()
+        # 3. Profundidad (MiDaS)
+        # Nota: SmartModelLoader intentará cargar .engine primero. 
+        # Si falla (porque MiDaS no es YOLO), usará el .onnx automáticamente.
+        self.depth_loader = SmartModelLoader(
+            os.path.join(models_dir, model_name_depth), 
+            task='depth',  # Etiqueta informativa
+            target_imgsz=self.yolo_size
+        )
 
-    def _setup_models(self):
-        os.makedirs(self.models_dir, exist_ok=True)
-        size = (self.yolo_size, self.yolo_size)
-        self.det = YoloDetWrapper(self.paths["det"], input_size=size, fp16=self.use_fp16)
-        self.pose = YoloPoseWrapper(self.paths["pose"], input_size=size, fp16=self.use_fp16)
-        self.det.load(); self.pose.load()
+    def process_frame(self, frame):
+        """
+        Ejecuta los 3 modelos y devuelve resultados crudos
+        """
+        # A. Detección y Pose (Ultralytics maneja el pre-proceso)
+        # Usamos conf=0.25 como base, puedes subirlo si hay falsos positivos
+        res_det = self.det_loader.model(frame, imgsz=self.yolo_size, verbose=False, conf=0.25)[0]
+        res_pose = self.pose_loader.model(frame, imgsz=self.yolo_size, verbose=False, conf=0.25)[0]
+        
+        # B. Profundidad (MiDaS)
+        # MiDaS requiere un pre-proceso manual si usamos el backend de OpenCV
+        depth_map = None
+        
+        if self.depth_loader.backend == 'opencv':
+            # Pre-proceso estándar para MiDaS (Normalización específica)
+            img_h, img_w = frame.shape[:2]
+            blob = cv2.dnn.blobFromImage(
+                frame, 
+                1.0 / 255.0, 
+                (self.yolo_size, self.yolo_size), 
+                (123.675, 116.28, 103.53), # Media ImageNet (aprox) si el modelo lo requiere, o 0 si es standard
+                swapRB=True, crop=False
+            )
+            
+            # Inferencia
+            self.depth_loader.model.setInput(blob)
+            output = self.depth_loader.model.forward()
+            
+            # El output es 1x1xHxW, lo redimensionamos al tamaño original de la imagen
+            depth_map = output[0, 0]
+            depth_map = cv2.resize(depth_map, (img_w, img_h))
+            
+            # Normalizar para visualización (0-255)
+            # (Opcional, solo si quieres verlo como imagen gris)
+            # depth_map = cv2.normalize(depth_map, None, 0, 255, cv2.NORM_MINMAX, cv2.CV_8U)
+
+        return res_det, res_pose, depth_map

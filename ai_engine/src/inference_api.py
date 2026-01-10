@@ -13,11 +13,14 @@ import tempfile
 import logging
 import subprocess
 from typing import Optional, List, Dict, Any, Tuple, Literal
+import io
+from starlette.responses import StreamingResponse
 
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from fastapi.responses import FileResponse
+
 
 from .services.video_utils import bgr_to_cuda
 from .services.depth_pose import run_depthnet_video, analyze_depth_pose_video as depth_pose_service_analyze
@@ -59,6 +62,13 @@ ACTIONNET_MODEL = os.environ.get('ACTIONNET_MODEL', 'resnet18')
 ACTIONNET_LABELS = os.environ.get('ACTIONNET_LABELS')
 DEPTHNET_MODEL = os.environ.get('DEPTHNET_MODEL', 'resnet18')
 POSENET_MODEL = os.environ.get('POSENET_MODEL', 'resnet18-body')
+YOLO_SIZE = int(os.getenv("YOLO_SIZE", 416))
+CONFIDENCE_THRESHOLD = float(os.getenv("CONFIDENCE_THRESHOLD", 0.3))
+NMS_THRESHOLD = float(os.getenv("NMS_THRESHOLD", 0.4))
+# Variables globales de nombres (agregamos Depth)
+NAME_DETECT = os.getenv("MODEL_NAME_DETECT", "yolov8s_640")
+NAME_POSE = os.getenv("MODEL_NAME_POSE", "yolov8s-pose_640")
+NAME_DEPTH = os.getenv("MODEL_NAME_DEPTH", "midas_v21_small_640")
 
 # Models directory
 MODELS_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "../models"))
@@ -2409,6 +2419,67 @@ async def superres_video(
     return FileResponse(output_tmp.name, media_type="video/mp4", filename=os.path.basename(output_tmp.name))
 
 # --- Coach / Virtual Trainer Endpoints ---
+@app.post("/debug/detect_raw")
+async def debug_detection(
+    file: UploadFile = File(...),
+    model_det: str = NAME_DETECT,
+    model_pose: str = NAME_POSE,
+    model_depth: str = NAME_DEPTH,
+    size: int = 640
+):
+    # ... (lectura de imagen igual que antes) ...
+    contents = await file.read()
+    nparr = np.frombuffer(contents, np.uint8)
+    frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+
+    # Inicializar servicio temporal
+    try:
+        debug_service = HitDetectionServiceOptimized(
+            models_dir="/app/ai_engine/models",
+            model_name_det=model_det,
+            model_name_pose=model_pose,
+            model_name_depth=model_depth, # <--- Pasamos nombre de profundidad
+            yolo_size=size
+        )
+    except Exception as e:
+        return {"error": f"Error carga modelos: {e}"}
+
+    # Inferencia
+    # Ahora recibimos 3 cosas
+    res_det, res_pose, depth_map = debug_service.process_frame(frame)
+    
+    # --- VISUALIZACIÓN ---
+    annotated = frame.copy()
+    
+    # 1. Dibujar Depth como fondo (mezclado) si existe
+    if depth_map is not None:
+        # Normalizar a 0-255 uint8 para colorear
+        depth_norm = cv2.normalize(depth_map, None, 0, 255, cv2.NORM_MINMAX, cv2.CV_8U)
+        depth_color = cv2.applyColorMap(depth_norm, cv2.COLORMAP_MAGMA)
+        
+        # Mezclar con la imagen original (50% original, 50% mapa de calor)
+        annotated = cv2.addWeighted(annotated, 0.6, depth_color, 0.4, 0)
+        
+        cv2.putText(annotated, "Depth: ON (Magma Colormap)", (10, frame.shape[0]-10), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+
+    # 2. Dibujar Cajas (Detección)
+    for box in res_det.boxes:
+        coords = box.xyxy[0].cpu().numpy().astype(int)
+        cv2.rectangle(annotated, (coords[0], coords[1]), (coords[2], coords[3]), (0, 255, 0), 2)
+
+    # 3. Dibujar Esqueleto (Pose)
+    if res_pose.keypoints is not None:
+        keypoints = res_pose.keypoints.xy.cpu().numpy()
+        for person_kps in keypoints:
+            for kp in person_kps:
+                x, y = int(kp[0]), int(kp[1])
+                if x > 0 and y > 0:
+                    cv2.circle(annotated, (x, y), 4, (0, 0, 255), -1)
+
+    # Devolver imagen
+    res, im_jpg = cv2.imencode(".jpg", annotated)
+    return StreamingResponse(io.BytesIO(im_jpg.tobytes()), media_type="image/jpeg")
 
 @app.post("/coach/analyze")
 async def analyze_session(
