@@ -20,7 +20,7 @@ services:
       - NVIDIA_DRIVER_CAPABILITIES=compute,video,utility
       - JETSON_DATA_DIR_OVERRIDE=/usr/local/bin
       # Forzamos las variables aquí también por seguridad
-      - YOLO_SIZE=640
+      - YOLO_SIZE=416
       - MODELS_DIR=/app/ai_engine/models
       # 📂 NFS Configuration
       - NFS_MEDIA_ROOT=/home/pta/pta-app/media 
