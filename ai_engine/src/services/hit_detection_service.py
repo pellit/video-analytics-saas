@@ -53,12 +53,12 @@ class BallCalibrator:
 # 2. CLASES IA (YOLO)
 # ==========================================
 class YoloBaseWrapper:
-    def __init__(self, model_path, conf_thres=0.4, iou_thres=0.5):
+    def __init__(self, model_path, conf_thres=0.4, iou_thres=0.5, input_size=(640, 640)):
         self.model_path = model_path
         self.conf_thres = conf_thres
         self.iou_thres = iou_thres
         self.net = None
-        self.input_size = (640, 640)
+        self.input_size = tuple(input_size)
 
     def load_model(self, name="YOLO"):
         if not os.path.exists(self.model_path) or os.path.getsize(self.model_path) < 1000: return False
@@ -67,7 +67,7 @@ class YoloBaseWrapper:
             self.net.setPreferableBackend(cv2.dnn.DNN_BACKEND_CUDA)
             self.net.setPreferableTarget(cv2.dnn.DNN_TARGET_CUDA)
             # Warmup
-            self.net.setInput(np.zeros((1, 3, 640, 640), dtype=np.float32))
+            self.net.setInput(np.zeros((1, 3, *self.input_size), dtype=np.float32))
             self.net.forward()
             print(f"[{name}] ✅ GPU Ready.")
             return True
@@ -148,8 +148,15 @@ class HitDetectionService:
         face_compare_fn: Optional[Callable[[str, str], Any]] = None,
     ):
         self.models_dir = "/app/ai_engine/models"
-        self.det_path = os.path.join(self.models_dir, "yolov8n.onnx")       
-        self.pose_path = os.path.join(self.models_dir, "yolov8n-pose.onnx")  
+        self.yolo_size = int(os.environ.get("YOLO_SIZE", "640"))
+        self.det_path = self._pick_model_path(
+            os.environ.get("HIT_MODEL_NAME_DET", f"yolov8n_{self.yolo_size}"),
+            "yolov8n.onnx",
+        )
+        self.pose_path = self._pick_model_path(
+            os.environ.get("HIT_MODEL_NAME_POSE", f"yolov8n-pose_{self.yolo_size}"),
+            "yolov8n-pose.onnx",
+        )
         self.midas_path = os.path.join(self.models_dir, "midas_v21_small.onnx") 
 
         self.segment_floor_fn = segment_floor_fn
@@ -164,10 +171,18 @@ class HitDetectionService:
         self._check_and_download_models()
         
         # Umbral MUY BAJO (0.15) para detectar pelotas borrosas en movimiento
-        self.det_model = YoloDetWrapper(self.det_path, conf_thres=0.15) 
+        self.det_model = YoloDetWrapper(
+            self.det_path,
+            conf_thres=0.15,
+            input_size=(self.yolo_size, self.yolo_size),
+        ) 
         self.det_model.load_model("BALL")
         
-        self.pose_model = YoloPoseWrapper(self.pose_path, conf_thres=0.5)
+        self.pose_model = YoloPoseWrapper(
+            self.pose_path,
+            conf_thres=0.5,
+            input_size=(self.yolo_size, self.yolo_size),
+        )
         self.pose_model.load_model("POSE")
         
         self.midas_net = None
@@ -200,6 +215,23 @@ class HitDetectionService:
             (5, 11), (6, 12), (11, 13), (13, 15), 
             (12, 14), (14, 16), (11, 12), (5, 6)
         ]
+
+    def _pick_model_path(self, preferred_name: str, fallback_filename: str) -> str:
+        """
+        Devuelve el modelo preferido si existe (>1KB); de lo contrario usa fallback.
+        Permite usar modelos fijos con sufijo de tamaÇño (p.ej. yolov8n_640.onnx).
+        """
+        candidates = []
+        if preferred_name:
+            if not preferred_name.endswith(".onnx"):
+                preferred_name = f"{preferred_name}.onnx"
+            candidates.append(os.path.join(self.models_dir, preferred_name))
+        candidates.append(os.path.join(self.models_dir, fallback_filename))
+
+        for path in candidates:
+            if os.path.exists(path) and os.path.getsize(path) > 1000:
+                return path
+        return candidates[-1]
 
     def _check_and_download_models(self):
         os.makedirs(self.models_dir, exist_ok=True)
