@@ -422,12 +422,46 @@ class HitFastNfsRequest(BaseModel):
     hit_threshold: Optional[float] = 0.1
     return_images: bool = False
 
+def _loader_status(loader, role: str) -> Dict[str, Any]:
+    """Devuelve info compacta de un SmartModelLoader para reportar en /health."""
+    status = {
+        "role": role,
+        "available": False,
+        "backend": None,
+        "model": None,
+        "imgsz": None,
+    }
+    if not loader:
+        return status
+    status.update(
+        {
+            "available": True,
+            "backend": getattr(loader, "backend", None),
+            "model": getattr(loader, "model_filename", None)
+                     or getattr(loader, "model_path", None),
+            "imgsz": getattr(loader, "target_imgsz", None),
+        }
+    )
+    return status
+
 @app.get("/health")
 def health():
+    coach_models: List[Dict[str, Any]] = []
+    hit_service = getattr(services, "hit_service", None)
+    if hit_service:
+        coach_models.append(_loader_status(getattr(hit_service, "det_loader", None), "detect"))
+        coach_models.append(_loader_status(getattr(hit_service, "pose_loader", None), "pose"))
+        if getattr(hit_service, "enable_depth", False):
+            coach_models.append(_loader_status(getattr(hit_service, "depth_loader", None), "depth"))
+
     return {
         "status": "ok",
         "model": yolo_fallback.model_name,
-        "cuda": cv2.cuda.getCudaEnabledDeviceCount() > 0
+        "cuda": cv2.cuda.getCudaEnabledDeviceCount() > 0,
+        "coach": {
+            "available_modes": ["soccer", "fitness", "meditation", "challenge_speech"],
+            "models": coach_models,
+        },
     }
 
 

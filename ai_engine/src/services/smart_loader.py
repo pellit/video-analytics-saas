@@ -46,7 +46,6 @@ class SmartModelLoader:
         # Rutas
         path_engine = f"{model_path_base}.engine"
         path_onnx = f"{model_path_base}.onnx"
-        path_fixed = f"{model_path_base}_fixed.onnx"
         use_engine = os.path.exists(path_engine)
         allow_onnx_jetson = os.environ.get("SMARTLOADER_ALLOW_ONNX_JETSON", "0").lower() in ("1", "true", "yes")
         skip_jetson = os.environ.get("SMARTLOADER_DISABLE_JETSON", "0").lower() in ("1", "true", "yes")
