@@ -149,19 +149,35 @@ RUN if [ "$BUILD_OPENCV" = "1" ]; then \
 WORKDIR /app
 COPY requirements.jetson.txt /app/requirements.txt
 
-# Instalamos dependencias (Mantenemos onnxslim instalado por si lo necesitas manualmente)
-# ⚠️ NO instalamos TensorRT aquí - Jetson ya lo tiene en el sistema
+# ------------------------------------------------------------------------------
+# 5. Dependencias y Modelos (FIX: Ultralytics + OpenCV CUDA + NumPy Jetson)
+# ------------------------------------------------------------------------------
 RUN ${PYTHON_BIN} -m pip install --no-cache-dir --upgrade pip setuptools wheel && \
     ${PYTHON_BIN} -m pip install --no-cache-dir Cython && \
     ${PYTHON_BIN} -m pip install --no-cache-dir "httptools>=0.6.0" "uvloop>=0.17.0" "websockets>=11.0" && \
     ${PYTHON_BIN} -m pip install --no-cache-dir onnxslim && \
     ${PYTHON_BIN} -m pip install --no-cache-dir --ignore-installed PyYAML && \
+    # Filtramos opencv de requirements para no instalarlo dos veces
     cat requirements.txt | grep -v "opencv-python" > requirements_filtered.txt && \
     ${PYTHON_BIN} -m pip install --no-cache-dir -r requirements_filtered.txt && \
+    \
+    # 🔥 INSTALACIÓN ESTRATÉGICA DE ULTRALYTICS 🔥
+    echo "📦 Instalando Ultralytics..." && \
+    ${PYTHON_BIN} -m pip install --no-cache-dir ultralytics && \
+    \
+    # 🧹 LIMPIEZA: Borramos el OpenCV basura que trajo Ultralytics
+    # Esto hace que Python vuelva a ver el OpenCV 4.10 con CUDA que compilamos antes
+    echo "🧹 Borrando OpenCV de pip para reactivar OpenCV CUDA..." && \
+    ${PYTHON_BIN} -m pip uninstall -y opencv-python opencv-python-headless opencv-contrib-python && \
+    \
+    # 🩹 FIX NUMPY: Jetson Inference necesita NumPy < 2.0
+    echo "🩹 Forzando NumPy compatible con Jetson..." && \
+    ${PYTHON_BIN} -m pip install "numpy<2.0.0" --force-reinstall && \
+    \
+    # Script original de descarga de modelos (opcional)
     if [ -d /opt/jetson-inference/python/training/classification ]; then \
         cd /opt/jetson-inference/python/training/classification && ./download-models.sh; \
     fi
-
 # Descargamos los modelos recomendados (NanoDet, MiDaS, etc.)
 # RUN mkdir -p /app/models && \
 #     curl -L -o /app/models/face_detection_yunet_2023mar.onnx https://github.com/opencv/opencv_zoo/raw/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx && \

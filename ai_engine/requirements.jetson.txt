@@ -11,9 +11,8 @@ pydantic>=1.10.0,<2.0.0
 # --- Procesamiento de Imagen ---
 # No limites Pillow a <9.0.0, Python 3.11 prefiere Pillow >= 9.5
 Pillow>=9.5.0
-numpy>=1.24.0
+numpy>=1.24.0,<2.0.0
 onnxruntime>=1.16.0
-ultralytics
 
 # --- Utilidades ---
 requests
