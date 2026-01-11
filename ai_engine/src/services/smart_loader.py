@@ -47,27 +47,36 @@ class SmartModelLoader:
         path_engine = f"{model_path_base}.engine"
         path_onnx = f"{model_path_base}.onnx"
         path_fixed = f"{model_path_base}_fixed.onnx"
+        use_engine = os.path.exists(path_engine)
+        allow_onnx_jetson = os.environ.get("SMARTLOADER_ALLOW_ONNX_JETSON", "0").lower() in ("1", "true", "yes")
+        skip_jetson = os.environ.get("SMARTLOADER_DISABLE_JETSON", "0").lower() in ("1", "true", "yes")
         
         logger.info(f"[INIT] Loader para: {model_path_base}")
 
         # -----------------------------------------------------------
         # PRIORIDAD 1: JETSON INFERENCE (Engine / GPU)
         # -----------------------------------------------------------
-        # Intentamos usar la librería nativa si carga en Python 3.11
-        if os.path.exists(path_engine) or os.path.exists(path_onnx):
+        # Intentamos usar la librer??a nativa si carga en Python 3.11
+        # Solo se intenta con .engine, a menos que se habilite expl??citamente ONNX.
+        if not skip_jetson and (use_engine or (allow_onnx_jetson and os.path.exists(path_onnx))):
             try:
                 import jetson.inference
                 import jetson.utils
-                
-                model_to_load = path_engine if os.path.exists(path_engine) else path_onnx
+
+                model_to_load = path_engine if use_engine else path_onnx
+                labels_path = os.path.join(os.path.dirname(model_to_load), 'classes.txt')
+                if not os.path.exists(labels_path):
+                    logger.info(f"[SKIP] No se encontr?? labels para jetson.inference: {labels_path}")
+                    raise FileNotFoundError(labels_path)
+
                 logger.info(f"[TRY] jetson.inference con: {model_to_load}")
-                
+
                 self.net = jetson.inference.detectNet(
                     argv=[
-                        f"--model={model_to_load}", 
-                        f"--labels={os.path.join(os.path.dirname(model_to_load), 'classes.txt')}", 
-                        "--input-blob=images", 
-                        "--output-cvg=output_0", 
+                        f"--model={model_to_load}",
+                        f"--labels={labels_path}",
+                        "--input-blob=images",
+                        "--output-cvg=output_0",
                         "--output-bbox=output_0"
                     ],
                     threshold=0.3
@@ -80,6 +89,10 @@ class SmartModelLoader:
                 logger.warning("[WARN] No se pudo importar 'jetson.inference' (Incompatibilidad Py3.6 vs Py3.11 probable).")
             except Exception as e:
                 logger.warning(f"[WARN] Error al inicializar jetson.inference: {e}")
+        elif skip_jetson:
+            logger.info("[SKIP] jetson.inference desactivado por SMARTLOADER_DISABLE_JETSON")
+        else:
+            logger.info("[SKIP] No hay .engine; usando OpenCV/Ultralytics")
 
         # -----------------------------------------------------------
         # PRIORIDAD 2: OPENCV CUDA (GPU) - LA MEJOR ALTERNATIVA
