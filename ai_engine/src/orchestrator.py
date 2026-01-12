@@ -92,8 +92,8 @@ class ServiceContainer:
         # 3. Super Resolución
         try:
             self.superres = SuperResolutionService(
-                model_dir=os.path.join(MODELS_DIR),
-                default_model_path=os.path.join(MODELS_DIR, 'ESPCN_x4.pb')
+                default_model_dir=os.path.join(MODELS_DIR),
+                preferred_model_path=os.path.join(MODELS_DIR, 'ESPCN_x4.pb')
             )
         except Exception as e:
              logger.warning(f"⚠️ SuperRes error: {e}")
