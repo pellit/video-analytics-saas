@@ -23,8 +23,13 @@ build_engine() {
     return
   fi
   if [[ -f "$engine" ]]; then
-    log "Engine already exists: $engine"
-    return
+    if [[ "${FORCE_REBUILD:-0}" == "1" ]]; then
+      log "FORCE_REBUILD=1 -> removing existing engine: $engine"
+      rm -f "$engine"
+    else
+      log "Engine already exists: $engine"
+      return
+    fi
   fi
   if [[ ! -x "$TRTEXEC_BIN" ]]; then
     err "trtexec not found at $TRTEXEC_BIN. Install TensorRT CLI or set TRTEXEC_BIN."
