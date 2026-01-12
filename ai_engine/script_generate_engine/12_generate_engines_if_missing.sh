@@ -32,13 +32,21 @@ build_engine() {
   fi
 
   log "Building engine from $onnx -> $engine (imgsz=${YOLO_SIZE})"
-  # TensorRT build; use explicit shapes for YOLO export and FP16
-  if "$TRTEXEC_BIN" --onnx="$onnx" --saveEngine="$engine" \
-      --fp16 --workspace=2048 --minShapes=images:1x3x${YOLO_SIZE}x${YOLO_SIZE} \
-      --optShapes=images:1x3x${YOLO_SIZE}x${YOLO_SIZE} \
-      --maxShapes=images:1x3x${YOLO_SIZE}x${YOLO_SIZE} \
-      --verbose > /tmp/trtexec_build.log 2>&1; then
+  # TRT 8.2 on Jetson Xavier/Nano complains if you pass min/opt/max for static
+  # shapes. We try a single --shapes first; if it fails, we retry without any
+  # shape override (uses the static shape baked into the model).
+  build_cmd=( "$TRTEXEC_BIN" --onnx="$onnx" --saveEngine="$engine" \
+              --fp16 --workspace=4096 --shapes=images:1x3x${YOLO_SIZE}x${YOLO_SIZE} --verbose )
+  if "${build_cmd[@]}" > /tmp/trtexec_build.log 2>&1; then
     log "Built engine: $(basename "$engine")"
+    return
+  fi
+
+  log "First attempt failed, retrying without --shapes (static model fallback)..."
+  build_cmd=( "$TRTEXEC_BIN" --onnx="$onnx" --saveEngine="$engine" \
+              --fp16 --workspace=4096 --verbose )
+  if "${build_cmd[@]}" > /tmp/trtexec_build.log 2>&1; then
+    log "Built engine (fallback): $(basename "$engine")"
   else
     err "Failed building $engine. See /tmp/trtexec_build.log"
     return
